@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS game (
 	platform_key TEXT NOT NULL REFERENCES platform(key) ON DELETE CASCADE,
 	menu         TEXT NOT NULL DEFAULT '',
 	title        TEXT NOT NULL,
+	name         TEXT NOT NULL DEFAULT '',
 	rom_path     TEXT NOT NULL,
 	size         INTEGER NOT NULL DEFAULT 0,
 	cover        TEXT NOT NULL DEFAULT '',
@@ -120,6 +121,15 @@ func Open(path string) (*sql.DB, error) {
 		if _, err := db.Exec(`ALTER TABLE game ADD COLUMN board TEXT NOT NULL DEFAULT ''`); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("add board: %w", err)
+		}
+	}
+	// 游戏标题, likewise: the card used to show the romset's file name, which
+	// is a key rather than a title ("avsp"), and a catalogue's name belongs in
+	// a column of its own so the key is still there to match on.
+	if !hasColumn(db, "game", "name") {
+		if _, err := db.Exec(`ALTER TABLE game ADD COLUMN name TEXT NOT NULL DEFAULT ''`); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("add name: %w", err)
 		}
 	}
 	return db, nil
@@ -237,6 +247,7 @@ func SetField(db *sql.DB, gameID int, field, value string) error {
 // SetInfo records what the game's page says: manufacturer, year, genre, and
 // the driver source the 基板 is read from. An empty value leaves the column as
 // it was.
+// SetInfo writes what a catalogue says about a game.
 func SetInfo(db *sql.DB, gameID int, publisher, year, genre, board string) error {
 	y := 0
 	if year != "" {
@@ -248,6 +259,18 @@ func SetInfo(db *sql.DB, gameID int, publisher, year, genre, board string) error
 		genre     = CASE WHEN ? <> '' THEN ? ELSE genre END,
 		board     = CASE WHEN ? <> '' THEN ? ELSE board END
 		WHERE id = ?`, publisher, publisher, y, y, genre, genre, board, board, gameID)
+	return err
+}
+
+// SetName gives a game the title a catalogue has for it. The caller only asks
+// for it when the row still shows the romset's file name — "avsp" is a key,
+// and a shelf should read the game's own name; a row that already has one
+// ("合金弹头") keeps it, in the language the collection was built in.
+func SetName(db *sql.DB, gameID int, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return nil
+	}
+	_, err := db.Exec(`UPDATE game SET name = ? WHERE id = ?`, strings.TrimSpace(name), gameID)
 	return err
 }
 
@@ -295,7 +318,7 @@ func Load(db *sql.DB) (*Library, error) {
 	// The menu table is not read any more: split.go derives each shelf's
 	// menus from the games, so a shelf's chips follow one fixed standard.
 
-	grows, err := db.Query(`SELECT id, platform_key, menu, title, rom_path, size, cover, year,
+	grows, err := db.Query(`SELECT id, platform_key, menu, title, name, rom_path, size, cover, year,
 		publisher, genre, region, favorite, core, sim_id, board
 		FROM game ORDER BY favorite DESC, title`)
 	if err != nil {
@@ -303,11 +326,16 @@ func Load(db *sql.DB) (*Library, error) {
 	}
 	for grows.Next() {
 		var g Game
-		if err := grows.Scan(&g.ID, &g.PlatformKey, &g.Menu, &g.Title, &g.RomPath, &g.Size,
+		if err := grows.Scan(&g.ID, &g.PlatformKey, &g.Menu, &g.Title, &g.Name, &g.RomPath, &g.Size,
 			&g.Cover, &g.Year, &g.Publisher, &g.Genre, &g.Region, &g.Favorite,
 			&g.Core, &g.SimID, &g.Board); err != nil {
 			grows.Close()
 			return nil, err
+		}
+		// A known title is what the shelf shows and sorts by; the romset's
+		// file name stays in the row for matching, not for reading.
+		if g.Name != "" {
+			g.Title = g.Name
 		}
 		l.Games = append(l.Games, g)
 	}

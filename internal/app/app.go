@@ -16,6 +16,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -58,6 +59,18 @@ type App struct {
 	query    string
 	chosen   int // the card chosen in the body: an index into shown
 	scroll   ui.ScrollState
+
+	// A second click on the same card within this long starts the game. The
+	// window's own double-click counting is not relied on: a card is built
+	// again every frame, and a counter keyed by the element can miss the pair.
+	lastClick   int
+	lastClickAt time.Time
+
+	// Work that changes the body's games, queued for the top of the next frame:
+	// a card's menu is drawn from the lines of this frame, so changing the
+	// filter or the metadata right there leaves those lines pointing past the
+	// end of a shorter list, and the window dies.
+	queue []func()
 
 	// The two popovers of the top bar: the shelf picker on the left and the
 	// platforms that did not make the bar's five.
@@ -323,6 +336,25 @@ func (a *App) reload() {
 	a.refilter()
 }
 
+// later queues work that changes the body's games, to run at the top of the
+// next frame, before the lines are cut again.
+func (a *App) later(fn func()) {
+	a.queue = append(a.queue, fn)
+}
+
+// runQueue runs what the last frame queued. It is called before anything is
+// drawn, so every line of the new frame is cut from the games as they are now.
+func (a *App) runQueue() {
+	if len(a.queue) == 0 {
+		return
+	}
+	q := a.queue
+	a.queue = a.queue[:0]
+	for _, fn := range q {
+		fn()
+	}
+}
+
 // refilter rebuilds the grid's games: those of the shelf, of the axis and of
 // the search.
 func (a *App) refilter() {
@@ -518,13 +550,33 @@ func (a *App) values(field string, g library.Game) []string {
 // into the library in memory, into the row of the database, and into the body
 // at once, so the card moves to its new 厂商 or 基板 without a restart.
 func (a *App) assign(field, value string) {
-	v := strings.TrimSpace(value)
-	g := a.lib.Game(a.menuGame)
+	id, v := a.menuGame, strings.TrimSpace(value)
+	if v == "" {
+		return
+	}
+	// The menu is drawn from this frame's lines, so the write and the re-file
+	// wait for the next frame; the menu closes now, as a click should.
+	a.shutMenu()
+	a.later(func() { a.writeField(id, field, v) })
+}
+
+// writeField is the work assign queued: the game's row, the library, and the
+// body, all brought up to date before the next frame is laid out.
+func (a *App) writeField(id int, field, value string) {
+	v := value
+	g := a.lib.Game(id)
 	if g == nil || v == "" {
 		return
 	}
 	var err error
 	switch field {
+	case "title":
+		// 游戏名就是卡片上写的那一行：改名要把 name 列和内存里的 Title 一起换，
+		// 这样下次启动读的还是改过的名字，而不是 rom 的文件名。
+		g.Name, g.Title = v, v
+		if a.db != nil {
+			err = library.SetName(a.db, g.ID, v)
+		}
 	case "board":
 		g.Board = v
 		err = a.write(g.ID, library.FieldBoard, v)
@@ -560,9 +612,12 @@ func (a *App) assign(field, value string) {
 		}
 	}
 	name := strings.ToUpper(g.Title)
-	if err != nil {
+	switch {
+	case err != nil:
 		a.status = fmt.Sprintf("%s 没改成：%v", name, err)
-	} else {
+	case field == "title":
+		a.status = "已改名为 " + v
+	default:
 		a.status = fmt.Sprintf("%s 已改为 %s", name, v)
 	}
 	a.counts = a.lib.Counts()
@@ -573,7 +628,6 @@ func (a *App) assign(field, value string) {
 	at := a.scroll.Y
 	a.refilter()
 	a.scroll.Y = at
-	a.shutMenu()
 }
 
 // write is one column of one game into the database, when the launcher has

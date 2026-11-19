@@ -107,8 +107,9 @@ func TestCardMenuOffersTheFields(t *testing.T) {
 	if !fs[1].editable {
 		t.Error("the 厂商 of an arcade game must be correctable")
 	}
-	if fs[4].editable {
-		t.Error("游戏名 must not be editable")
+	// 游戏名能改，但它没有可选的值列表：改名是自己打进去的。
+	if !fs[4].editable || !fs[4].typeIn {
+		t.Errorf("游戏名 row = %+v, want editable and typed in", fs[4])
 	}
 	// Console: 机种 is the platform, and the maker is the machine's maker.
 	a = testApp(fakeLibrary(), "console", "fc")
@@ -128,6 +129,7 @@ func TestAssignWritesTheField(t *testing.T) {
 	id := a.shown[0].ID
 	a.menuGame = id
 	a.assign("publisher", "TAITO")
+	a.runQueue() // 改元数据是排到下一帧做的，这里把它跑掉
 	g := a.lib.Game(id)
 	if g == nil || g.Publisher != "TAITO" {
 		t.Fatalf("game %d = %+v after the correction", id, g)

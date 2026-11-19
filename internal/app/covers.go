@@ -78,15 +78,19 @@ func downloadCovers(db *sql.DB, root string, targets []coverTarget, progress fun
 
 // infoTarget is one game whose page the launcher should read: the arcade and
 // 麻将 roms, whose manufacturer and year decide the chips they are filed
-// under.
+// under, and whose romset file name is still standing in for a title.
 type infoTarget struct {
 	id    int
 	rom   string
 	title string
+	// untitled says the row shows the romset's file name as its title, so the
+	// catalogue's own name is an improvement; a row that already has a title
+	// keeps it.
+	untitled bool
 }
 
 // missingInfo lists the arcade and 麻将 games whose page has not been read:
-// no manufacturer, no year, or no 基板.
+// no manufacturer, no year, no 基板, or still no title of their own.
 func missingInfo(lib *library.Library, root string) []infoTarget {
 	var out []infoTarget
 	for _, g := range lib.Games {
@@ -94,22 +98,25 @@ func missingInfo(lib *library.Library, root string) []infoTarget {
 		if p == nil || p.Group != "arcade" && p.Group != "mahjong" {
 			continue
 		}
-		if g.Publisher != "" && g.Year != 0 && g.Board != "" {
-			continue
-		}
 		base := path.Base(filepath.ToSlash(g.RomPath))
 		rom := strings.TrimSuffix(base, path.Ext(base))
 		if rom == "" {
 			continue
 		}
-		out = append(out, infoTarget{id: g.ID, rom: rom, title: g.Title})
+		complete := g.Publisher != "" && g.Year != 0 && g.Board != ""
+		untitled := g.Name == "" && strings.EqualFold(strings.TrimSpace(g.Title), rom)
+		if complete && !untitled {
+			continue
+		}
+		out = append(out, infoTarget{id: g.ID, rom: rom, title: g.Title, untitled: untitled})
 	}
 	return out
 }
 
 // downloadInfo reads each target's page and writes what it says into the
 // library: manufacturer, year, genre, and the driver source the 基板 comes
-// from. progress is called per target.
+// from — and, for a row still named after its romset, the game's own title.
+// progress is called per target.
 func downloadInfo(db *sql.DB, targets []infoTarget, progress func(done, total, ok int)) (ok, failed int) {
 	adb := covers.NewADB()
 	for i, t := range targets {
@@ -117,6 +124,10 @@ func downloadInfo(db *sql.DB, targets []infoTarget, progress func(done, total, o
 		if err == nil {
 			if sErr := library.SetInfo(db, t.id, strings.ToUpper(info.Maker), info.Year, info.Genre, info.Board); sErr != nil {
 				err = sErr
+			} else if t.untitled {
+				if nErr := library.SetName(db, t.id, info.Title); nErr != nil {
+					err = nErr
+				}
 			}
 		}
 		if err != nil {

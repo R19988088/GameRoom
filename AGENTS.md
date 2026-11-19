@@ -54,7 +54,7 @@ go build -o "E:\game\Sim ui_D\exe\GameRoom.exe" .
 | --- | --- |
 | `platform` | `key`（rom 下的目录名，如 `arc`）、`name`、`grp`（货架：`arcade` / `console` / `handheld` / `pc`）、`exts`、`sort` |
 | `menu` | 某平台下的分类：`platform_key` + `name` |
-| `game` | `title`（中文展示名）与 `rom_path`（相对 `rom/` 的文件路径）分开；`size` 为字节数（INTEGER）；`cover` 为**相对 `数据/`** 的路径（`covers/arc/dino.png`）；`favorite` 布尔；`core` 是这个游戏单独指定的核心（空 = 用 sim 的）；`sim_id`（0 = 用平台默认模拟器）|
+| `game` | `title`（展示名，导入时是 rom 文件名）与 `rom_path`（相对 `rom/` 的文件路径）分开；`name` 是**目录里查到的大名**（ADB 的「Short name」，如 `Alien vs. Predator`），有它卡片就显示它；`size` 为字节数（INTEGER）；`cover` 为**相对 `数据/`** 的路径（`covers/arc/dino.png`）；`favorite` 布尔；`core` 是这个游戏单独指定的核心（空 = 用 sim 的）；`sim_id`（0 = 用平台默认模拟器）|
 | `sim` | 模拟器：`exe`（相对工程根或绝对路径）、`core`（RetroArch 核心名，如 `geolith`）、`args`（其余参数，含 `{RomFullPath}` 占位符）、`is_default` |
 | `setting` | `schema`（库版本）、`imported`、`imported_at`、`imported_from` |
 
@@ -108,13 +108,16 @@ chip 里的「分类」按货架固定，由 `menuAxis` 决定，`(*Library).spl
   `ingames/<rom>.png`；`get()` 校验 PNG 魔数 + ≥1024 字节（0.6KB 的占位图不算），
   404 归 `ErrNoCover`，网络错误重试三次（2s / 4s）。
 - `dettaglio_mame.php?game_name=<rom>`：详情页，`adbValue("Manufacturer"|"Year"|"Genre")`
-  解析 `table_caption` 后紧跟的 `dettaglio` 文本。
+  解析 `table_caption` 后紧跟的 `dettaglio` 文本；`adbValue("Short name")` 是**游戏标题**
+  （`Alien vs. Predator`，不带区域/版本后缀），写进 `game.name`——只在那一行的 `title` 还是
+  rom 文件名时才写，已有中文名的保持中文（`missingInfo` 里算 `untitled`，`SetName` 才落库）。
 - **限流是真的**：ADB 抓十几张后连 TLS 握手都会失败，静置一阵才恢复 → `Pause` 默认 400ms，
-  批量抓要一批一批来；`ADB.Base` 非空时指向测试服务器（`adb_test.go` 用 httptest 桩）。
+  批量抓要一批一批来；`ADB.page()` 读详情页也有三次重试（2s / 4s），批量时先小 `-limit` 试水；
+  `ADB.Base` 非空时指向测试服务器（`adb_test.go` 用 httptest 桩）。
 - 落盘：`数据/covers/<平台>/<rom>.png` + `library.SetCover`；元数据走 `library.SetInfo`
-  （`CASE WHEN` 保护空值，不会把已有的值擦掉）。
+  （`CASE WHEN` 保护空值，不会把已有的值擦掉），标题走 `library.SetName`。
 - 目标：`missingCovers` 只认 `Group == "arcade"`；`missingInfo` 认街机 + 麻将里
-  `publisher = ''` 或 `year = 0` 的。
+  `publisher = ''` / `year = 0` / `board = ''` **或者标题还是 rom 文件名**的。
 - 入口：界面状态栏「补全封面 N」（只在有缺口时出现，`a.fetching` 期间显示 `补全中 n/N · 已新增 m`）
   和无窗口 CLI `-fetch-covers` / `-fetch-info` / `-limit`（**必须跑 exe**，`go run` 的
   `findRoot()` 找不到 `rom/模拟器/数据`）。
@@ -163,13 +166,19 @@ chip 里的「分类」按货架固定，由 `menuAxis` 决定，`(*Library).spl
 - **卡片右键菜单**（`ui.ContextMenuBase`）：每张卡用自己的 open 指针（`a.opens map[int]*bool`），
   否则弹层会锚到最后建出来的那张卡上。菜单先列五个字段——机种/基板、厂商、游戏类型、核心、游戏名，
   值在右边：**单击**换到「选择值」列表（值取该货架已有的，`a.values`），**双击**换到输入框
-  （回车或「保存」写入）。`游戏名` 只读，点一下等于把它填进搜索框、筛出这一张。写入走
-  `library.SetField` / `library.SetPlatform`，改完就地重排（`SplitGroup` + `refilter`）并保留滚动位置。
+  （回车或「保存」写入）。`游戏名` 能改，但它没有值列表：**单击**就直接进输入框，写 `name` 列
+  （`library.SetName`）并同步内存里的 `Title`；点了**不筛**——一筛整个货架只剩一张卡。
   街机的「厂商」写 `publisher`；家用机/掌机的「厂商」是机子厂商（由平台/核心推出来的，不给改），
   只有「机种」能改：掌机改机种=改 `core`，家用机改机种=改 `platform_key`。
-  `a.shown`，再按 `menu` 切成 `a.sections`；每节开头插一个标题行（组名大写 + 右侧灰色计数），
-  点标题 `chooseMenu(该组)` 直接筛选到该组。`chips` 为空（家用机/PC 的机种轴：机种就是平台）
-  时只有一节且不画标题。
+- **改数据的动作排到下一帧**（`a.later`/`runQueue`，队列在 `view()` 第一行跑）：卡片菜单是在
+  **这一帧的** `a.lines` 里画的，菜单里一改筛选或元数据，后面的卡还按老列表取下标，就
+  `index out of range` 把窗口弄死（`TestNameRowIsTypedIn`/`TestValueClickRewritesTheGame`
+  盯着这两条，`sections_test.go` 里直接调 `assign` 的用例要补 `a.runQueue()`）。
+  写入照旧走 `library.SetField` / `SetPlatform` / `SetName`，改完 `SplitGroup` + `refilter`
+  并保留滚动位置。
+- **瀑布流按分类分组**：`refilter()` 先筛 `a.shown`，再按 `menu` 切成 `a.sections`；每节开头插一个
+  标题行（组名大写 + 右侧灰色计数），点标题 `chooseMenu(该组)` 直接筛选到该组。`chips` 为空
+  （家用机/PC 的机种轴：机种就是平台）时只有一节且不画标题。
 - 位置由 `internal/app/layout_test.go` 的 `TestTopBarIsFlat` 盯着：三样东西同一行（比中心点）、
   两两之间有空隙、chip 比货架按钮矮（不套层）、整行底边在 70 以内、卡片不钻到顶栏下面；
   `bar_test.go` 还盯着货架在最左、`更多` 不压搜索框；`shelf_test.go` 确认菜单点得开；
@@ -194,6 +203,14 @@ chip 里的「分类」按货架固定，由 `menuAxis` 决定，`(*Library).spl
 - 封面用 `Fit(Contain)` 保持原始比例（街机 flyer 不裁切），卡片本身 16:9 左右。
 - **第一版只启动 RetroArch**：`internal/launch` 只认 `retroarch.exe`；其它模拟器只在状态栏
   提示“本版只启动 RetroArch”。
+- **「双击或 Enter」两种都要能开**：卡片自己的 `DoubleClicked()` 是一路；Enter 挂在**卡片**上
+  （`b.Shortcut(0, ui.KeyEnter)`），而不是挂在最外层 `ui.Scroll` 上——键只递给「焦点链」里的元素，
+  点过一张卡它就有了焦点，Enter 才收得到。挂在 Scroll 上按 Enter 是没反应的（踩过）。
+  框架的 `DoubleClicked()` 在真窗口里**不一定会报**（元素每帧重建，按 id 计数的配对会丢），
+  所以 `card()` 自己也记时间：同一张卡 650ms 内第二次 `Click()` 就启动（`lastClick`/`lastClickAt`）。
+- **滤镜别把预设写坏**：`InstallShader` 只改写 `shaderN = "路径"` 这一种行；预设第一行
+  `shaders = "8"` 是**数量**，被当成路径改写成 `"../shaders/8"` 会让 RetroArch 在 shader 编译阶段
+  直接崩（`0xC0000005`，游戏一闪而退，看着像"打不开游戏"）。`launch_test.go` 钉着这条。
 - 启动参数支持引号、占位符 `{RomFullPath}` `{RomDir}` `{RomName}` `{RomBase}`；
   工作目录设为 exe 所在目录，RetroArch 才能找到 `cores/`、`system/`。
 - **核心只存名字**：`sim.core = geolith / mame / fbneo …`，启动时才拼成

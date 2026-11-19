@@ -85,10 +85,13 @@ func (a *ADB) Cover(rom string) ([]byte, error) {
 	return nil, ErrNoCover
 }
 
-// Info is what a romset's page says about the game: who built it, when, what
-// kind of game it is, and which MAME driver runs it. Empty strings for what
-// the page does not fill.
+// Info is what a romset's page says about the game: what it is called, who
+// built it, when, what kind of game it is, and which MAME driver runs it. Empty
+// strings for what the page does not fill.
 type Info struct {
+	// Title is the game's own name, "Alien vs. Predator" — the page's 「Short
+	// name」, without the region and revision the romset's full name carries.
+	Title string
 	Maker string
 	Year  string
 	Genre string
@@ -104,27 +107,12 @@ func (a *ADB) Info(rom string) (Info, error) {
 	if rom == "" {
 		return info, ErrNoCover
 	}
-	if a.Pause > 0 {
-		time.Sleep(a.Pause)
-	}
-	req, err := http.NewRequest(http.MethodGet, a.detail(rom), nil)
-	if err != nil {
-		return info, err
-	}
-	req.Header.Set("User-Agent", "GameRoom/1.0 (cover fetch)")
-	resp, err := a.Client.Do(req)
-	if err != nil {
-		return info, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return info, ErrNoCover
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	body, err := a.page(rom)
 	if err != nil {
 		return info, err
 	}
 	page := string(body)
+	info.Title = adbValue(page, "Short name")
 	info.Maker = adbValue(page, "Manufacturer")
 	info.Year = adbValue(page, "Year")
 	info.Genre = adbValue(page, "Genre")
@@ -133,6 +121,42 @@ func (a *ADB) Info(rom string) (Info, error) {
 		return info, ErrNoCover
 	}
 	return info, nil
+}
+
+// page fetches a romset's page. ADB throttles a burst by refusing the TLS
+// handshake for a while, so a failed try is worth repeating after a pause.
+func (a *ADB) page(rom string) ([]byte, error) {
+	var last error
+	for try := 0; try < 3; try++ {
+		if try > 0 {
+			time.Sleep(time.Duration(2<<try) * time.Second)
+		}
+		if a.Pause > 0 {
+			time.Sleep(a.Pause)
+		}
+		req, err := http.NewRequest(http.MethodGet, a.detail(rom), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", "GameRoom/1.0 (cover fetch)")
+		resp, err := a.Client.Do(req)
+		if err != nil {
+			last = err
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, ErrNoCover
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		resp.Body.Close()
+		if err != nil {
+			last = err
+			continue
+		}
+		return body, nil
+	}
+	return nil, last
 }
 
 // adbValue reads the value the page's table puts after a caption:

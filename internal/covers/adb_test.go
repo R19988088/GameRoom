@@ -66,6 +66,10 @@ func TestCoverIgnoresAnErrorPage(t *testing.T) {
 // and the driver source — a link, not a dettaglio — is the 基板.
 func TestInfoReadsThePage(t *testing.T) {
 	page := `<div class="table_row new_row">
+	  <div class="table_caption">Short name: </div>
+	  <div class="table_value"> <span class="dettaglio">Alien vs. Predator</span> <div>…</div></div>
+	</div>
+	<div class="table_row new_row">
 	  <div class="table_caption">Manufacturer: </div>
 	  <div class="table_value"> <span class="dettaglio">SNK</span> <div>…</div></div>
 	</div>
@@ -93,6 +97,11 @@ func TestInfoReadsThePage(t *testing.T) {
 	}
 	if info.Maker != "SNK" || info.Year != "1998" || info.Genre != "Fighter" {
 		t.Errorf("got %+v", info)
+	}
+	// The page's 「Short name」 is the game's own title, and it is what a
+	// romset still filed under "avsp" should read.
+	if info.Title != "Alien vs. Predator" {
+		t.Errorf("title = %q", info.Title)
 	}
 	if info.Board != "snk/neogeo.cpp" {
 		t.Errorf("driver source = %q, want snk/neogeo.cpp", info.Board)

@@ -110,8 +110,21 @@ func InstallShader(t Target, shader string) error {
 }
 
 // shaderPass returns the path from a "shaderN = "path"" line.
+//
+// The preset also opens with `shaders = "8"`, the count of passes. That line
+// looks like a pass to a careless prefix test, and rewriting it to a path
+// makes RetroArch read the preset as eight passes that live in a folder called
+// 8 — it then dies in the shader compiler. Only a numeric suffix counts as a
+// pass.
 func shaderPass(line string) (string, bool) {
 	if !strings.HasPrefix(line, "shader") {
+		return "", false
+	}
+	i := len("shader")
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i == len("shader") || i >= len(line) || line[i] != ' ' {
 		return "", false
 	}
 	eq := strings.Index(line, "=")

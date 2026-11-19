@@ -57,14 +57,20 @@ type Game struct {
 	ID          int
 	PlatformKey string
 	Menu        string // "" for games that belong to no menu
-	Title       string
-	RomPath     string // relative to rom/, as "arc/SNK/dino.zip"
-	Size        int64  // bytes, 0 when unknown
-	Cover       string // relative to 数据/, as "covers/arc/dino.png", "" when none
-	Year        int
-	Publisher   string
-	Genre       string
-	Region      string
+	// Title is the game's title. For an imported arcade romset it starts as
+	// the romset's file name — "avsp", which is a key, not a name — and the
+	// catalogue's own title replaces it once the metadata has been fetched.
+	Title string
+	// Name is the title the catalogue gives the game ("Alien vs. Predator"),
+	// "" until it is known. The card shows Title, which Load fills from here.
+	Name      string
+	RomPath   string // relative to rom/, as "arc/SNK/dino.zip"
+	Size      int64  // bytes, 0 when unknown
+	Cover     string // relative to 数据/, as "covers/arc/dino.png", "" when none
+	Year      int
+	Publisher string
+	Genre     string
+	Region    string
 	// Board is the arcade hardware a romset runs on, as MAME names its driver
 	// source ("snk/neogeo.cpp"): the 基板 the 街机 shelf files games by.
 	Board    string

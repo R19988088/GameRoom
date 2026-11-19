@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/egoist/mygo/plugins/glass"
@@ -16,6 +17,9 @@ import (
 // the floating bar, the platform's menus float below it, and the bar itself
 // is a plate of glass the covers show through.
 func (a *App) view(c *ui.Context) {
+	// What the last frame's menu clicks queued runs first, so this frame's
+	// lines are cut from the games as they are now.
+	a.runQueue()
 	c.SetTheme(&a.theme)
 	t := &a.theme
 	c.Root().Background(t.Background)
@@ -515,11 +519,22 @@ func (a *App) card(c *ui.Context, t *ui.Theme, idx int) {
 		})
 	})
 
-	if b.DoubleClicked() {
+	// A click chooses the card; a second one on the same card, soon enough,
+	// starts it. Enter on the chosen card does the same — the key reaches the
+	// element that has the focus, and the card takes it when it is pressed.
+	if b.DoubleClicked() || b.Shortcut(0, ui.KeyEnter) {
 		a.chosen = idx
 		a.launchChosen()
 	} else if b.Clicked() {
-		a.chosen = idx
+		now := time.Now()
+		if a.lastClick == g.ID && now.Sub(a.lastClickAt) < 650*time.Millisecond {
+			a.lastClick, a.lastClickAt = 0, now
+			a.chosen = idx
+			a.launchChosen()
+		} else {
+			a.lastClick, a.lastClickAt = g.ID, now
+			a.chosen = idx
+		}
 	}
 
 	// The card's own menu, on the right button: its fields can be corrected
@@ -539,11 +554,13 @@ func (a *App) card(c *ui.Context, t *ui.Theme, idx int) {
 }
 
 // cardField is one row of the card's menu: which column it writes, what it is
-// called on this shelf, what the game has there now, and whether it can be
-// corrected — 游戏名 is the one that cannot.
+// called on this shelf, what the game has there now, and how it is corrected —
+// editable, or 游戏名 which is typed in rather than picked from a list (there
+// is no list of every name in the shelf worth showing).
 type cardField struct {
 	key, label, value string
 	editable          bool
+	typeIn            bool
 }
 
 // fields are the rows a card's menu offers, in the order the menu lists them:
@@ -565,11 +582,13 @@ func (a *App) fields(g library.Game) []cardField {
 		core = "未指定"
 	}
 	return []cardField{
-		{"machine", hardware, a.lib.MachineNameOf(g), true},
-		{"publisher", "厂商", maker, arcade},
-		{"genre", "游戏类型", genre, true},
-		{"core", "核心", core, true},
-		{"title", "游戏名", g.Title, false},
+		{"machine", hardware, a.lib.MachineNameOf(g), true, false},
+		{"publisher", "厂商", maker, arcade, false},
+		{"genre", "游戏类型", genre, true, false},
+		{"core", "核心", core, true, false},
+		// 名字能改：双击（或单击）直接在输入框里改。它不是一列，所以没有
+		// 可选的值列表。
+		{"title", "游戏名", g.Title, true, true},
 	}
 }
 
@@ -603,12 +622,14 @@ func (a *App) cardMenuPanel(c *ui.Context, t *ui.Theme, panel ui.Element, g libr
 }
 
 // fieldList is the menu at rest: one row per field, its value on the right.
+// 游戏名那一行能改名，但点了不筛：一筛整个货架只剩一张卡，那不是看名字的
+// 意思。所以它单击直接进输入框，不弹值列表。
 func (a *App) fieldList(c *ui.Context, t *ui.Theme, g library.Game) {
 	for _, f := range a.fields(g) {
 		f := f
 		row := ui.ButtonBase(c).Height(32).PaddingX(9).Radius(9).Gap(10).
 			AlignItems(ui.Center)
-		if f.editable && row.Hovered() {
+		if row.Hovered() {
 			row.Background(ui.Hex("#ffffff10"))
 		}
 		row.Children(func() {
@@ -616,20 +637,15 @@ func (a *App) fieldList(c *ui.Context, t *ui.Theme, g library.Game) {
 			ui.Text(c, f.value).FontSize(12).FontWeight(500).
 				TextColor(t.Text.Alpha(0.9)).SingleLine().Grow(1)
 		})
-		if f.editable && row.DoubleClicked() {
+		// 游戏名没有可选的值列表，所以单击就直接进输入框；别的字段单击先看
+		// 能改成什么，双击才自己打字。
+		switch {
+		case f.typeIn && (row.Clicked() || row.DoubleClicked()):
 			a.cardField, a.cardEdit, a.cardText = f.key, true, f.value
-		} else if row.Clicked() {
-			if f.key == "title" {
-				// 名字不能改，但点一下就按它筛：一眼能看见这一张
-				a.query, a.menu = f.value, ""
-				a.refilter()
-				a.status = "已按名字筛选：" + f.value
-				a.shutMenu()
-				continue
-			}
-			if f.editable {
-				a.cardField, a.cardEdit = f.key, false
-			}
+		case row.DoubleClicked():
+			a.cardField, a.cardEdit, a.cardText = f.key, true, f.value
+		case row.Clicked():
+			a.cardField, a.cardEdit = f.key, false
 		}
 	}
 	ui.Row(c).Height(26).PaddingX(9).AlignItems(ui.Center).Children(func() {

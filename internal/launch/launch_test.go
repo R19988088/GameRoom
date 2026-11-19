@@ -123,6 +123,11 @@ func TestInstallShader(t *testing.T) {
 			t.Fatalf("global preset missing %s:\n%s", want, data)
 		}
 	}
+	// The pass count is a number, not a path: rewriting it as one makes
+	// RetroArch read a folder called 8 and crash in the shader compiler.
+	if !strings.Contains(string(data), `shaders = "2"`) {
+		t.Fatalf("the pass count was rewritten:\n%s", data)
+	}
 
 	// A preset that is not there changes nothing and returns no error.
 	before := string(data)

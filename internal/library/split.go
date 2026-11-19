@@ -14,6 +14,7 @@ import (
 //	家用机 → 机种（FC / SFC / PS …）    ⇄ 厂商（NINTENDO / SONY …）
 //	掌机   → 机种（GBA / PSP …）        ⇄ 厂商（NINTENDO / SONY / SNK …）
 //	麻将   → 年份（2022 … 1986），只有这一种
+//	DOS&PC98 → 机种（DOS / PC98）      ⇄ 厂商（松岗 / 欢乐盒 / elf …）
 const (
 	AxisMachine = "machine" // 机种
 	AxisMaker   = "maker"   // 厂商
@@ -266,6 +267,9 @@ func (l *Library) menuName(g Game, p Platform, axis string) string {
 		if p.Group == "arcade" {
 			return PublisherOf(g)
 		}
+		if p.Group == DOSGroup {
+			return dosMaker(g)
+		}
 		return makerOf(l, g, p)
 	case AxisYear:
 		return yearOf(g.Year)
@@ -331,7 +335,21 @@ func (l *Library) MakerOf(g Game) string {
 	if p.Group == "arcade" {
 		return PublisherOf(g)
 	}
+	if p.Group == DOSGroup {
+		return dosMaker(g)
+	}
 	return makerOf(l, g, *p)
+}
+
+// dosMaker is who published a DOS or PC-98 game: the collection's catalogue
+// names the house that released it here (松岗, 欢乐盒), and a Japanese release
+// keeps its own maker (elf, AliceSoft). It is the game's publisher, not the
+// maker of the machine, which is the axis the shelf files these by.
+func dosMaker(g Game) string {
+	if m := strings.TrimSpace(g.Publisher); m != "" {
+		return m
+	}
+	return "未标注厂商"
 }
 
 // Game returns the game with id, nil when there is none.

@@ -568,11 +568,15 @@ type cardField struct {
 // its name.
 func (a *App) fields(g library.Game) []cardField {
 	hardware := "机种"
-	if p := a.lib.Platform(g.PlatformKey); p != nil && p.Group == "arcade" {
+	p := a.lib.Platform(g.PlatformKey)
+	if p != nil && p.Group == "arcade" {
 		hardware = "基板"
 	}
 	maker := a.lib.MakerOf(g)
-	arcade := hardware == "基板"
+	// 厂商 能改的只有街机与 DOS 货架：那里的厂商是游戏自己的发行商，写错了
+	// 就该能改。家用机的厂商是机器本身的制造商（NINTENDO、SONY），改它等于
+	// 说这台 FC 不是任天堂做的，没有意义。
+	editableMaker := p != nil && (p.Group == "arcade" || p.Group == library.DOSGroup)
 	genre := g.Genre
 	if genre == "" {
 		genre = "未标注类型"
@@ -583,7 +587,7 @@ func (a *App) fields(g library.Game) []cardField {
 	}
 	return []cardField{
 		{"machine", hardware, a.lib.MachineNameOf(g), true, false},
-		{"publisher", "厂商", maker, arcade, false},
+		{"publisher", "厂商", maker, editableMaker, false},
 		{"genre", "游戏类型", genre, true, false},
 		{"core", "核心", core, true, false},
 		// 名字能改：双击（或单击）直接在输入框里改。它不是一列，所以没有

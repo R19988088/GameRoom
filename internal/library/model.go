@@ -26,12 +26,15 @@ type Platform struct {
 }
 
 // Groups are the shelves the top bar switches between. 麻将 is a shelf of
-// its own: it is a different kind of table from the arcade.
+// its own: it is a different kind of table from the arcade. DOS & PC-98 share
+// one shelf as well: both are a computer in a box, both boot a Japanese or
+// Taiwanese release from a disk, and neither is an arcade board.
 var Groups = []struct{ Key, Name string }{
 	{"arcade", "街机"},
 	{"mahjong", "麻将"},
 	{"console", "家用机"},
 	{"handheld", "掌机"},
+	{DOSGroup, "DOS&PC98"},
 	{"pc", "PC"},
 }
 

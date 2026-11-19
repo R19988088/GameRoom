@@ -10,11 +10,15 @@
 ```
 模拟器/        模拟器本体。RetroArch 放在 模拟器/RetroArch/（retroarch.exe 与 cores/、system/ 同级）
 rom/           游戏文件，按平台分子目录：rom/arc、rom/fc、rom/sfc、rom/ps、rom/SEGA、
-               rom/掌机、rom/任天堂、rom/微软、rom/majiang、rom/3DO
-数据/          launcher.db（SQLite）、config.json、covers/<平台>/（封面副本，735 张 / 153 MB）
-exe/           构建产物 simui-d.exe
+               rom/掌机、rom/任天堂、rom/微软、rom/majiang、rom/3DO、rom/dos、rom/pc98
+数据/          launcher.db（SQLite）、config.json、covers/<平台>/（封面副本）
+exe/           构建产物 GameRoom.exe
 源码/          Go 源码（go.mod、main.go、internal/）
 ```
+
+`rom/dos` 是**原样的 zip**（游戏自带 `play.BAT` 与 `dosbox.conf`，DOSBox Pure 直接挂载它），
+`rom/pc98` 是**一个游戏一个目录、目录里是镜像**（`rom/pc98/<游戏名>/MEI.hdi`）：PC-98 的镜像
+在不同游戏里常同名（`NANPA2.hdi`、`SHIKUMI.hdi`），扁平放会互相覆盖，NP2kai 也只认镜像、不认 zip。
 
 `rom/*` 目前是 Windows 目录联接（junction），指向原 simUI 安装里的
 大文件（rom 86GB），所以本目录不占空间；`模拟器/RetroArch` 已经是收干净的实体拷贝（5.7GB）。换机器时：
@@ -94,6 +98,7 @@ chip 里的「分类」按货架固定，由 `menuAxis` 决定，`(*Library).spl
 | 街机 | `publisher` | `PublisherOf`：先 `game.publisher`（ADB 抓的，`makerName` 大写去空白、`/` 取第一段）+ `makers` 别名表（彩京→PSIKYO、STV/NAOMI/NAOMI2/MODEL2/MODEL3→SEGA），再退回原目录名，`notAMaker`（ACT/STG/OTHERS/古老的游戏/不能运行/未分类）→ `未标注厂商` |
 | 麻将 | `year` | `yearOf`，0 → `年份未知` |
 | 掌机 | `core` | `machineOf`：mgba→GBA、ppsspp→PSP、mednafen_ngp→NGP、gambatte→GB、mesen→FC，否则核心名，空→`未知机种` |
+| DOS&PC98 | `machine` ⇄ `publisher` | 机种=平台（DOS / PC98）；厂商=`dosMaker`，**用游戏自己的 `publisher`，不改大写**（松岗 / 欢乐盒 / elf 这类中文发行商），空→`未标注厂商` |
 | 家用机 / PC | 空 | 平台本身即机种，`menu` 清空、不产生菜单 |
 
 排序：`unknownRank`（`未标注厂商` / `年份未知` / `未知机种` 及 `未标注` 前缀）一律排最后；
@@ -118,6 +123,9 @@ chip 里的「分类」按货架固定，由 `menuAxis` 决定，`(*Library).spl
   （`CASE WHEN` 保护空值，不会把已有的值擦掉），标题走 `library.SetName`。
 - 目标：`missingCovers` 只认 `Group == "arcade"`；`missingInfo` 认街机 + 麻将里
   `publisher = ''` / `year = 0` / `board = ''` **或者标题还是 rom 文件名**的。
+  **DOS&PC98 不走 ADB**（ADB 只有 MAME romset）：封面来自老 DOS 合集的 `theme/title.dos`、
+  `theme/title.PC98`（640×400 的标题画面，横的，正是卡片要的比例），盒图 `boxart.dos` 作后备，
+  统一转成 `数据/covers/<平台>/<rom 文件名>.png`。
 - 入口：界面状态栏「补全封面 N」（只在有缺口时出现，`a.fetching` 期间显示 `补全中 n/N · 已新增 m`）
   和无窗口 CLI `-fetch-covers` / `-fetch-info` / `-limit`（**必须跑 exe**，`go run` 的
   `findRoot()` 找不到 `rom/模拟器/数据`）。
@@ -284,6 +292,37 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
 
 库里已按此校正过：`587` 局 console/handheld 全部改到规范核心、无缺失 dll、无空 sim；唯一外部的是
 2 局 Switch（Ryujinx）。改动前备份在 `数据/launcher.db.bak_before_console_std_*`。
+
+## DOS&PC98 货架（`internal/library/dos.go` + `-import-dos`）
+
+老合集 `E:\game\0_GALGAMEonDOSUI` 里有 **6 套独立 DOSBox**（X / X32 / ECE / GOG / Staging / SVN Daum）
+＋ `np2fmgen` ＋ 自带一份 RetroArch（`dosbox_core`、`dosbox_pure`、`np2kai` 三支核心）＋ 一个
+`loader.bat` 按 7 种 `dostype` 拼命令行。这套东西只在 Windows 上成立，而且没有 shader、没有窗口接管，
+所以**一套都不进本工程**，全部换成 RetroArch 的两支跨平台核心：
+
+| 机种 | 平台 key | 核心 | 内容 | 老合集里的对应 |
+| --- | --- | --- | --- | --- |
+| DOS | `dos` | `dosbox_pure` | 原样 zip | `RA-DOS-pure`（`sim` 表里本来就有这条） |
+| PC98 | `pc98` | `np2kai` | `.hdi/.fdi/.d88` 镜像 | `RA-core-NP2kai` |
+
+导入：`exe\GameRoom.exe -import-dos "E:\game\0_GALGAMEonDOSUI"`
+
+- **只动这一个货架**：`ImportDOS` 删的是 `platform_key in ('dos','pc98')` 的行，
+  `library.Import`（读 `data.dll` 的那个）会 `DELETE FROM game/menu/sim/platform` 全表重写，
+  **不能拿它导 DOS**，否则 936 局街机/家用机一起没了。重复跑 `-import-dos` 安全。
+- 元数据来自 `list.csv`（**UTF-8 带 BOM，不是 GBK**；列名 `文件名,游戏名称,类型,发行日期,发行商,地区…`），
+  按 `文件名` 去掉扩展名匹配 rom 文件名；`title` 存 rom 名、`name` 存中文标题（和街机那套一致）。
+- 表里没有的游戏（`list.csv` 只有 83 行里的 81 行）从文件名里挖 `(1994)(HimeyaSoft)`：
+  `fromRomName` 补年份与厂商，`(TW)/(JP)` 这类两位大写地名不当厂商；`makerAlias` 把
+  `天堂鳥→天堂鸟` 这类简繁两种写法并成一个 chip。
+- PC98 的 zip 必须**先解出镜像**（`7z x -o"rom\pc98\<游戏名>" *.hdi *.fdi *.d88`），
+  `imageIn()` 从游戏目录里挑镜像——所以一个游戏一个目录。
+- `np2kai` 要 `模拟器/RetroArch/system/np2kai/`（`bios.rom`、`FONT.ROM`、`font.bmp`、
+  `2608_*.wav`、`np2kai.cfg`）。老合集那份 `np2kai.cfg` 里硬写了别人的
+  `HDD1FILE = D:\DOSBox\...\MEI.hdi`（会把某款游戏强行挂在 C 盘）和 `fontfile` 绝对路径，
+  **已清空并改到本工程路径**。
+- DOSBox Pure 起来是它自己的 START MENU（列出 zip 里的 exe）：按 `→` 选 “Set Auto Start”、
+  回车跑，之后这款游戏就记住自动启动（每款第一次要点一下）。CRT 滤镜照常生效（640×400 画面）。
 
 ## 外部程序的滤镜（`takeover_windows.go`）
 

@@ -26,10 +26,12 @@ GameRoom.exe
   Magpie/               给外部程序套 CRT 的捕获层（可选，见下）
 rom/
   arc/  fc/  sfc/  ps/  SEGA/  掌机/  任天堂/  微软/  majiang/  3DO/
+  dos/                   DOS 游戏，原样 zip（DOSBox Pure 直接挂载）
+  pc98/                  PC-98，一个游戏一个目录，目录里是 .hdi/.fdi/.d88 镜像
 数据/
   launcher.db           SQLite：平台、分类、游戏、模拟器、设置
   config.json           simuiRoot（仅首次导入用）、crtShader
-  covers/<平台>/        封面副本（约 735 张 / 153 MB）
+  covers/<平台>/        封面副本
 ```
 
 `rom/*` 可以是 Windows 目录联接（junction）或 macOS/Linux 的软链接，指向已有的大文件目录，
@@ -102,6 +104,7 @@ internal/library/  数据模型、SQLite、旧库导入、封面搬迁
 | 麻将 | 年份 | 只有年份，不显示切换 | 2022 → 2006 → … → 1986，倒序时间线，未知年份排最后 |
 | 家用机 | 机种 | 机种 ⇄ **厂商** | 机种：FC / SFC / SEGA / 任天堂 / 3DO …<br>厂商：NINTENDO 417 / SEGA 64 / SONY 14 / 3DO 1 |
 | 掌机 | 机种 | 机种 ⇄ **厂商** | 机种：GBA / PSP / NGP<br>厂商：NINTENDO / SONY / SNK（按核心映出的机器归属） |
+| DOS&PC98 | 机种 | 机种 ⇄ **厂商** | 机种：DOS 77 / PC98 6<br>厂商：松岗 / 欢乐盒 / 天堂鸟 / 华义 / 飞鲸 / elf … 按游戏自己的发行商 |
 | PC | 机种 | 机种 ⇄ 厂商 | 同上，机种就是平台本身 |
 
 口径由 `internal/library/split.go` 的 `AxesOf(group)` 定，切一次就把整货架每个游戏的 `menu`
@@ -117,14 +120,13 @@ internal/library/  数据模型、SQLite、旧库导入、封面搬迁
 
 在封面上点右键，卡片自己的菜单列着它的五个字段，值在右边：
 
-| 字段 | 街机 | 家用机 / 掌机 / PC |
+| 字段 | 街机 / DOS&PC98 | 家用机 / 掌机 / PC |
 | --- | --- | --- |
 | 机种 / 基板 | 基板（`board`，MAME driver source 折出来的牌子） | 机种（家用机=平台，掌机=核心映出的机器） |
 | 厂商 | 可改（`publisher`） | 只读：机子的厂商由平台/核心推出来 |
 | 游戏类型 | 可改（`genre`） | 同左 |
 | 核心 | 可改（`core`，只对这一局生效） | 同左 |
-| 游戏名 | 可改（
-ame）；点一下就直接进输入框，点了不筛 | 同左 |
+| 游戏名 | 可改（`name`）；点一下就直接进输入框，点了不筛 | 同左 |
 
 卡片上写的就是**游戏名，不是 rom 文件名**：导入时它是 rom 主名（`avsp`），
 跑一次 `-fetch-info` 就从 Arcade Italia 拿到游戏的正式标题（`Alien vs. Predator`）写进 `game.name`，
@@ -251,6 +253,37 @@ Xenia、直接双击的 PC 游戏）拿不到 shader，所以由一份外部捕�
 1. 把能上 RetroArch 核心的模拟器换回核心（`citra`/`dolphin`/`pcsx2`/`dosbox` 在 `cores/` 里都有），
    这样它们和街机走同一条 shader 管线，效果 100% 一致；
 2. 把 `phosphor-line` 的 pass 移植成 MagpieFX（HLSL compute），需要逐个 pass 改写，工作量不小。
+
+## DOS & PC98：一个货架，两支核心
+
+DOS 游戏与 PC-98 游戏在老合集里是「**6 套独立 DOSBox + np2fmgen + 自带一份 RetroArch**」，
+靠一个 `loader.bat` 按 7 种 `dostype` 拼命令行。那套东西只在 Windows 上成立，也没有 shader。
+这里全部换成 RetroArch 的两支跨平台核心，**一套独立 DOSBox 都不放**：
+
+| 机种 | 平台目录 | 核心 | 内容 | 老合集里的对应 |
+| --- | --- | --- | --- | --- |
+| DOS | `rom/dos/` | `dosbox_pure` | 原样 zip（游戏自带 `play.BAT` + `dosbox.conf`） | `RA-DOS-pure` |
+| PC98 | `rom/pc98/<游戏名>/` | `np2kai` | `.hdi` / `.fdi` / `.d88` 镜像 | `RA-core-NP2kai` |
+
+- **PC98 必须解镜像**：老合集里是 `zip` 套 `hdi`（`NANPA2.hdi`、`MEI.hdi`…），NP2kai 只认镜像。
+  镜像在不同游戏里常同名，所以一个游戏一个目录。
+- **np2kai 需要 system 资源**：`模拟器/RetroArch/system/np2kai/`（`bios.rom`、`FONT.ROM`、
+  `font.bmp`、`2608_*.wav`、`np2kai.cfg`）。那份 `np2kai.cfg` 原来写死了别人机器上的
+  `HDD1FILE`（会把某款游戏强挂到 C 盘），已清空并把 `fontfile` 指到本工程。
+- **导入**（一次性，可重复跑；只重写这一个货架，不动街机/家用机）：
+
+  ```powershell
+  .\exe\GameRoom.exe -import-dos "E:\game\0_GALGAMEonDOSUI"
+  ```
+
+  读合集的 `list.csv`（UTF-8 CSV）拿中文标题、年份、发行商、类型；表里没有的从
+  `Name (1994)(HimeyaSoft)(TW)` 这样的文件名里补厂商与年份。当前 83 局：
+  DOS 77（松岗 / 欢乐盒 / 天堂鸟 / 华义 / 飞鲸 …）、PC98 6。
+- **封面**：来自合集的 `theme/title.dos`、`theme/title.PC98`（640×400 的标题画面，横的，
+  正对卡片比例），盒图 `boxart.dos` 兜底，统一转成 `数据/covers/<平台>/<rom 文件名>.png`。
+  83 局全部有封面，不走 Arcade Italia（ADB 只索引 MAME romset）。
+- **DOSBox Pure 的第一次**：它起来是自己的 START MENU，列出 zip 里的 exe，
+  按 `←/→` 选「Set Auto Start」再回车跑；之后这款游戏会记住自动启动。CRT 滤镜照常生效。
 
 ## 从 simUI 迁移（一次性）
 

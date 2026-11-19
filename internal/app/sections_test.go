@@ -58,9 +58,84 @@ func TestBodyIsFiledByTheStandard(t *testing.T) {
 	}
 }
 
-// TestBodyStartsUnderTheBar: the first line sits below the pills but the
-// scroll is clipped at the window's top, so a scrolled card is never cut in a
-// band — it runs up behind them.
+// TestGroupIsFiledByNames: inside a group the cards read as a list, by their
+// names, with 街霸2 ahead of 街霸10.
+func TestGroupIsFiledByNames(t *testing.T) {
+	l := threeMakers()
+	l.Games = []library.Game{
+		{ID: 1, PlatformKey: "arc", Title: "街霸10", Publisher: "CAPCOM"},
+		{ID: 2, PlatformKey: "arc", Title: "街霸2", Publisher: "CAPCOM"},
+		{ID: 3, PlatformKey: "arc", Title: "Alpha", Publisher: "CAPCOM"},
+	}
+	a := testApp(l, "arcade", "arc")
+	want := []string{"Alpha", "街霸2", "街霸10"}
+	for i, w := range want {
+		if a.shown[i].Title != w {
+			t.Errorf("shown[%d] = %q, want %q (order: %v)", i, a.shown[i].Title, w, titles(a.shown))
+		}
+	}
+}
+
+func titles(gs []library.Game) []string {
+	out := make([]string, 0, len(gs))
+	for _, g := range gs {
+		out = append(out, g.Title)
+	}
+	return out
+}
+
+// TestCardMenuOffersTheFields: the right-click menu lists the hardware, the
+// maker, the genre, the core and the name — and only the name is fixed.
+func TestCardMenuOffersTheFields(t *testing.T) {
+	l := threeMakers()
+	l.Games[0].Genre, l.Games[0].Board = "Fighter", "snk/neogeo.cpp"
+	a := testApp(l, "arcade", "arc")
+	fs := a.fields(a.shown[0])
+	var keys []string
+	for _, f := range fs {
+		keys = append(keys, f.key)
+	}
+	if len(fs) != 5 || keys[0] != "machine" || keys[4] != "title" {
+		t.Fatalf("fields = %v", keys)
+	}
+	if fs[0].label != "基板" || fs[0].value != "MVS" {
+		t.Errorf("hardware row = %+v, want 基板 MVS", fs[0])
+	}
+	if fs[1].value != "CAPCOM" {
+		t.Errorf("maker row = %+v", fs[1])
+	}
+	if !fs[1].editable {
+		t.Error("the 厂商 of an arcade game must be correctable")
+	}
+	if fs[4].editable {
+		t.Error("游戏名 must not be editable")
+	}
+	// Console: 机种 is the platform, and the maker is the machine's maker.
+	a = testApp(fakeLibrary(), "console", "fc")
+	fs = a.fields(a.shown[0])
+	if fs[0].label != "机种" || fs[0].value != "FC" {
+		t.Errorf("console hardware row = %+v, want 机种 FC", fs[0])
+	}
+	if fs[1].editable {
+		t.Error("the maker of a console is the machine's, not a column")
+	}
+}
+
+// TestAssignWritesTheField: a correction lands in the library, in the body, and
+// in the file the next start reads.
+func TestAssignWritesTheField(t *testing.T) {
+	a := testApp(threeMakers(), "arcade", "arc")
+	id := a.shown[0].ID
+	a.menuGame = id
+	a.assign("publisher", "TAITO")
+	g := a.lib.Game(id)
+	if g == nil || g.Publisher != "TAITO" {
+		t.Fatalf("game %d = %+v after the correction", id, g)
+	}
+	if a.status == "" || a.status == "就绪" {
+		t.Error("nothing was said about the correction")
+	}
+}
 func TestBodyStartsUnderTheBar(t *testing.T) {
 	a := testApp(threeMakers(), "arcade", "arc")
 	a.layout(1500)

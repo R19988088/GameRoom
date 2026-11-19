@@ -153,7 +153,20 @@ chip 里的「分类」按货架固定，由 `menuAxis` 决定，`(*Library).spl
   之间露出来（用户要的"封面透到玻璃下面"）。旧 `GridView` 的 `Padding` 会把裁剪线推到 padding
   的下沿，于是滚起来某一行只剩标题、封面被切一条带 —— 那就是"顶部封面被挡住"的根因，别再退回
   `GridView`。
-- **下列按分类标准分组**：`file()` 先按 chip 的次序（bar 上的名次，未标注一律排最后）排
+- **顶栏三颗胶囊一模一样**：左边的货架按钮（`shelfSwitch`）和右边的搜索框（`searchField`）都走
+  `chipBase(c, 32, …)`，跟中间的 chip 同形同高（32）、同半径（16）、同一层玻璃。顶栏 `Row` 仍是
+  `Height(46)`，三颗矮胶囊居中摆在里面；**不要**再给左右两侧套 46 高的整块玻璃——那会立刻又
+  「套层」。`layout_test.go` 的 `TestTopBarIsFlat` / `TestTopBarPillsAreOneHeight` 钉着这条。
+- **组内按游戏名排序**：`file()` 先按 chip 名次分组，组内用 `titleLess`/`naturalKey` 按名字排——
+  数字按数值比（街霸2 在 街霸10 前面），其余按码位比，中文顺序稳定。机种轴那种只有一组的货架
+  也要排序（`len(a.chips)==0` 的分支里也要排一遍）。
+- **卡片右键菜单**（`ui.ContextMenuBase`）：每张卡用自己的 open 指针（`a.opens map[int]*bool`），
+  否则弹层会锚到最后建出来的那张卡上。菜单先列五个字段——机种/基板、厂商、游戏类型、核心、游戏名，
+  值在右边：**单击**换到「选择值」列表（值取该货架已有的，`a.values`），**双击**换到输入框
+  （回车或「保存」写入）。`游戏名` 只读，点一下等于把它填进搜索框、筛出这一张。写入走
+  `library.SetField` / `library.SetPlatform`，改完就地重排（`SplitGroup` + `refilter`）并保留滚动位置。
+  街机的「厂商」写 `publisher`；家用机/掌机的「厂商」是机子厂商（由平台/核心推出来的，不给改），
+  只有「机种」能改：掌机改机种=改 `core`，家用机改机种=改 `platform_key`。
   `a.shown`，再按 `menu` 切成 `a.sections`；每节开头插一个标题行（组名大写 + 右侧灰色计数），
   点标题 `chooseMenu(该组)` 直接筛选到该组。`chips` 为空（家用机/PC 的机种轴：机种就是平台）
   时只有一节且不画标题。
@@ -291,4 +304,5 @@ RetroArch 本身不是 simUI 的一部分。
 - `internal/app` 管界面：状态、筛选、封面异步解码、`view.go` 里的布局。
 - 图片必须自己读文件再解码（`ui.DecodeBitmapScaled`），MyGo 的 `ui.Image` 只吃 `*Bitmap`。
 - 界面配色在 `buildTheme()`：近黑底、暖橙 accent，改主题只改这一处。
+
 

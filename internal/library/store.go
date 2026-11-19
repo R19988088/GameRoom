@@ -193,6 +193,47 @@ func SetCover(db *sql.DB, gameID int, cover string) error {
 	return err
 }
 
+// SetPlatform files a game under another platform: a rom imported into the
+// wrong machine is corrected by moving it, not by copying it.
+func SetPlatform(db *sql.DB, gameID int, platformKey string) error {
+	_, err := db.Exec(`UPDATE game SET platform_key = ? WHERE id = ?`, platformKey, gameID)
+	return err
+}
+
+// Fields a game can be corrected in from the card's own menu, named as the
+// menu names them. They are a whitelist: the statement below is fixed text, so
+// a field name never reaches the SQL as a parameter.
+const (
+	FieldBoard     = "board"
+	FieldPublisher = "publisher"
+	FieldGenre     = "genre"
+	FieldCore      = "core"
+	FieldTitle     = "title"
+)
+
+// SetField writes one column of one game, so a wrong 厂商 or 基板 can be fixed
+// without opening the database. An unknown field is refused rather than
+// silently ignored.
+func SetField(db *sql.DB, gameID int, field, value string) error {
+	var q string
+	switch field {
+	case FieldBoard:
+		q = `UPDATE game SET board = ? WHERE id = ?`
+	case FieldPublisher:
+		q = `UPDATE game SET publisher = ? WHERE id = ?`
+	case FieldGenre:
+		q = `UPDATE game SET genre = ? WHERE id = ?`
+	case FieldCore:
+		q = `UPDATE game SET core = ? WHERE id = ?`
+	case FieldTitle:
+		q = `UPDATE game SET title = ? WHERE id = ?`
+	default:
+		return fmt.Errorf("library: unknown field %q", field)
+	}
+	_, err := db.Exec(q, strings.TrimSpace(value), gameID)
+	return err
+}
+
 // SetInfo records what the game's page says: manufacturer, year, genre, and
 // the driver source the 基板 is read from. An empty value leaves the column as
 // it was.

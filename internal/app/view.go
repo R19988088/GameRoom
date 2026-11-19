@@ -63,7 +63,7 @@ func (a *App) glass(el ui.Element) ui.Element {
 }
 
 // shelfSwitch is the left pill: the shelf shown, with its menu listing all
-// five.
+// five. It is the same short pill as the bar's chips, so the row has one shape.
 func (a *App) shelfSwitch(c *ui.Context, t *ui.Theme) {
 	name, count := "街机", 0
 	for _, g := range library.Groups {
@@ -75,12 +75,13 @@ func (a *App) shelfSwitch(c *ui.Context, t *ui.Theme) {
 		count = a.lib.GameCountOf(a.group)
 	}
 
-	anchor := a.glass(ui.ButtonBase(c).Height(46).PaddingX(16).AlignItems(ui.Center).Gap(8))
+	anchor := a.chipBase(c, 32, false)
+	anchor.PaddingX(14)
 	if anchor.Hovered() {
-		anchor.Border(1, ui.Hex("#ffffff3d"))
+		anchor.Border(1, ui.Hex("#ffffff4d"))
 	}
 	anchor.Children(func() {
-		ui.Text(c, name).FontSize(13).FontWeight(700).TextColor(t.Text).SingleLine()
+		ui.Text(c, name).FontSize(12).FontWeight(600).TextColor(t.Text).SingleLine()
 		if count > 0 {
 			ui.Text(c, fmt.Sprint(count)).FontSize(10).TextColor(t.TextMuted.Alpha(0.75))
 		}
@@ -301,12 +302,13 @@ func (a *App) morePlatforms(c *ui.Context, t *ui.Theme, rest []library.Platform)
 	})
 }
 
-// searchField is the right pill: the field sits directly on one plate of
-// glass, with no second lens inside it.
+// searchField is the right pill: the same short pill as the chips, with the
+// field sitting directly on its one plate of glass.
 func (a *App) searchField(c *ui.Context, t *ui.Theme) {
-	plate := a.glass(ui.Box(c).Width(300).Height(46).PaddingX(14).AlignItems(ui.Center))
+	plate := a.chipBase(c, 32, false)
+	plate.Width(248).PaddingX(11)
 	plate.Children(func() {
-		in := ui.TextInputBase(c.Key("search"), &a.query).Fill().FontSize(12.5).
+		in := ui.TextInputBase(c.Key("search"), &a.query).Fill().FontSize(12).
 			TextColor(t.Text).Placeholder("搜索游戏名").Label("搜索游戏名").
 			PlaceholderColor(t.TextMuted.Alpha(0.65))
 		if in.Changed() {
@@ -519,6 +521,222 @@ func (a *App) card(c *ui.Context, t *ui.Theme, idx int) {
 	} else if b.Clicked() {
 		a.chosen = idx
 	}
+
+	// The card's own menu, on the right button: its fields can be corrected
+	// from here without opening the database. Each card owns its open flag, so
+	// the popup stays where it was opened.
+	if b.Hovered() {
+		a.hoverGame = g.ID
+	}
+	open := a.menuOpen(g.ID)
+	m := ui.ContextMenuBase(c, b, open)
+	if *open {
+		a.menuFor(g.ID)
+		m.Popup(func(panel ui.Element) { a.cardMenuPanel(c, t, panel, g) })
+	} else if a.menuGame == g.ID {
+		a.shutMenu()
+	}
+}
+
+// cardField is one row of the card's menu: which column it writes, what it is
+// called on this shelf, what the game has there now, and whether it can be
+// corrected — 游戏名 is the one that cannot.
+type cardField struct {
+	key, label, value string
+	editable          bool
+}
+
+// fields are the rows a card's menu offers, in the order the menu lists them:
+// the hardware first, then who made it, what it is, which core runs it, and
+// its name.
+func (a *App) fields(g library.Game) []cardField {
+	hardware := "机种"
+	if p := a.lib.Platform(g.PlatformKey); p != nil && p.Group == "arcade" {
+		hardware = "基板"
+	}
+	maker := a.lib.MakerOf(g)
+	arcade := hardware == "基板"
+	genre := g.Genre
+	if genre == "" {
+		genre = "未标注类型"
+	}
+	core := a.lib.CoreOf(g)
+	if core == "" {
+		core = "未指定"
+	}
+	return []cardField{
+		{"machine", hardware, a.lib.MachineNameOf(g), true},
+		{"publisher", "厂商", maker, arcade},
+		{"genre", "游戏类型", genre, true},
+		{"core", "核心", core, true},
+		{"title", "游戏名", g.Title, false},
+	}
+}
+
+// cardMenuPanel fills the panel of a card's menu: the game and its fields,
+// or — after a click on one — the values it could take, or — after a double
+// click — a field to type the value in.
+func (a *App) cardMenuPanel(c *ui.Context, t *ui.Theme, panel ui.Element, g library.Game) {
+	panel.Width(288).Padding(8).Radius(16).
+		Background(ui.Hex("#14151cf7")).
+		Border(1, ui.Hex("#ffffff26")).
+		Shadow(0, 26, 56, 0, ui.Hex("#000000cc"))
+	panel.Children(func() {
+		ui.Column(c).Gap(2).Children(func() {
+			ui.Row(c).Height(30).PaddingX(8).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, g.Title).FontSize(12).FontWeight(600).TextColor(t.Text).
+					SingleLine().Grow(1)
+				ui.Text(c, "右键").FontSize(10).TextColor(t.TextMuted.Alpha(0.55))
+			})
+			ui.Box(c).Height(1).Background(ui.Hex("#ffffff1f"))
+
+			switch {
+			case a.cardEdit:
+				a.fieldInput(c, t, g)
+			case a.cardField != "":
+				a.fieldValues(c, t, g)
+			default:
+				a.fieldList(c, t, g)
+			}
+		})
+	})
+}
+
+// fieldList is the menu at rest: one row per field, its value on the right.
+func (a *App) fieldList(c *ui.Context, t *ui.Theme, g library.Game) {
+	for _, f := range a.fields(g) {
+		f := f
+		row := ui.ButtonBase(c).Height(32).PaddingX(9).Radius(9).Gap(10).
+			AlignItems(ui.Center)
+		if f.editable && row.Hovered() {
+			row.Background(ui.Hex("#ffffff10"))
+		}
+		row.Children(func() {
+			ui.Text(c, f.label).FontSize(11).TextColor(t.TextMuted.Alpha(0.8)).Width(58)
+			ui.Text(c, f.value).FontSize(12).FontWeight(500).
+				TextColor(t.Text.Alpha(0.9)).SingleLine().Grow(1)
+		})
+		if f.editable && row.DoubleClicked() {
+			a.cardField, a.cardEdit, a.cardText = f.key, true, f.value
+		} else if row.Clicked() {
+			if f.key == "title" {
+				// 名字不能改，但点一下就按它筛：一眼能看见这一张
+				a.query, a.menu = f.value, ""
+				a.refilter()
+				a.status = "已按名字筛选：" + f.value
+				a.shutMenu()
+				continue
+			}
+			if f.editable {
+				a.cardField, a.cardEdit = f.key, false
+			}
+		}
+	}
+	ui.Row(c).Height(26).PaddingX(9).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, "单击选择 · 双击输入").FontSize(10).TextColor(t.TextMuted.Alpha(0.55))
+	})
+}
+
+// fieldValues is the menu after a click: what that field could be set to.
+func (a *App) fieldValues(c *ui.Context, t *ui.Theme, g library.Game) {
+	var label string
+	for _, f := range a.fields(g) {
+		if f.key == a.cardField {
+			label = f.label
+		}
+	}
+	ui.Row(c).Height(28).PaddingX(6).Gap(6).AlignItems(ui.Center).Children(func() {
+		back := ui.ButtonBase(c).Height(22).PaddingX(8).Radius(7)
+		if back.Hovered() {
+			back.Background(ui.Hex("#ffffff12"))
+		}
+		back.Children(func() {
+			ui.Text(c, "返回").FontSize(10.5).TextColor(t.TextMuted)
+		})
+		if back.Clicked() {
+			a.cardField, a.cardEdit = "", false
+		}
+		ui.Text(c, label).FontSize(11).FontWeight(600).TextColor(t.Text.Alpha(0.9))
+		ui.Text(c, fmt.Sprint(len(a.values(a.cardField, g)))).FontSize(10).
+			TextColor(t.TextMuted.Alpha(0.6))
+	})
+
+	vals := a.values(a.cardField, g)
+	ui.Scroll(c).Height(min(float32(30*len(vals)+8), 216)).Children(func() {
+		ui.Column(c).Gap(2).Children(func() {
+			for _, v := range vals {
+				v := v
+				row := ui.ButtonBase(c).Height(28).PaddingX(9).Radius(8).
+					AlignItems(ui.Center).Gap(8)
+				if v == currentValue(a.fields(g), a.cardField) {
+					row.Background(ui.Hex("#e8763a24"))
+				} else if row.Hovered() {
+					row.Background(ui.Hex("#ffffff10"))
+				}
+				row.Children(func() {
+					ui.Text(c, v).FontSize(12).TextColor(t.Text).SingleLine().Grow(1)
+					if v == currentValue(a.fields(g), a.cardField) {
+						ui.Text(c, "✓").FontSize(10).TextColor(t.Accent)
+					}
+				})
+				if row.DoubleClicked() {
+					a.cardEdit, a.cardText = true, v
+				} else if row.Clicked() {
+					a.assign(a.cardField, v)
+				}
+			}
+		})
+	})
+}
+
+// fieldInput is the menu after a double click: the value typed in.
+func (a *App) fieldInput(c *ui.Context, t *ui.Theme, g library.Game) {
+	var label string
+	for _, f := range a.fields(g) {
+		if f.key == a.cardField {
+			label = f.label
+		}
+	}
+	ui.Row(c).Height(28).PaddingX(9).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, label).FontSize(11).FontWeight(600).TextColor(t.Text.Alpha(0.9))
+	})
+	box := ui.Box(c).Height(32).PaddingX(10).Radius(9).
+		Background(ui.Hex("#0d0f16a6")).Border(1, ui.Hex("#ffffff33")).
+		AlignItems(ui.Center)
+	box.Children(func() {
+		in := ui.TextInputBase(c.Key("cardedit"), &a.cardText).Fill().FontSize(12).
+			TextColor(t.Text).Placeholder("输入" + label).Label(label)
+		if in.Submitted() {
+			a.assign(a.cardField, a.cardText)
+		}
+	})
+	ui.Row(c).Height(30).PaddingX(9).Gap(8).AlignItems(ui.Center).Children(func() {
+		save := a.chipBase(c, 24, true)
+		save.Children(func() {
+			ui.Text(c, "保存").FontSize(11).FontWeight(600).TextColor(t.Text)
+		})
+		if save.Clicked() {
+			a.assign(a.cardField, a.cardText)
+		}
+		cancel := a.chipBase(c, 24, false)
+		cancel.Children(func() {
+			ui.Text(c, "取消").FontSize(11).TextColor(t.TextMuted)
+		})
+		if cancel.Clicked() {
+			a.cardField, a.cardEdit = "", false
+		}
+		ui.Text(c, "回车也行").FontSize(10).TextColor(t.TextMuted.Alpha(0.55))
+	})
+}
+
+// currentValue is the value a field holds now, the one the list ticks.
+func currentValue(fs []cardField, key string) string {
+	for _, f := range fs {
+		if f.key == key {
+			return f.value
+		}
+	}
+	return ""
 }
 
 // statusBar is the line under the grid: what happened, the offer to fill in

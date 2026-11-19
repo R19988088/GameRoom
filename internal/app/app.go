@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -62,6 +63,16 @@ type App struct {
 	// platforms that did not make the bar's five.
 	shelfOpen bool
 	moreOpen  bool
+
+	// The card's own menu, opened with the right button: one open flag per
+	// game (so each card owns its menu), which game it belongs to, and what it
+	// is showing — a field's values to choose, or a text field to type one in.
+	opens     map[int]*bool
+	menuGame  int
+	hoverGame int
+	cardField string
+	cardEdit  bool
+	cardText  string
 
 	shown []library.Game
 	// The body, filed by the standard the bar shows: sections with their
@@ -367,10 +378,17 @@ func (a *App) file() {
 		return
 	}
 	if len(a.chips) == 0 {
+		// One unnamed group (家用机 on 机种: the platform is the machine). It
+		// has nothing to label, but it is still filed by name.
+		sort.SliceStable(a.shown, func(i, j int) bool {
+			return titleLess(a.shown[i].Title, a.shown[j].Title)
+		})
 		a.sections = append(a.sections, section{from: 0, count: len(a.shown)})
 		return
 	}
-	// The bar's order is the body's: busiest value first, unknown last.
+	// The bar's order is the body's: busiest value first, unknown last; inside
+	// a group the cards are filed by their names, so a group of 51 is not a
+	// wall of noise but a list one can scan.
 	rank := make(map[string]int, len(a.chips))
 	for i, c := range a.chips {
 		rank[c.Name] = i
@@ -384,7 +402,10 @@ func (a *App) file() {
 		if !jok {
 			rj = len(a.chips)
 		}
-		return ri < rj
+		if ri != rj {
+			return ri < rj
+		}
+		return titleLess(a.shown[i].Title, a.shown[j].Title)
 	})
 	for i := 0; i < len(a.shown); {
 		j := i + 1
@@ -396,6 +417,219 @@ func (a *App) file() {
 	}
 }
 
+// menuOpen is the open flag of one card's menu, made the first time the card
+// is built: a card owns its flag, so the popup anchors to the card that was
+// right clicked rather than to whichever card was built last.
+func (a *App) menuOpen(id int) *bool {
+	if a.opens == nil {
+		a.opens = map[int]*bool{}
+	}
+	p, ok := a.opens[id]
+	if !ok {
+		p = new(bool)
+		a.opens[id] = p
+	}
+	return p
+}
+
+// menuFor makes this card the one the open menu belongs to, and closes the
+// other cards' flags — clearing what the menu was showing.
+func (a *App) menuFor(id int) {
+	if a.menuGame == id {
+		return
+	}
+	for k, p := range a.opens {
+		if k != id {
+			*p = false
+		}
+	}
+	a.menuGame, a.cardField, a.cardEdit, a.cardText = id, "", false, ""
+}
+
+// shutMenu closes the card's menu and forgets what it showed.
+func (a *App) shutMenu() {
+	for _, p := range a.opens {
+		*p = false
+	}
+	a.menuGame, a.cardField, a.cardEdit, a.cardText = 0, "", false, ""
+}
+
+// values is what a field could be set to: the values the shelf already
+// carries, so a wrong 厂商 is corrected by picking a right one, and a value
+// nobody has yet is typed in instead.
+func (a *App) values(field string, g library.Game) []string {
+	if a.lib == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	add := func(v string) {
+		if v != "" && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	p := a.lib.Platform(g.PlatformKey)
+	switch field {
+	case "machine":
+		if p != nil && p.Group == "handheld" {
+			for _, q := range a.lib.Games {
+				if q.PlatformKey == g.PlatformKey {
+					add(a.lib.MachineNameOf(q))
+				}
+			}
+		} else {
+			for _, q := range a.lib.PlatformsOf(a.group) {
+				add(q.Name)
+			}
+		}
+	case "core":
+		for i := range a.lib.Sims {
+			if a.lib.Sims[i].PlatformKey == g.PlatformKey {
+				add(a.lib.Sims[i].Core)
+			}
+		}
+		for _, q := range a.lib.Games {
+			if q.PlatformKey == g.PlatformKey {
+				add(q.Core)
+			}
+		}
+	case "board", "publisher", "genre":
+		for _, q := range a.lib.Games {
+			qp := a.lib.Platform(q.PlatformKey)
+			if qp == nil || qp.Group != a.group {
+				continue
+			}
+			switch field {
+			case "board":
+				add(library.BoardNameOf(q))
+			case "publisher":
+				add(a.lib.MakerOf(q))
+			case "genre":
+				add(q.Genre)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// assign writes corrected metadata for the game the card's menu was opened on:
+// into the library in memory, into the row of the database, and into the body
+// at once, so the card moves to its new 厂商 or 基板 without a restart.
+func (a *App) assign(field, value string) {
+	v := strings.TrimSpace(value)
+	g := a.lib.Game(a.menuGame)
+	if g == nil || v == "" {
+		return
+	}
+	var err error
+	switch field {
+	case "board":
+		g.Board = v
+		err = a.write(g.ID, library.FieldBoard, v)
+	case "publisher":
+		g.Publisher = v
+		err = a.write(g.ID, library.FieldPublisher, v)
+	case "genre":
+		g.Genre = v
+		err = a.write(g.ID, library.FieldGenre, v)
+	case "core":
+		g.Core = v
+		err = a.write(g.ID, library.FieldCore, v)
+	case "machine":
+		if p := a.lib.Platform(g.PlatformKey); p != nil && p.Group == "handheld" {
+			// 掌机 的机种由核心决定：换成哪台机器，就是换成哪个核心。
+			core := library.CoreOfMachine(v)
+			if core == "" {
+				core = v
+			}
+			g.Core = core
+			err = a.write(g.ID, library.FieldCore, core)
+		} else {
+			// 家用机 的机种就是平台：改机种等于把这张卡换到那台机器上。
+			for _, q := range a.lib.PlatformsOf(a.group) {
+				if q.Name == v || q.Key == v {
+					g.PlatformKey = q.Key
+					if a.db != nil {
+						err = library.SetPlatform(a.db, g.ID, q.Key)
+					}
+					break
+				}
+			}
+		}
+	}
+	name := strings.ToUpper(g.Title)
+	if err != nil {
+		a.status = fmt.Sprintf("%s 没改成：%v", name, err)
+	} else {
+		a.status = fmt.Sprintf("%s 已改为 %s", name, v)
+	}
+	a.counts = a.lib.Counts()
+	a.lib.SplitGroup(a.group, a.axis)
+	a.recount()
+	// The card may move to another group, but the window stays where it was:
+	// correcting one game should not throw away the place in the list.
+	at := a.scroll.Y
+	a.refilter()
+	a.scroll.Y = at
+	a.shutMenu()
+}
+
+// write is one column of one game into the database, when the launcher has
+// one: a test builds an App without it.
+func (a *App) write(id int, field, value string) error {
+	if a.db == nil {
+		return nil
+	}
+	return library.SetField(a.db, id, field, value)
+}
+
+// titleLess files a group by its games' names: a run of digits compares as a
+// number, so 街霸2 comes before 街霸10, and everything else compares as text,
+// which keeps the Chinese titles in a stable order.
+func titleLess(a, b string) bool {
+	ka, kb := naturalKey(a), naturalKey(b)
+	for i := 0; i < len(ka) && i < len(kb); i++ {
+		if ka[i] != kb[i] {
+			return ka[i] < kb[i]
+		}
+	}
+	return len(ka) < len(kb)
+}
+
+// naturalKey lowercases a title and turns its digit runs into numbers, so the
+// comparison above is a natural one. Numeric runs are marked with a lead byte
+// below every letter, which keeps numbers ahead of words at the same spot.
+func naturalKey(s string) []string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var parts []string
+	for i := 0; i < len(s); {
+		j := i
+		digit := s[i] >= '0' && s[i] <= '9'
+		for j < len(s) && (s[j] >= '0' && s[j] <= '9') == digit {
+			j++
+		}
+		part := s[i:j]
+		if digit {
+			n := strings.TrimLeft(part, "0")
+			if n == "" {
+				n = "0"
+			}
+			// Pad to one width so 9 sorts before 10 as text compares.
+			for len(n) < 12 {
+				n = "0" + n
+			}
+			parts = append(parts, "\x01"+n)
+		} else {
+			parts = append(parts, part)
+		}
+		i = j
+	}
+	return parts
+}
+
+// choosePlatform shows one platform of the shelf.
 func (a *App) choosePlatform(key string) {
 	if a.platform == key {
 		return

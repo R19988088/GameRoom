@@ -90,13 +90,13 @@ func TestTopBarIsFlat(t *testing.T) {
 				r.y+r.h/2, shelf.y+shelf.h/2)
 		}
 	}
-	// Flat: the chips are shorter than the picker, so nothing wraps them —
-	// if a plate of glass held them, every chip would be as tall as it.
+	// Flat and one shape: the picker, the chips and the search are all short
+	// pills of the same height — nothing is a plate holding the others.
 	if all.h > 34 {
 		t.Errorf("the 全部 chip is %v tall: it is inside a plate, not flat on the bar", all.h)
 	}
-	if shelf.h < 42 {
-		t.Errorf("the shelf picker is only %v tall, want one full-height pill", shelf.h)
+	if shelf.h > 34 {
+		t.Errorf("the shelf picker is %v tall, want the same short pill as a chip", shelf.h)
 	}
 	// Three things, not one bar: a gap between each pair.
 	if shelf.x+shelf.w > all.x-4 {
@@ -117,5 +117,28 @@ func TestTopBarIsFlat(t *testing.T) {
 	}
 	if cardTop < 60 {
 		t.Errorf("a card starts at %v, under the bar", cardTop)
+	}
+}
+
+// TestTopBarPillsAreOneHeight: the shelf picker and the search are the same
+// pill as the chips in the middle, down to the pixel.
+func TestTopBarPillsAreOneHeight(t *testing.T) {
+	a := testApp(fakeLibrary(), "arcade", "arc")
+	tt := ui.NewTester(a.view, 1500, 940)
+	tt.Frame()
+	heights := map[string]float32{}
+	for _, info := range tt.AccessAll() {
+		if info.Bounds.H >= 70 || info.Bounds.Y > 70 {
+			continue
+		}
+		switch info.Name {
+		case "街机 9", "全部 9", "搜索游戏名":
+			heights[info.Name] = info.Bounds.H
+		}
+	}
+	for name, h := range heights {
+		if h < 30 || h > 34 {
+			t.Errorf("%q is %v tall, want the chips' 32", name, h)
+		}
 	}
 }

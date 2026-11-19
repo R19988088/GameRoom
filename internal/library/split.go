@@ -278,7 +278,72 @@ func (l *Library) menuName(g Game, p Platform, axis string) string {
 	return ""
 }
 
-// SplitGroup rewrites the menu of every game on a shelf for one axis, so the
+// BoardNameOf is the 基板 a game is filed under, as the card's menu shows it.
+func BoardNameOf(g Game) string { return boardOf(g) }
+
+// MachineNameOf is the 机种 a game runs on: for a handheld its machine (read
+// from its core), for a console the platform itself, which is one machine, and
+// on the 街机 shelf the 基板 — there the hardware is the board, not a machine.
+func (l *Library) MachineNameOf(g Game) string {
+	p := l.Platform(g.PlatformKey)
+	if p == nil {
+		return "未知机种"
+	}
+	switch p.Group {
+	case "arcade":
+		return boardOf(g)
+	case "handheld":
+		return machineOf(l.SimFor(g))
+	}
+	return p.Name
+}
+
+// CoreOfMachine is the core that emulates a handheld machine, the other way
+// round from machineOf: 机种 "GBA" is the core "mgba".
+func CoreOfMachine(machine string) string {
+	for core, name := range machines {
+		if strings.EqualFold(name, machine) {
+			return core
+		}
+	}
+	return ""
+}
+
+// CoreOf is the core a game actually runs: its own when it names one, else
+// the platform's sim.
+func (l *Library) CoreOf(g Game) string {
+	if g.Core != "" {
+		return g.Core
+	}
+	if s := l.SimFor(g); s != nil {
+		return s.Core
+	}
+	return ""
+}
+
+// MakerOf is the 厂商 a game is filed under: its publisher on the 街机 shelf,
+// the maker of its machine everywhere else.
+func (l *Library) MakerOf(g Game) string {
+	p := l.Platform(g.PlatformKey)
+	if p == nil {
+		return "未标注厂商"
+	}
+	if p.Group == "arcade" {
+		return PublisherOf(g)
+	}
+	return makerOf(l, g, *p)
+}
+
+// Game returns the game with id, nil when there is none.
+func (l *Library) Game(id int) *Game {
+	for i := range l.Games {
+		if l.Games[i].ID == id {
+			return &l.Games[i]
+		}
+	}
+	return nil
+}
+
 // chips the bar draws and the filter it applies always read the same field.
 func (l *Library) SplitGroup(group, axis string) {
 	for i := range l.Games {

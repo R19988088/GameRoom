@@ -872,6 +872,12 @@ func (a *App) launchGame(g library.Game) {
 	if !launch.IsRetroArch(sim.Exe) {
 		a.status = "已启动：" + name + "（交给 Magpie 套 CRT）"
 		go launch.TakeOver(cmd.Process.Pid, filepath.Base(t.Exe), launch.MagpieFilter{Exe: a.magpieExe()})
+	} else {
+		// RetroArch draws its own CRT through the preset, so it needs no Magpie
+		// — but it does need the front and the keyboard. Left alone it opens
+		// behind the library, and a game whose keys never arrive is a game the
+		// player reports as broken.
+		go launch.TakeOver(cmd.Process.Pid, filepath.Base(t.Exe), launch.MagpieFilter{})
 	}
 	go func() {
 		err := cmd.Wait()

@@ -238,6 +238,11 @@ shaders/
 RetroArch 里的游戏直接吃 shader，画面最准。跑在 RetroArch 之外的程序（Dolphin、Citra、
 Xenia、直接双击的 PC 游戏）拿不到 shader，所以由一份外部捕获层补上：
 
+- **先置前，再说滤镜**：每个启动的游戏（RetroArch 也一样）都会被 `TakeOver` 找窗口、还原、
+  置前并拿到键盘——`SetForegroundWindow` 对非前台进程会被 Windows 静默拒绝，所以这里用
+  `AttachThreadInput + BringWindowToTop + SetFocus` 的写法。不这么做的话，RetroArch 起在库窗口
+  后面，按键全进了 GameRoom，"要再点一次"和"键鼠没反应"都是这个原因。
+
 - 工具是 [Magpie](https://github.com/Blinue/Magpie)（GPL-3.0，约 10 MB），放在 `模拟器/Magpie/`，
   不随仓库分发，需要自行下载 release 解压进去
 - 它用 Windows 图形捕获拿窗口画面，**不往游戏目录写任何文件**，32/64 位程序都能抓
@@ -282,8 +287,12 @@ DOS 游戏与 PC-98 游戏在老合集里是「**6 套独立 DOSBox + np2fmgen +
 - **封面**：来自合集的 `theme/title.dos`、`theme/title.PC98`（640×400 的标题画面，横的，
   正对卡片比例），盒图 `boxart.dos` 兜底，统一转成 `数据/covers/<平台>/<rom 文件名>.png`。
   83 局全部有封面，不走 Arcade Italia（ADB 只索引 MAME romset）。
-- **DOSBox Pure 的第一次**：它起来是自己的 START MENU，列出 zip 里的 exe，
-  按 `←/→` 选「Set Auto Start」再回车跑；之后这款游戏会记住自动启动。CRT 滤镜照常生效。
+- **双击直启**：DOSBox Pure 默认起来是它自己的 START MENU（列出 zip 里的 exe）。导入时
+  `doslaunch.go` 会在每个 zip 根目录写一份 `DOSBOX.BAT`——Pure 官方机制：内容里有 `DOSBOX.BAT`
+  就跳过菜单直接执行。批处理正文取该 zip 自带 `dosbox.conf` 的 `[autoexec]`（合集作者给每款游戏
+  调好的启动命令，含 CD 的 `imgmount`、要挂的 TSR），去掉 `mount C .` 和 `exit`。76/77 双击直接
+  进游戏；只有 `Doukyuusei 2 Special Disc` 既没有 `dosbox.conf` 也没有 `play.BAT`，仍是菜单。
+  改 zip 时原样搬压缩字节，各条目 CRC 不变；重跑 `-import-dos` 幂等。
 
 ## 从 simUI 迁移（一次性）
 

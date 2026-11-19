@@ -22,12 +22,16 @@ var (
 	procGetWindowRect            = user32.NewProc("GetWindowRect")
 	procSetForegroundWindow      = user32.NewProc("SetForegroundWindow")
 	procShowWindow               = user32.NewProc("ShowWindow")
+	procBringWindowToTop         = user32.NewProc("BringWindowToTop")
+	procSetFocus                 = user32.NewProc("SetFocus")
+	procAttachThreadInput        = user32.NewProc("AttachThreadInput")
 	procKeybdEvent               = user32.NewProc("keybd_event")
 
 	kernel32                      = syscall.NewLazyDLL("kernel32.dll")
 	procOpenProcess               = kernel32.NewProc("OpenProcess")
 	procCloseHandle               = kernel32.NewProc("CloseHandle")
 	procQueryFullProcessImageName = kernel32.NewProc("QueryFullProcessImageNameW")
+	procGetCurrentThreadId        = kernel32.NewProc("GetCurrentThreadId")
 )
 
 const (
@@ -144,9 +148,29 @@ func processPath(pid int) string {
 	return syscall.UTF16ToString(buf[:size])
 }
 
+// front puts the game's window in front of everything and gives it the
+// keyboard.
+//
+// SetForegroundWindow alone is a request Windows is free to refuse: a process
+// that is not already foreground may not hand focus to another one, and the
+// call then quietly does nothing. The game window comes up behind the library,
+// the player clicks it to get in, and keyboard or mouse that never reached the
+// game looks like a game that cannot be played. Attaching our input queue to
+// the game's while the call is made is what Windows accepts as "this is on
+// purpose", and it is what makes the game playable without that first click.
 func front(h syscall.Handle) {
 	procShowWindow.Call(uintptr(h), swRestore)
+	procBringWindowToTop.Call(uintptr(h))
+
+	var tid uint32
+	procGetWindowThreadProcessID.Call(uintptr(h), uintptr(unsafe.Pointer(&tid)))
+	own, _, _ := procGetCurrentThreadId.Call()
+	if tid != 0 && uintptr(tid) != own {
+		procAttachThreadInput.Call(own, uintptr(tid), 1)
+		defer procAttachThreadInput.Call(own, uintptr(tid), 0)
+	}
 	procSetForegroundWindow.Call(uintptr(h))
+	procSetFocus.Call(uintptr(h))
 }
 
 // scaleHotkey presses Magpie's default "scale this window" shortcut,

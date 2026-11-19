@@ -23,6 +23,19 @@ func ImportDOS(src string) error {
 	}
 	defer db.Close()
 
+	// Before the shelf is written: give every zip the start command its own
+	// dosbox.conf already describes, so a double click lands in the game rather
+	// than in DOSBox Pure's start menu. Safe to repeat — prepared zips are left
+	// alone.
+	rep, err := library.PrepareDOSLaunch(filepath.Join(root, "rom", library.DOSKey))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("DOS 直启：新写入 %d，已有 %d，留给菜单 %d\n", rep.Prepared, rep.Already, len(rep.Skipped))
+	for _, s := range rep.Skipped {
+		fmt.Printf("  %s：%s\n", s.Zip, s.Reason)
+	}
+
 	n, err := library.ImportDOS(db, src, root)
 	if err != nil {
 		return err

@@ -322,23 +322,43 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
   `2608_*.wav`、`np2kai.cfg`）。老合集那份 `np2kai.cfg` 里硬写了别人的
   `HDD1FILE = D:\DOSBox\...\MEI.hdi`（会把某款游戏强行挂在 C 盘）和 `fontfile` 绝对路径，
   **已清空并改到本工程路径**。
-- DOSBox Pure 起来是它自己的 START MENU（列出 zip 里的 exe）：按 `→` 选 “Set Auto Start”、
-  回车跑，之后这款游戏就记住自动启动（每款第一次要点一下）。CRT 滤镜照常生效（640×400 画面）。
+- DOSBox Pure 默认起来是它自己的 START MENU（列出 zip 里的 exe）。本工程不用这套：**双击直启**
+  靠 `internal/library/doslaunch.go` 在导入时往每个 zip 根目录写一份 `DOSBOX.BAT`
+  （Pure 官方机制：内容里有 `DOSBOX.BAT` 就**跳过菜单直接执行**，前端无关）。
+  批处理正文来自该 zip 自带的根级 `dosbox.conf` 的 `[autoexec]`——老合集作者给每款游戏调好的
+  启动命令（`cd IF2` / `call PLAY.BAT` / `imgmount D .\CD\BG.cue -t cdrom` / TSR 串），
+  只去掉 `mount C .`（Pure 自己把 zip 挂在 C:）和 `exit`（会把会话关掉）。
+  - 结果：**76/77** 双击直接进游戏（已实机验过 `3x3 EYES`、`Cobra Mission`、`Blue Garnet` 的
+    `imgmount`、`Tenchi Muyou`）；`Doukyuusei 2 Special Disc` 没有 `dosbox.conf`、也没有 `play.BAT`，
+    仍是 Pure 菜单（能玩，但要选一次）。
+  - 导入时**静态校验**批处理指向的文件真的在 zip 里（`checkCommands`），指空就**不注入**，
+    宁可留在菜单也不给一个死命令行；`call CM` 这种会自动补 `.BAT/.COM/.EXE` 再找。
+  - 幂等：zip 里已有 `DOSBOX.BAT` 就跳过；改 zip 用 `zip.Writer.CreateRaw` 原样搬压缩字节，
+    **每个条目 CRC 不变**（只有新增的 60 字节批处理是新的），重打包 1.6 GB 也不重压缩。
+  - 注意：注入会改 zip 内容，用户重新从老合集拷原包回来会把这层"直启"覆盖掉——
+    重跑一次 `-import-dos` 就补回来。
 
 ## 外部程序的滤镜（`takeover_windows.go`）
 
 RetroArch 之外的程序没有 shader，靠 `模拟器/Magpie` 这份捕获层补：
 
-1. `launch.Start` 起进程后，非 RetroArch 的分支调用 `launch.TakeOver(pid, exeName, MagpieFilter{Exe})`
-   （goroutine，别放在 UI 线程）
-2. `waitWindow` 每 250 ms 枚举一次顶层窗口，30 秒超时；先按 PID 匹配，再按**同名的进程**匹配——
-   Windows 11 的 Notepad、以及各种启动器会把窗口移交给另一个进程，光看 PID 会抓空
-3. `front` 把窗口还原并置前，然后 `scaleHotkey` 用 `keybd_event` 发 `Win+Shift+A`
-   （Magpie 的默认缩放热键，全局钩子，所以要发在游戏窗口置前之后）
-4. Magpie 没运行时先 `configureMagpie`（把 `%LOCALAPPDATA%\Magpie\config\v5\config.json` 的
-   `profiles[0].scalingMode` 指到 `scalingModes` 里名字为 `CRT-Geom` 的那一项），再启动它，
-   等 2.5 秒把 Magpie 自己的窗口最小化，免得盖住游戏
-5. 找不到 Magpie 也不报错：只做窗口置前，游戏照常跑
+1. `launch.Start` 起进程后调用 `launch.TakeOver(pid, exeName, …)`（goroutine，别放在 UI 线程）：
+   **RetroArch 也走这条路**，只是不带 Magpie（`MagpieFilter{}`）——它自己用 shader 出 CRT，
+   但它同样需要**被置前并拿到键盘**。不置前时 RetroArch 起在库窗口后面，玩家看到的"点了才动"
+   "键盘鼠标没反应"，其实是按键全进了 GameRoom 的窗口。
+2. `front` 置前不是只 `SetForegroundWindow`：非前台进程直接调它，Windows 会**静默拒绝**。
+   现在是 `ShowWindow(restore)` → `BringWindowToTop` → `AttachThreadInput(当前线程, 目标线程)`
+   → `SetForegroundWindow` → `SetFocus` 再解挂；这是 Windows 认的"我是故意的"写法。
+3. 另：`retroarch.cfg` 里 `input_auto_mouse_grab = "true"`，鼠标类 DOS 游戏进画面就抓住指针，
+   不用再点一下窗口。
+4. 非 RetroArch 的分支再补 Magpie：
+   `waitWindow` 每 250 ms 枚举一次顶层窗口，30 秒超时；先按 PID 匹配，再按**同名的进程**匹配——
+   Windows 11 的 Notepad、以及各种启动器会把窗口移交给另一个进程，光看 PID 会抓空。
+   置前之后 `scaleHotkey` 用 `keybd_event` 发 `Win+Shift+A`（Magpie 的默认缩放热键，
+   全局钩子，所以要发在游戏窗口置前之后）。Magpie 没运行时先 `configureMagpie`
+   （把 `%LOCALAPPDATA%\Magpie\config\v5\config.json` 的 `profiles[0].scalingMode` 指到
+   `scalingModes` 里名字为 `CRT-Geom` 的那一项），再启动它，等 2.5 秒把 Magpie 自己的窗口
+   最小化，免得盖住游戏。找不到 Magpie 也不报错：只做窗口置前，游戏照常跑。
 
 限制：Magpie 需要 Windows 10 1903+、DirectX 11 级别显卡；独占全屏的游戏抓不到（要跑窗口化）；
 UWP 与部分带保护的窗口可能拒绝捕获。观感是 CRT-Geom 家族，与 PhosphorLine 同路但不逐像素相同。

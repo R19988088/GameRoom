@@ -56,6 +56,11 @@ type App struct {
 	chosen   int // the item chosen in the grid
 	grid     ui.GridState
 
+	// The two popovers of the top bar: the shelf picker on the left and the
+	// platforms that did not make the bar's five.
+	shelfOpen bool
+	moreOpen  bool
+
 	shown         []library.Game
 	counts        map[string]int // games shown per platform
 	menuCounts    map[string]int // games shown per menu of a.platform
@@ -251,6 +256,7 @@ func (a *App) choosePlatform(key string) {
 		return
 	}
 	a.platform, a.menu, a.query = key, "", ""
+	a.moreOpen = false
 	a.recount()
 	a.refilter()
 }
@@ -262,6 +268,7 @@ func (a *App) chooseGroup(group string) {
 		return
 	}
 	a.group, a.menu, a.query = group, "", ""
+	a.shelfOpen, a.moreOpen = false, false
 	for _, p := range a.lib.PlatformsOf(group) {
 		a.platform = p.Key
 		a.recount()

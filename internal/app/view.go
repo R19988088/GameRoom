@@ -2,10 +2,11 @@ package app
 
 import (
 	"fmt"
+	"github.com/egoist/mygo/plugins/glass"
+	"github.com/egoist/mygo/ui"
+	"sort"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/egoist/mygo/ui"
 
 	"github.com/R19988088/GameRoom/internal/library"
 )
@@ -35,89 +36,242 @@ func (a *App) view(c *ui.Context) {
 	})
 }
 
-// toolbar is the floating bar: the four shelves on the left, the count and
-// the search field on the right.
+// toolbar is the floating bar in three parts: the shelf picker on the left,
+// the chosen shelf's platforms in the middle (five of them, the rest behind
+// 更多), and the search field on the right.
 func (a *App) toolbar(c *ui.Context, t *ui.Theme) {
 	bar := ui.Row(c).Absolute().Left(24).Top(18).Right(24).Height(60).
-		Padding(8, 12).Radius(18).AlignItems(ui.Center).Gap(12).
-		Background(ui.Hex("#16171ce8")).
+		Padding(9, 10, 9, 10).Radius(18).AlignItems(ui.Center).Gap(10).
+		Background(ui.Hex("#141519d9")).
 		Border(1, ui.Hex("#ffffff14")).
 		Shadow(0, 16, 40, 0, ui.Hex("#000000a6"))
 	bar.Children(func() {
-		ui.Row(c).Padding(4).Radius(13).Gap(2).AlignItems(ui.Center).
-			Background(ui.Hex("#ffffff0a")).Children(func() {
-			for _, g := range library.Groups {
-				g := g
-				count := 0
-				if a.lib != nil {
-					count = a.lib.GameCountOf(g.Key)
+		a.shelfSwitch(c, t)
+		ui.Box(c).Width(1).Height(24).Background(ui.Hex("#ffffff10"))
+		a.platformRow(c, t)
+		a.searchField(c, t)
+	})
+}
+
+// shelfSwitch is one button naming the shelf shown; its menu lists all four,
+// so the bar no longer carries a row of shelf tabs.
+func (a *App) shelfSwitch(c *ui.Context, t *ui.Theme) {
+	name, count := "街机", 0
+	for _, g := range library.Groups {
+		if g.Key == a.group {
+			name = g.Name
+		}
+	}
+	if a.lib != nil {
+		count = a.lib.GameCountOf(a.group)
+	}
+
+	anchor := ui.ButtonBase(c).Height(38).PaddingX(14).Radius(12).
+		AlignItems(ui.Center).Gap(9).Background(ui.Hex("#ffffff14"))
+	if anchor.Hovered() {
+		anchor.Background(ui.Hex("#ffffff1f"))
+	}
+	anchor.Children(func() {
+		ui.Text(c, name).FontSize(13).FontWeight(700).TextColor(t.Text).SingleLine()
+		if count > 0 {
+			ui.Text(c, fmt.Sprint(count)).FontSize(10).TextColor(t.TextMuted.Alpha(0.75))
+		}
+		ui.Text(c, "▾").FontSize(10).TextColor(t.TextMuted.Alpha(0.85))
+	})
+	if anchor.Clicked() {
+		a.shelfOpen = !a.shelfOpen
+		a.moreOpen = false
+	}
+
+	ui.PopoverBase(c, anchor, &a.shelfOpen, func(panel ui.Element) {
+		panel.Width(228).Padding(7).Radius(16).
+			Background(ui.Hex("#17181ff5")).
+			Border(1, ui.Hex("#ffffff1f")).
+			Shadow(0, 22, 48, 0, ui.Hex("#000000b8"))
+		panel.Children(func() {
+			ui.Column(c).Gap(2).Children(func() {
+				for _, g := range library.Groups {
+					g := g
+					n := 0
+					if a.lib != nil {
+						n = a.lib.GameCountOf(g.Key)
+					}
+					chosen := g.Key == a.group
+					row := ui.ButtonBase(c).Height(38).PaddingX(11).Radius(10).
+						AlignItems(ui.Center).Gap(8)
+					if chosen {
+						row.Background(ui.Hex("#e8763a1f"))
+					} else if row.Hovered() {
+						row.Background(ui.Hex("#ffffff12"))
+					}
+					row.Children(func() {
+						color := t.TextMuted
+						if chosen {
+							color = t.Accent
+						}
+						ui.Text(c, g.Name).FontSize(12.5).FontWeight(600).
+							TextColor(color).SingleLine().Grow(1)
+						ui.Text(c, fmt.Sprint(n)).FontSize(10).
+							TextColor(t.TextMuted.Alpha(0.7))
+					})
+					if row.Clicked() {
+						a.shelfOpen = false
+						a.chooseGroup(g.Key)
+					}
 				}
-				a.shelfTab(c, t, g.Name, count, g.Key == a.group, func() { a.chooseGroup(g.Key) })
-			}
-		})
-
-		ui.Spacer(c)
-
-		ui.Text(c, fmt.Sprintf("%s · %d 个游戏", a.platformName(), len(a.shown))).
-			FontSize(11).TextColor(t.TextMuted).SingleLine()
-
-		field := ui.Box(c).Width(228).Height(34).
-			PaddingX(12).Radius(10).AlignItems(ui.Center).
-			Background(ui.Hex("#ffffff0d")).Border(1, ui.Hex("#ffffff17"))
-		field.Children(func() {
-			in := ui.TextInputBase(c.Key("search"), &a.query).Fill().FontSize(12.5).
-				TextColor(t.Text).Placeholder("搜索游戏名").Label("搜索游戏名")
-			if in.Changed() {
-				a.refilter()
-			}
+			})
 		})
 	})
 }
 
-// shelfTab is one shelf in the bar's segmented control.
-func (a *App) shelfTab(c *ui.Context, t *ui.Theme, name string, count int, chosen bool, run func()) {
-	text := t.TextMuted
-	countColor := t.TextMuted.Alpha(0.55)
-	bg := ui.Hex("#00000000")
-	weight := 500
-	if chosen {
-		text = t.Text
-		countColor = t.TextMuted
-		bg = ui.Hex("#ffffff1f")
-		weight = 700
-	}
-	tab := ui.ButtonBase(c).Height(34).PaddingX(13).Radius(10).
-		AlignItems(ui.Center).Background(bg)
-	if !chosen && tab.Hovered() {
-		tab.Background(ui.Hex("#ffffff12"))
-	}
-	tab.Children(func() {
-		ui.Text(c, name).FontSize(13).FontWeight(weight).TextColor(text).SingleLine()
-		if count > 0 {
-			ui.Text(c, fmt.Sprint(count)).FontSize(10).TextColor(countColor)
+// platformRow is the middle: the shelf's five busiest platforms, and a
+// 更多 button for the rest.
+func (a *App) platformRow(c *ui.Context, t *ui.Theme) {
+	ui.Row(c).Grow(1).Gap(6).AlignItems(ui.Center).Children(func() {
+		for _, p := range a.topPlatforms(5) {
+			p := p
+			a.pill(c, t, p.Name, a.counts[p.Key], p.Key == a.platform, func() {
+				a.choosePlatform(p.Key)
+			})
+		}
+		rest := a.restPlatforms(5)
+		if len(rest) > 0 {
+			a.morePlatforms(c, t, rest)
 		}
 	})
-	if tab.Clicked() {
-		run()
-	}
 }
 
-// chips lists the chosen shelf's platforms, then the platform's menus.
+// topPlatforms is the shelf's platforms by game count, at most n of them.
+// The chosen platform is always one of them, even when it is not busy:
+// otherwise the bar would show no chip for the games below it.
+func (a *App) topPlatforms(n int) []library.Platform {
+	if a.lib == nil {
+		return nil
+	}
+	ps := a.lib.PlatformsOf(a.group)
+	sort.SliceStable(ps, func(i, j int) bool {
+		if a.counts[ps[i].Key] != a.counts[ps[j].Key] {
+			return a.counts[ps[i].Key] > a.counts[ps[j].Key]
+		}
+		return ps[i].Sort < ps[j].Sort
+	})
+	if len(ps) <= n {
+		return ps
+	}
+	top := append([]library.Platform{}, ps[:n]...)
+	inside := false
+	for _, p := range top {
+		if p.Key == a.platform {
+			inside = true
+		}
+	}
+	if !inside && a.platform != "" {
+		for _, p := range ps {
+			if p.Key == a.platform {
+				top[n-1] = p
+				break
+			}
+		}
+	}
+	return top
+}
+
+// restPlatforms are the ones 更多 holds.
+func (a *App) restPlatforms(n int) []library.Platform {
+	top := a.topPlatforms(n)
+	shown := map[string]bool{}
+	for _, p := range top {
+		shown[p.Key] = true
+	}
+	var rest []library.Platform
+	for _, p := range a.lib.PlatformsOf(a.group) {
+		if !shown[p.Key] {
+			rest = append(rest, p)
+		}
+	}
+	return rest
+}
+
+// morePlatforms is the 更多 button: the shelf's platforms that did not fit,
+// with their counts.
+func (a *App) morePlatforms(c *ui.Context, t *ui.Theme, rest []library.Platform) {
+	anchor := ui.ButtonBase(c).Height(30).PaddingX(12).Radius(15).
+		AlignItems(ui.Center).Gap(7).Background(ui.Hex("#ffffff08"))
+	if anchor.Hovered() {
+		anchor.Background(ui.Hex("#ffffff16"))
+	}
+	anchor.Children(func() {
+		ui.Text(c, "更多").FontSize(12).FontWeight(500).TextColor(t.TextMuted).SingleLine()
+		ui.Text(c, fmt.Sprint(len(rest))).FontSize(10).TextColor(t.TextMuted.Alpha(0.7))
+	})
+	if anchor.Clicked() {
+		a.moreOpen = !a.moreOpen
+		a.shelfOpen = false
+	}
+
+	ui.PopoverBase(c, anchor, &a.moreOpen, func(panel ui.Element) {
+		panel.Width(232).Padding(7).Radius(16).
+			Background(ui.Hex("#17181ff5")).
+			Border(1, ui.Hex("#ffffff1f")).
+			Shadow(0, 22, 48, 0, ui.Hex("#000000b8"))
+		panel.Children(func() {
+			ui.Column(c).Gap(2).Children(func() {
+				for _, p := range rest {
+					p := p
+					row := ui.ButtonBase(c).Height(36).PaddingX(11).Radius(10).
+						AlignItems(ui.Center).Gap(8)
+					if p.Key == a.platform {
+						row.Background(ui.Hex("#e8763a1f"))
+					} else if row.Hovered() {
+						row.Background(ui.Hex("#ffffff12"))
+					}
+					row.Children(func() {
+						color := t.TextMuted
+						if p.Key == a.platform {
+							color = t.Accent
+						}
+						ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).
+							TextColor(color).SingleLine().Grow(1)
+						ui.Text(c, fmt.Sprint(a.counts[p.Key])).FontSize(10).
+							TextColor(t.TextMuted.Alpha(0.7))
+					})
+					if row.Clicked() {
+						a.moreOpen = false
+						a.choosePlatform(p.Key)
+					}
+				}
+			})
+		})
+	})
+}
+
+// searchField is the right end: a lens of liquid glass over the covers.
+func (a *App) searchField(c *ui.Context, t *ui.Theme) {
+	field := ui.Box(c).Width(236).Height(38).PaddingX(13).Radius(12).
+		AlignItems(ui.Center).
+		Material(glass.Glass{Clarity: 0.6, Tint: ui.Hex("#ffffff1a")}).
+		Border(1, ui.Hex("#ffffff20"))
+	field.Children(func() {
+		in := ui.TextInputBase(c.Key("search"), &a.query).Fill().FontSize(12.5).
+			TextColor(t.Text).Placeholder("搜索游戏名").Label("搜索游戏名").
+			PlaceholderColor(t.TextMuted.Alpha(0.65))
+		if in.Changed() {
+			a.refilter()
+		}
+	})
+}
+
+// chips lists the chosen platform's menus, the row under the bar.
 func (a *App) chips(c *ui.Context, t *ui.Theme) {
+	if a.lib == nil {
+		return
+	}
+	menus := a.lib.MenusOf(a.platform)
+	if len(menus) == 0 {
+		return
+	}
 	ui.ScrollHorizontal(c).Height(38).ClipX().Children(func() {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			for _, p := range a.lib.PlatformsOf(a.group) {
-				p := p
-				a.pill(c, t, p.Name, a.counts[p.Key], p.Key == a.platform, func() {
-					a.choosePlatform(p.Key)
-				})
-			}
-
-			menus := a.lib.MenusOf(a.platform)
-			if len(menus) == 0 {
-				return
-			}
-			ui.Box(c).Width(1).Height(16).Background(t.Border)
 			a.pill(c, t, "全部", a.platformTotal, a.menu == "", func() { a.chooseMenu("") })
 			for _, m := range menus {
 				m := m
@@ -210,13 +364,15 @@ func (a *App) cell(c *ui.Context, t *ui.Theme, i int) {
 	})
 }
 
-// statusBar is the line under the grid.
+// statusBar is the line under the grid: what happened, and what the bar's
+// chips add up to.
 func (a *App) statusBar(c *ui.Context, t *ui.Theme) {
 	ui.Row(c).Absolute().Left(26).Right(26).Bottom(12).
 		AlignItems(ui.Center).Children(func() {
 		ui.Text(c, a.status).FontSize(11).TextColor(t.TextMuted).SingleLine().Grow(1)
-		ui.Text(c, "双击或 Enter 启动 · 本版只启动 RetroArch").FontSize(11).
-			TextColor(t.TextMuted).Opacity(0.55)
+		ui.Text(c, fmt.Sprintf("%s · %d 个游戏 · 双击或 Enter 启动",
+			a.platformName(), len(a.shown))).FontSize(11).
+			TextColor(t.TextMuted).Opacity(0.6).SingleLine()
 	})
 }
 

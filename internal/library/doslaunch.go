@@ -41,6 +41,27 @@ const (
 	launchConf = "dosbox.conf"
 )
 
+// launchOverrides holds the start commands for the games whose archives say
+// nothing usable about how to start them, written by hand once per game. This
+// is the "单独补充" half of the launch work: the heuristics cover the shelves,
+// these cover the individual rips that need knowledge you can only get by
+// reading what is inside.
+//
+// The key is the archive name in lower case.
+var launchOverrides = map[string][]string{
+	// Doukyuusei 2 Special Disc is a DOS/V title: it needs its Japanese font
+	// driver and its own play5v loader before the game exe will even parse
+	// "start.mes". Nothing in the archive names them, and the third command has
+	// arguments no heuristic could invent.
+	"doukyuusei 2 special disc (1995)(elf)(jp)[tr zh-partial].zip": {
+		"c:",
+		"cd N2SP",
+		"dosvfont -f:font.dat -tj",
+		"play5v",
+		"ai5v start.mes H x C",
+	},
+}
+
 // LaunchReport says what PrepareDOSLaunch did with the shelf: how many zips it
 // gave a start command, how many already had one, and, for the few it had to
 // leave alone, why — those still open on Pure's menu, which is a game you can
@@ -113,7 +134,13 @@ func prepareOne(path string) (string, error) {
 	already := names[strings.ToLower(launchBat)]
 	body, reason := "", ""
 	if !already {
-		body, reason = launchBody(zr)
+		if cmd, ok := launchOverrides[strings.ToLower(filepath.Base(path))]; ok {
+			body = launchBatch(cmd)
+		} else if bad := unreadableEntries(zr); bad != "" {
+			reason = bad
+		} else {
+			body, reason = launchBody(zr)
+		}
 	}
 	zr.Close()
 
@@ -129,9 +156,38 @@ func prepareOne(path string) (string, error) {
 	return "written", nil
 }
 
-// launchBody is the batch text for one game: the archive's own [autoexec]
-// without the frontend's own lines, or, for the two archives that shipped
-// without one, the single play.BAT sitting inside the game's folder.
+// unreadableEntries reports an archive Pure cannot read whole: its zip drive
+// understands stored and deflated entries only, so an old 7-Zip archive packed
+// with LZMA (method 14) mounts with those files simply missing from the listing
+// — the game looks like a folder of artwork with no exe in it. Half of
+// Doukyuusei 2 Special Disc was hidden exactly this way. The archive has to be
+// repacked (deflate or store) before either a batch or the core's own menu can
+// reach the executables, and the importer says so rather than injecting a
+// command that cannot resolve.
+func unreadableEntries(zr *zip.ReadCloser) string {
+	bad := 0
+	for _, f := range zr.File {
+		switch f.Method {
+		case zip.Store, zip.Deflate:
+		default:
+			bad++
+		}
+	}
+	if bad == 0 {
+		return ""
+	}
+	return fmt.Sprintf("zip 里有 %d 个 Pure 读不了的压缩条目（LZMA），这个包要先重新用 deflate 打包，否则核心连文件都看不到", bad)
+}
+
+// launchBatch is the batch text for a list of commands.
+func launchBatch(cmd []string) string {
+	return "@echo off\r\n" + strings.Join(cmd, "\r\n") + "\r\n"
+}
+
+// launchBody is the batch text for one game: a hand-written command for the
+// rips that need one, otherwise the archive's own [autoexec] without the
+// frontend's own lines, or, for the two archives that shipped without one, the
+// single play.BAT sitting inside the game's folder.
 func launchBody(zr *zip.ReadCloser) (body, reason string) {
 	if lines, ok := autoexecLines(zr); ok {
 		cmd := launchCommands(lines)

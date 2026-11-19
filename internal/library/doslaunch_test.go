@@ -173,3 +173,47 @@ func TestLaunchBodyRefusesMissingFolder(t *testing.T) {
 		t.Fatalf("reason = %q, want it to name the missing folder", res)
 	}
 }
+
+// The one archive nothing can be read out of gets its start command from
+// launchOverrides, and that command is written as given.
+func TestLaunchOverrideWins(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Doukyuusei 2 Special Disc (1995)(elf)(JP)[tr zh-partial].zip")
+	makeZip(t, path, "", map[string]string{
+		"N2SP/AI5V.EXE":     "exe",
+		"N2SP/PLAY5V.COM":   "com",
+		"N2SP/DOSVFONT.COM": "font",
+		"N2SP/DOSV.BAT":     "font",
+		"N2SP/MAKEDISK.BAT": "disk",
+	})
+	res, err := prepareOne(path)
+	if err != nil || res != "written" {
+		t.Fatalf("prepareOne = %q, %v; want written", res, err)
+	}
+	body := readZipEntry(t, path, launchBat)
+	for _, want := range []string{"cd N2SP", "dosvfont -f:font.dat -tj", "play5v", "ai5v start.mes H x C"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("batch %q lacks %q", body, want)
+		}
+	}
+}
+
+// An archive whose entries Pure cannot decompress is reported instead of
+// getting a command it could never run.
+func TestUnreadableEntriesIsReported(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lzma.zip")
+	makeZip(t, path, "", map[string]string{"G/PLAY.BAT": "game"})
+
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	// Method 14 is LZMA; the entry itself is untouched, the number alone is
+	// what the importer reports on.
+	zr.File[0].Method = 14
+	if got := unreadableEntries(zr); !strings.Contains(got, "LZMA") {
+		t.Fatalf("unreadableEntries = %q, want it to name LZMA", got)
+	}
+}

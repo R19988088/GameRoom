@@ -322,21 +322,32 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
   `2608_*.wav`、`np2kai.cfg`）。老合集那份 `np2kai.cfg` 里硬写了别人的
   `HDD1FILE = D:\DOSBox\...\MEI.hdi`（会把某款游戏强行挂在 C 盘）和 `fontfile` 绝对路径，
   **已清空并改到本工程路径**。
+- PC98 六局的实机状态（各跑 30～70 秒截图核对）：`NANPA2.hdi`（Doukyuusei 2 PC98 版，进到日文
+  字体检测+状态栏）、`FUKEI.fdi`、`MEI.hdi`（`2003 WWW.AGAGOLF.COM` 开场）、`MFIGHT.hdi`、
+  `SHIKUMI.hdi` 都起来了；只剩 `TFKIKOU.hdi` 仍是纯黑。注意 **np2kai 的帧是居中渲染**的，
+  按 DOS 那种左上角去裁剪会误判成黑屏。np2kai 会**直接写镜像**存档（本工程没有 overlay）。
 - DOSBox Pure 默认起来是它自己的 START MENU（列出 zip 里的 exe）。本工程不用这套：**双击直启**
   靠 `internal/library/doslaunch.go` 在导入时往每个 zip 根目录写一份 `DOSBOX.BAT`
   （Pure 官方机制：内容里有 `DOSBOX.BAT` 就**跳过菜单直接执行**，前端无关）。
   批处理正文来自该 zip 自带的根级 `dosbox.conf` 的 `[autoexec]`——老合集作者给每款游戏调好的
   启动命令（`cd IF2` / `call PLAY.BAT` / `imgmount D .\CD\BG.cue -t cdrom` / TSR 串），
   只去掉 `mount C .`（Pure 自己把 zip 挂在 C:）和 `exit`（会把会话关掉）。
-  - 结果：**76/77** 双击直接进游戏（已实机验过 `3x3 EYES`、`Cobra Mission`、`Blue Garnet` 的
-    `imgmount`、`Tenchi Muyou`）；`Doukyuusei 2 Special Disc` 没有 `dosbox.conf`、也没有 `play.BAT`，
-    仍是 Pure 菜单（能玩，但要选一次）。
+  - 结果：**77/77** 双击直接进游戏（已实机验过 `3x3 EYES`、`Cobra Mission`、`Blue Garnet` 的
+    `imgmount`、`Tenchi Muyou`、`Doukyuusei 2 Special Disc`）。
   - 导入时**静态校验**批处理指向的文件真的在 zip 里（`checkCommands`），指空就**不注入**，
     宁可留在菜单也不给一个死命令行；`call CM` 这种会自动补 `.BAT/.COM/.EXE` 再找。
   - 没有 `dosbox.conf` 的包按老合集 `loader.bat` 的那几条规则挑命令（顺序一致）：
     `play.*`（bat/exe/com，任意目录）→ `<目录>/<目录>.bat` → 全包唯一一个 exe/com →
     全包唯一一个 bat，`install/setup/readme/help/inst/dos4gw` 不算。这两条规则是从
     `E:\game\0_GALGAMEonDOSUI\loader.bat` 原样搬过来的，老项目就是靠它们给没有 conf 的包配音命令。
+  - 启发式也猜不出来的包，命令写在 `doslaunch.go` 的 `launchOverrides`（按 zip **小写文件名**
+    作 key，值是命令行切片），一次一个游戏地补。现在只有一条：`Doukyuusei 2 Special Disc`
+    是 DOS/V 游戏，要先 `dosvfont -f:font.dat -tj` 再 `play5v` 才轮到
+    `ai5v start.mes H x C`——这三行没有一条能从包里读出来。
+  - **Pure 的 zip 驱动只认 store / deflate**：7-Zip 用 LZMA（method 14）压的老包，核心挂上去后
+    那些文件在 `dir` 里**根本不存在**，游戏看起来"一个 exe 都没有"。`Doukyuusei 2 Special Disc`
+    374 个条目里 241 个是 LZMA，所以它连菜单里都找不到 exe。现在 `unreadableEntries` 在导入时
+    检查并报出来（不注入死命令），这个包已经用 deflate 重新打包（内容不变，条目数不变）。
   - 幂等：zip 里已有 `DOSBOX.BAT` 就跳过；改 zip 用 `zip.Writer.CreateRaw` 原样搬压缩字节，
     **每个条目 CRC 不变**（只有新增的 60 字节批处理是新的），重打包 1.6 GB 也不重压缩。
   - 注意：注入会改 zip 内容，用户重新从老合集拷原包回来会把这层"直启"覆盖掉——

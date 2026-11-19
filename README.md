@@ -68,7 +68,7 @@ rom/
 
 ```
 main.go
-internal/app/      窗口、货架、网格、搜索、主题
+internal/app/      窗口、货架、分组瀑布流、搜索、主题
 internal/launch/   命令行解析与进程启动（含滤镜覆盖文件）
 internal/library/  数据模型、SQLite、旧库导入、封面搬迁
 ```
@@ -108,6 +108,10 @@ internal/library/  数据模型、SQLite、旧库导入、封面搬迁
 按新轴重写一遍（`SplitGroup`），chip 和筛选读的永远是同一个字段。旧前端那些把系列、类型、
 硬件名混在一起的菜单（`冒险岛`、`ACT`、`STV`）不再使用；`menu` 表也彻底不读了。
 
+下面那排是**按这个标准分组的瀑布流**：`NINTENDO 55` / `SONY 21` 这样的标题行接着一组封面，
+组的先后跟 chip 一致（局数多的在前，认不出的排最后），点标题就等于点那颗 chip。家用机的
+机种轴例外——机种就是平台本身，一次只显示一台机器，所以不分组也不画标题。
+
 - **厂商**：取 `game.publisher`（ADB 抓的），没有就退回它原来的目录名（`SNK`、`CAPCOM`），
   `彩京 → PSIKYO`、`STV/NAOMI/MODEL2/MODEL3 → SEGA`，`ACT/STG/OTHERS/古老的游戏` 这类
   不是厂商的名字统一落「未标注厂商」；`CAPCOM / ARIKA` 这种合写只取第一个。
@@ -125,7 +129,7 @@ internal/library/  数据模型、SQLite、旧库导入、封面搬迁
 romset 不存在就 404。同名的 `dettaglio_mame.php?game_name=<rom>` 是详情页，厂商 / 年份 / 类型
 都在 `table_caption` + `dettaglio` 的结构里，顺手一起抓。
 
-- 界面右下角状态栏有「补全封面 N」按钮，只在有缺口时出现，点一下后台抓、抓完自动刷新网格。
+- 界面右下角状态栏有「补全封面 N」按钮，只在有缺口时出现，点一下后台抓、抓完自动刷新列表。
 - 无窗口跑（同一份 exe，必须用 exe 跑，`go run` 找不到运行根）：
 
   ```
@@ -276,3 +280,5 @@ geolith 只认 `.neo`，并且要 `system/neogeo.zip`（MVS）或 `aes.zip`（AE
 - [RetroArch](https://www.retroarch.com/) 与 libretro 各核心
 - **脑浆油条** — 默认 CRT 滤镜 PhosphorLine
 - simUI — 数据结构的起点（本项目已不再依赖它的运行时）
+
+

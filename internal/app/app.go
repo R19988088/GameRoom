@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -54,15 +55,24 @@ type App struct {
 	platform string // the chosen platform's key, "" when the axis has no machine
 	menu     string // "" shows every game of the shelf
 	query    string
-	chosen   int // the item chosen in the grid
-	grid     ui.GridState
+	chosen   int // the card chosen in the body: an index into shown
+	scroll   ui.ScrollState
 
 	// The two popovers of the top bar: the shelf picker on the left and the
 	// platforms that did not make the bar's five.
 	shelfOpen bool
 	moreOpen  bool
 
-	shown         []library.Game
+	shown []library.Game
+	// The body, filed by the standard the bar shows: sections with their
+	// header, and the lines of cards that make them up. lines are laid out
+	// again when the shelf, the standard or the window width changes.
+	sections      []section
+	lines         []line
+	cols          int
+	contentH      float32
+	lastH         float32
+	stale         bool
 	counts        map[string]int // games shown per platform
 	menuCounts    map[string]int // games shown per value of the axis
 	chips         []library.Chip // the axis' values, in bar order
@@ -327,8 +337,63 @@ func (a *App) refilter() {
 			a.shown = append(a.shown, g)
 		}
 	}
+	a.file()
 	a.chosen = 0
-	a.grid.ScrollIntoView(0)
+	a.scroll.Y = 0
+}
+
+// section is one group of the body: the value of the chosen standard that
+// files it, and the games it holds, a run of shown.
+type section struct {
+	name  string // the chip's name, "" when the shelf has one unnamed group
+	from  int    // first game in shown
+	count int
+}
+
+// line is one row the body draws: a section's header when head >= 0, else a
+// row of at most cols cards, named by their places in shown.
+type line struct {
+	top   float32
+	head  int   // index into sections, -1 on a row of cards
+	games []int // indices into shown, nil on a header
+}
+
+// file orders the games on screen by the standard the bar shows, and cuts
+// them into the sections the body labels. On a shelf whose standard is its
+// platforms (家用机 on 机种) there is nothing to group and nothing to label.
+func (a *App) file() {
+	a.sections, a.stale = a.sections[:0], true
+	if len(a.shown) == 0 {
+		return
+	}
+	if len(a.chips) == 0 {
+		a.sections = append(a.sections, section{from: 0, count: len(a.shown)})
+		return
+	}
+	// The bar's order is the body's: busiest value first, unknown last.
+	rank := make(map[string]int, len(a.chips))
+	for i, c := range a.chips {
+		rank[c.Name] = i
+	}
+	sort.SliceStable(a.shown, func(i, j int) bool {
+		ri, rok := rank[a.shown[i].Menu]
+		rj, jok := rank[a.shown[j].Menu]
+		if !rok {
+			ri = len(a.chips)
+		}
+		if !jok {
+			rj = len(a.chips)
+		}
+		return ri < rj
+	})
+	for i := 0; i < len(a.shown); {
+		j := i + 1
+		for j < len(a.shown) && a.shown[j].Menu == a.shown[i].Menu {
+			j++
+		}
+		a.sections = append(a.sections, section{name: a.shown[i].Menu, from: i, count: j - i})
+		i = j
+	}
 }
 
 func (a *App) choosePlatform(key string) {

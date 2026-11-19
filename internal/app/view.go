@@ -2,11 +2,12 @@ package app
 
 import (
 	"fmt"
-	"github.com/egoist/mygo/plugins/glass"
-	"github.com/egoist/mygo/ui"
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/egoist/mygo/plugins/glass"
+	"github.com/egoist/mygo/ui"
 
 	"github.com/R19988088/GameRoom/internal/library"
 )
@@ -355,65 +356,169 @@ func (a *App) chipBase(c *ui.Context, height float32, chosen bool) ui.Element {
 		Shadow(0, 8, 20, 0, ui.Hex("#00000066"))
 }
 
-// body is the grid of the games that pass the platform, menu and search. It
-// owns the window: its first row sits under the floating bar and the menus,
-// and scrolling carries the covers up behind them.
+// The body's measurements, in DIPs. The gap at the top is the cards' first
+// line: it scrolls away with them, so a shelf at rest starts under the bar
+// and a scrolled one runs up behind it.
+const (
+	cardH   = 172
+	cardMin = 200
+	cardGap = 8
+	headH   = 30
+	secGap  = 18
+	topGap  = 74
+)
+
+// body is the games that pass the platform, menu and search, filed in the
+// sections the bar's standard makes them. It owns the window: the covers
+// scroll up behind the floating bar and are clipped only at the window's own
+// top, so nothing is cut in a band under the pills.
 func (a *App) body(c *ui.Context, t *ui.Theme) {
 	if len(a.shown) == 0 {
 		a.message(c, t, "这里还没有游戏", "换个平台或分类，或检查 rom 目录")
 		return
 	}
+	w, h := c.Size()
+	if a.layout(w) {
+		a.stale = false
+	}
 
-	a.grid.Key = func(i int) any { return a.shown[i].ID }
-	a.grid.Label = func(i int) string { return a.shown[i].Title }
-	a.grid.Selected = &a.chosen
-	ui.Column(c).Absolute().Left(26).Top(26).Right(26).Bottom(34).Children(func() {
-		// 200 wide keeps five cards on a 1000-DIP window, as a shelf of
-		// landscape covers reads; the cover itself keeps its own shape.
-		grid := ui.GridView(c, &a.grid, len(a.shown), 200, 172, func(i int) {
-			a.cell(c, t, i)
+	// Only the lines the window can show (and a little beyond) are built: a
+	// shelf of a thousand games keeps one screen of cards a frame.
+	from, to := a.scroll.Y-300, a.scroll.Y+h+120
+	view := ui.Scroll(c).Absolute().Left(26).Right(26).Top(0).Bottom(34).
+		TrackScroll(&a.scroll)
+	view.Children(func() {
+		ui.Box(c).Height(a.contentH).Children(func() {
+			for i := range a.lines {
+				ln := &a.lines[i]
+				if ln.top+cardH < from || ln.top > to {
+					continue
+				}
+				if ln.head >= 0 {
+					a.header(c, t, ln)
+					continue
+				}
+				row := ui.Row(c).Absolute().Left(0).Right(0).Top(ln.top).
+					Height(cardH).Gap(cardGap).AlignItems(ui.Stretch)
+				row.Children(func() {
+					for _, idx := range ln.games {
+						a.card(c, t, idx)
+					}
+					// Empty places keep the last row's cards as wide as the
+					// ones before them.
+					for k := len(ln.games); k < a.cols; k++ {
+						ui.Box(c).Grow(1).Basis(0)
+					}
+				})
+			}
 		})
-		// The bars float over the top 96 DIPs, so the grid's content starts
-		// below them and scrolls up underneath: padding here scrolls with
-		// the content, unlike the space around it.
-		grid.Fill().Padding(64, 0, 0, 0)
-		if grid.Submitted() {
-			a.launchChosen()
-		}
 	})
+	if view.Shortcut(0, ui.KeyEnter) {
+		a.launchChosen()
+	}
 }
 
-// cell is one game: its cover at its own aspect ratio, and its title. The
-// grid draws the tint and ring of the chosen cell itself.
-func (a *App) cell(c *ui.Context, t *ui.Theme, i int) {
-	g := a.shown[i]
-	chosen := i == a.chosen
-
-	ui.Column(c).Padding(4).Gap(6).Children(func() {
-		card := ui.Box(c).Height(128).Radius(12).
-			Background(ui.Hex("#0b0b10")).Center().Clip()
-		if chosen {
-			card.Border(2, t.Accent)
+// layout lays the body out for a window w DIPs wide, and reports whether it
+// had to: a new width, or a new shelf, standard or search, rebuilds the lines.
+func (a *App) layout(w float32) bool {
+	cols := int((w - 52 + cardGap) / (cardMin + cardGap))
+	cols = max(3, min(cols, 8))
+	if !a.stale && cols == a.cols && len(a.lines) > 0 {
+		return false
+	}
+	a.cols = cols
+	a.lines = a.lines[:0]
+	y := float32(topGap)
+	for i := range a.sections {
+		s := &a.sections[i]
+		if s.name != "" {
+			a.lines = append(a.lines, line{top: y, head: i})
+			y += headH + 10
 		}
-		card.Children(func() {
-			if b := a.cover(a.coverAbs(g.Cover)); b != nil {
-				// Contain, not Cover: a flyer keeps its own shape instead
-				// of being cropped to the cell.
-				ui.Image(c, b).Fill().Fit(ui.Contain).Radius(12)
-			} else {
-				ui.Text(c, initial(g.Title)).FontSize(30).FontWeight(700).
-					TextColor(t.TextMuted.Alpha(0.35))
+		for k := s.from; k < s.from+s.count; k += cols {
+			end := min(k+cols, s.from+s.count)
+			games := make([]int, 0, end-k)
+			for g := k; g < end; g++ {
+				games = append(games, g)
 			}
-		})
+			a.lines = append(a.lines, line{top: y, head: -1, games: games})
+			y += cardH + cardGap
+		}
+		if s.name != "" {
+			y += secGap
+		}
+	}
+	a.contentH = y + 24
+	return true
+}
 
-		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, g.Title).FontSize(12).FontWeight(500).TextColor(t.Text).
-				SingleLine().Grow(1)
-			if g.Favorite {
-				ui.Text(c, "★").FontSize(9).TextColor(t.Accent)
+// header labels a section: the value its chip names, and how many games it
+// holds. Clicking it files the shelf by that value alone.
+func (a *App) header(c *ui.Context, t *ui.Theme, ln *line) {
+	s := a.sections[ln.head]
+	r := ui.Row(c).Absolute().Left(4).Right(0).Top(ln.top).Height(headH).
+		Gap(8).AlignItems(ui.Center)
+	if s.name == "" {
+		return
+	}
+	r.Children(func() {
+		ui.Text(c, s.name).FontSize(13).FontWeight(700).
+			TextColor(t.Text.Alpha(0.92)).SingleLine()
+		ui.Text(c, fmt.Sprint(s.count)).FontSize(10.5).
+			TextColor(t.TextMuted.Alpha(0.6))
+	})
+	if r.Clicked() {
+		a.chooseMenu(s.name)
+	}
+	if r.Hovered() {
+		r.Background(ui.Hex("#ffffff0a"))
+	}
+}
+
+// card is one game: its cover at its own aspect ratio, and its title. A click
+// takes it, a double click plays it.
+func (a *App) card(c *ui.Context, t *ui.Theme, idx int) {
+	g := a.shown[idx]
+	chosen := idx == a.chosen
+
+	b := ui.ButtonBase(c).Grow(1).Basis(0).Height(cardH).Padding(4).Radius(12)
+	if b.Hovered() {
+		b.Background(ui.Hex("#ffffff0a"))
+	}
+	b.Children(func() {
+		ui.Column(c).Fill().Gap(6).Children(func() {
+			cover := ui.Box(c).Height(128).Radius(10).
+				Background(ui.Hex("#0b0b10")).Center().Clip()
+			if chosen {
+				cover.Border(2, t.Accent)
 			}
+			cover.Children(func() {
+				if bmp := a.cover(a.coverAbs(g.Cover)); bmp != nil {
+					// Contain, not Cover: a flyer keeps its own shape
+					// instead of being cropped to the card.
+					ui.Image(c, bmp).Fill().Fit(ui.Contain).Radius(10)
+				} else {
+					ui.Text(c, initial(g.Title)).FontSize(30).FontWeight(700).
+						TextColor(t.TextMuted.Alpha(0.35))
+				}
+			})
+
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, g.Title).FontSize(12).FontWeight(500).TextColor(t.Text).
+					SingleLine().Grow(1)
+				if g.Favorite {
+					ui.Text(c, "★").FontSize(9).TextColor(t.Accent)
+				}
+			})
 		})
 	})
+
+	if b.DoubleClicked() {
+		a.chosen = idx
+		a.launchChosen()
+	} else if b.Clicked() {
+		a.chosen = idx
+	}
 }
 
 // statusBar is the line under the grid: what happened, the offer to fill in

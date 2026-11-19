@@ -143,11 +143,20 @@ chip 里的「分类」按货架固定，由 `menuAxis` 决定，`(*Library).spl
   **小药丸一律走 `chipBase()`**（状态栏的「补全封面 N」也是），这样它们都是同一层玻璃。
   **加东西时别再引入一层容器药丸**：`layout_test.go` 的 `TestTopBarIsFlat` 断言 chip 高度 ≤ 34
   而货架按钮 ≥ 42，就是为了钉死"chip 不在盘子里"。
-- **封面从 chip 之间穿过去**：`view()` 里先画 `body`（`Absolute().Left(26).Top(26).Right(26).Bottom(34)`
-  的 `GridView`），再画 `statusBar`，最后才画 `toolbar`。网格的**内容内边距** `Padding(64, 0, 0, 0)`
-  让首行落在顶栏下方，而这块 padding 是随内容一起滚的（`list.go` 原文 "Padding pads the content,
-  scrolling with it"），所以一滚封面就钻到顶栏底下、从药丸和 chip 之间露出来。**注意 `Padding` 的
-  参数顺序是上/右/下/左**，写反了会压住内容。
+- **瀑布流是自建的分节列表**：`body()` 用 `ui.Scroll`（`Left/Right 26`、`Top(0)`、`Bottom(34)`、
+  `TrackScroll(&a.scroll)`），里面一个 `Box().Height(a.contentH)`，标题行与卡片行都是
+  `Absolute().Left(0).Right(0).Top(ln.top)`。`layout(w)` 把版面一次算进 `a.lines`：从 `topGap`
+  起，每节先出一个标题行（`headH + 10`），再每 `cols` 局一行（`cardH + cardGap`），节末
+  `secGap`。**只构建视窗内的行**（`from = Y-300`、`to = Y+h+120`），936 局也只建一屏。
+  常量在 `view.go` 顶部：`cardH 172 / cardMin 200 / cardGap 8 / headH 30 / secGap 18 / topGap 74`。
+- **裁剪线在窗口顶，不在药丸下面**：滚动容器从 `Top(0)` 起，封面一滚就穿到窗口最上沿、从药丸
+  之间露出来（用户要的"封面透到玻璃下面"）。旧 `GridView` 的 `Padding` 会把裁剪线推到 padding
+  的下沿，于是滚起来某一行只剩标题、封面被切一条带 —— 那就是"顶部封面被挡住"的根因，别再退回
+  `GridView`。
+- **下列按分类标准分组**：`file()` 先按 chip 的次序（bar 上的名次，未标注一律排最后）排
+  `a.shown`，再按 `menu` 切成 `a.sections`；每节开头插一个标题行（组名大写 + 右侧灰色计数），
+  点标题 `chooseMenu(该组)` 直接筛选到该组。`chips` 为空（家用机/PC 的机种轴：机种就是平台）
+  时只有一节且不画标题。
 - 位置由 `internal/app/layout_test.go` 的 `TestTopBarIsFlat` 盯着：三样东西同一行（比中心点）、
   两两之间有空隙、chip 比货架按钮矮（不套层）、整行底边在 70 以内、卡片不钻到顶栏下面；
   `bar_test.go` 还盯着货架在最左、`更多` 不压搜索框；`shelf_test.go` 确认菜单点得开；
@@ -186,7 +195,7 @@ chip 里的「分类」按货架固定，由 `menuAxis` 决定，`(*Library).spl
   已置空改用 sim 的核心。改完核对：`sim` 里 25 个不同的核心名，`cores/` 下 52 个
   `*_libretro.dll` 全部命中，无缺失。
 - macOS 上传 `.app` 会自动指向 `Contents/MacOS/<名字>`。
-- 网格 3–6 列随窗口宽度自适应；Enter 或双击启动；搜索框按标题过滤。
+- 主页 3–8 列随窗口宽度自适应（`cardMin 200` 保底宽，最多 8 列）；Enter 或双击启动；搜索框按标题过滤。
 
 ## 滤镜怎么落到 RetroArch 里
 
@@ -282,3 +291,4 @@ RetroArch 本身不是 simUI 的一部分。
 - `internal/app` 管界面：状态、筛选、封面异步解码、`view.go` 里的布局。
 - 图片必须自己读文件再解码（`ui.DecodeBitmapScaled`），MyGo 的 `ui.Image` 只吃 `*Bitmap`。
 - 界面配色在 `buildTheme()`：近黑底、暖橙 accent，改主题只改这一处。
+

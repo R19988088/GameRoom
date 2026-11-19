@@ -70,6 +70,13 @@ type App struct {
 	covers  map[string]*ui.Bitmap // by path; nil once known missing
 	icons   map[string]*ui.Bitmap
 	pending map[string]bool
+
+	// The cover-fetching run: how many covers the 街机 shelf is missing, and
+	// whether a fetch is in flight, with its progress.
+	missing  int
+	fetching bool
+	fetched  int
+	fetchAll int
 }
 
 // Run starts the launcher, one instance at a time.
@@ -111,6 +118,7 @@ func boot() {
 		a.platform = key
 		a.recount()
 		a.refilter()
+		a.countMissing()
 	}
 
 	a.win = mygo.NewWindow(mygo.WindowOptions{
@@ -226,6 +234,61 @@ func (a *App) open() error {
 	a.lib = lib
 	a.counts = lib.Counts()
 	return nil
+}
+
+// countMissing counts the games the cover fetch would have to fill in, so the
+// status line can offer the job instead of running it unasked.
+func (a *App) countMissing() {
+	a.missing = 0
+	if a.lib == nil {
+		return
+	}
+	a.missing = len(missingCovers(a.lib, a.root))
+}
+
+// fetchCovers downloads the missing covers behind the window, updating the
+// status line as it goes, then reloads the library so the grid shows them.
+func (a *App) fetchCovers() {
+	if a.fetching || a.lib == nil {
+		return
+	}
+	targets := missingCovers(a.lib, a.root)
+	if len(targets) == 0 {
+		a.status = "封面都是齐的"
+		return
+	}
+	a.fetching, a.fetched, a.fetchAll = true, 0, len(targets)
+	a.status = fmt.Sprintf("补全封面 0/%d", a.fetchAll)
+
+	go func() {
+		ok, failed := downloadCovers(a.db, a.root, targets, func(done, total, ok int) {
+			a.win.Update(func() {
+				a.fetched = done
+				a.status = fmt.Sprintf("补全封面 %d/%d · 已新增 %d", done, total, ok)
+			})
+		})
+		a.win.Update(func() {
+			a.fetching = false
+			a.status = fmt.Sprintf("封面补全完成：新增 %d，失败 %d", ok, failed)
+			a.reload()
+		})
+	}()
+}
+
+// reload rereads the library after a write, keeping the shelf and menu shown.
+func (a *App) reload() {
+	lib, err := library.Load(a.db)
+	if err != nil {
+		a.status = "读库失败：" + err.Error()
+		return
+	}
+	a.lib = lib
+	a.counts = lib.Counts()
+	a.covers = map[string]*ui.Bitmap{}
+	a.pending = map[string]bool{}
+	a.countMissing()
+	a.recount()
+	a.refilter()
 }
 
 // refilter rebuilds the grid's games: the platform's, the menu's, the

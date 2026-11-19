@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -177,6 +178,27 @@ func Imported(db *sql.DB) bool {
 	return err == nil && v == "1"
 }
 
+// SetCover records a game's cover, relative to 数据/.
+func SetCover(db *sql.DB, gameID int, cover string) error {
+	_, err := db.Exec(`UPDATE game SET cover = ? WHERE id = ?`, cover, gameID)
+	return err
+}
+
+// SetInfo records what the game's page says: manufacturer, year, genre. An
+// empty value leaves the column as it was.
+func SetInfo(db *sql.DB, gameID int, publisher, year, genre string) error {
+	y := 0
+	if year != "" {
+		y, _ = strconv.Atoi(strings.TrimSpace(year))
+	}
+	_, err := db.Exec(`UPDATE game SET
+		publisher = CASE WHEN ? <> '' THEN ? ELSE publisher END,
+		year      = CASE WHEN ? > 0 THEN ? ELSE year END,
+		genre     = CASE WHEN ? <> '' THEN ? ELSE genre END
+		WHERE id = ?`, publisher, publisher, y, y, genre, genre, gameID)
+	return err
+}
+
 // Setting reads a setting, "" when it is not set.
 func Setting(db *sql.DB, key string) string {
 	var v string
@@ -218,19 +240,8 @@ func Load(db *sql.DB) (*Library, error) {
 	}
 	rows.Close()
 
-	mrows, err := db.Query(`SELECT id, platform_key, name, sort FROM menu ORDER BY platform_key, sort, name`)
-	if err != nil {
-		return nil, err
-	}
-	for mrows.Next() {
-		var m Menu
-		if err := mrows.Scan(&m.ID, &m.PlatformKey, &m.Name, &m.Sort); err != nil {
-			mrows.Close()
-			return nil, err
-		}
-		l.Menus = append(l.Menus, m)
-	}
-	mrows.Close()
+	// The menu table is not read any more: split.go derives each shelf's
+	// menus from the games, so a shelf's chips follow one fixed standard.
 
 	grows, err := db.Query(`SELECT id, platform_key, menu, title, rom_path, size, cover, year,
 		publisher, genre, region, favorite, core, sim_id
@@ -264,7 +275,10 @@ func Load(db *sql.DB) (*Library, error) {
 	}
 	srows.Close()
 
-	l.index()
+	// The menus the shelf shows are derived from the games themselves
+	// (see split.go); the old library's menu table mixed makers, hardware
+	// and genres, and is ignored.
+	l.split()
 	return l, nil
 }
 

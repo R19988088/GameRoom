@@ -375,12 +375,30 @@ func (a *App) cell(c *ui.Context, t *ui.Theme, i int) {
 	})
 }
 
-// statusBar is the line under the grid: what happened, and what the bar's
-// chips add up to.
+// statusBar is the line under the grid: what happened, the offer to fill in
+// missing covers, and what the bar's chips add up to.
 func (a *App) statusBar(c *ui.Context, t *ui.Theme) {
-	ui.Row(c).Absolute().Left(26).Right(26).Bottom(12).
+	ui.Row(c).Absolute().Left(26).Right(26).Bottom(12).Gap(12).
 		AlignItems(ui.Center).Children(func() {
 		ui.Text(c, a.status).FontSize(11).TextColor(t.TextMuted).SingleLine().Grow(1)
+		if a.fetching {
+			ui.Text(c, fmt.Sprintf("补全中 %d/%d", a.fetched, a.fetchAll)).
+				FontSize(11).FontWeight(500).TextColor(t.Accent)
+		} else if a.missing > 0 {
+			btn := ui.ButtonBase(c).Height(24).PaddingX(11).Radius(12).
+				AlignItems(ui.Center).Background(ui.Hex("#ffffff10")).
+				Border(1, ui.Hex("#ffffff1a"))
+			if btn.Hovered() {
+				btn.Background(ui.Hex("#ffffff1f"))
+			}
+			btn.Children(func() {
+				ui.Text(c, fmt.Sprintf("补全封面 %d", a.missing)).FontSize(11).
+					FontWeight(500).TextColor(t.Text)
+			})
+			if btn.Clicked() {
+				a.fetchCovers()
+			}
+		}
 		ui.Text(c, fmt.Sprintf("%s · %d 个游戏 · 双击或 Enter 启动",
 			a.platformName(), len(a.shown))).FontSize(11).
 			TextColor(t.TextMuted).Opacity(0.6).SingleLine()

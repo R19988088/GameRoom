@@ -77,10 +77,49 @@ go build -o "E:\game\Sim ui_D\exe\GameRoom.exe" .
 `app.open` 会在有 `simuiRoot` 的前提下删库重建（重新导入一次），不会半读半崩。
 
 平台归到哪个货架由 `import.go` 的 `groupOf` 决定（旧库没有这个概念）：
-`arc`/`majiang` → 街机，`掌机` → 掌机，`微软` → PC，其余 → 家用机。
+`arc` → 街机（`arcade`）、`majiang` → 麻将（`mahjong`，**自成货架，不并进街机**）、
+`掌机` → 掌机（`handheld`）、`微软` → PC（`pc`），其余 → 家用机（`console`）。
 
 封面按 `title > poster > snaps > thumbs > background` 顺序找，文件名取 rom 文件的主名
 （`dino.zip` ↔ `title/dino.png`），扩展名优先 png > webp > jpg > jpeg。
+
+## 每个货架的分类标准（`internal/library/split.go`）
+
+chip 里的「分类」按货架固定，由 `menuAxis` 决定，`(*Library).split()` 在 `Load` 末尾顺序执行：
+先按轴重写每个游戏的 `menu`，再重建 `l.Menus`（**`store.go` 不再读 `menu` 表**，旧前端那套
+把系列 / 类型 / 硬件名混在一起的菜单全部作废）。
+
+| 货架 | 轴 | 取值 |
+| --- | --- | --- |
+| 街机 | `publisher` | `PublisherOf`：先 `game.publisher`（ADB 抓的，`makerName` 大写去空白、`/` 取第一段）+ `makers` 别名表（彩京→PSIKYO、STV/NAOMI/NAOMI2/MODEL2/MODEL3→SEGA），再退回原目录名，`notAMaker`（ACT/STG/OTHERS/古老的游戏/不能运行/未分类）→ `未标注厂商` |
+| 麻将 | `year` | `yearOf`，0 → `年份未知` |
+| 掌机 | `core` | `machineOf`：mgba→GBA、ppsspp→PSP、mednafen_ngp→NGP、gambatte→GB、mesen→FC，否则核心名，空→`未知机种` |
+| 家用机 / PC | 空 | 平台本身即机种，`menu` 清空、不产生菜单 |
+
+排序：`unknownRank`（`未标注厂商` / `年份未知` / `未知机种` 及 `未标注` 前缀）一律排最后；
+**年份轴按时间线降序，不看游戏数**；其余轴按游戏数降序，同数按名字。
+测试：`split_test.go`（街机厂商折叠与未标注排末、麻将时间线优先于数量、掌机 GBA/PSP、家用机无菜单）。
+
+## 封面与厂商年份（`internal/covers` + `internal/app/covers.go`）
+
+街机封面与元数据来自 `adb.arcadeitalia.net`（无 key、不校验 referer，未知 romset 404）：
+
+- `media/mame.current/titles/<rom>.png?release=<Release>`：盒子图；`Cover()` 拿不到再退
+  `ingames/<rom>.png`；`get()` 校验 PNG 魔数 + ≥1024 字节（0.6KB 的占位图不算），
+  404 归 `ErrNoCover`，网络错误重试三次（2s / 4s）。
+- `dettaglio_mame.php?game_name=<rom>`：详情页，`adbValue("Manufacturer"|"Year"|"Genre")`
+  解析 `table_caption` 后紧跟的 `dettaglio` 文本。
+- **限流是真的**：ADB 抓十几张后连 TLS 握手都会失败，静置一阵才恢复 → `Pause` 默认 400ms，
+  批量抓要一批一批来；`ADB.Base` 非空时指向测试服务器（`adb_test.go` 用 httptest 桩）。
+- 落盘：`数据/covers/<平台>/<rom>.png` + `library.SetCover`；元数据走 `library.SetInfo`
+  （`CASE WHEN` 保护空值，不会把已有的值擦掉）。
+- 目标：`missingCovers` 只认 `Group == "arcade"`；`missingInfo` 认街机 + 麻将里
+  `publisher = ''` 或 `year = 0` 的。
+- 入口：界面状态栏「补全封面 N」（只在有缺口时出现，`a.fetching` 期间显示 `补全中 n/N · 已新增 m`）
+  和无窗口 CLI `-fetch-covers` / `-fetch-info` / `-limit`（**必须跑 exe**，`go run` 的
+  `findRoot()` 找不到 `rom/模拟器/数据`）。
+- 现状缺口（ADB 确实没有图）：`ssf2tnl`、`wofaha2`、`wofsgzb`、`dead smile 2`（占位图被过滤）、
+  `Paca Paca Passion Special.cue`（名字对不上 romset）。
 
 ## 行为约定
 

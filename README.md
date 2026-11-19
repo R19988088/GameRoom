@@ -90,6 +90,49 @@ internal/library/  数据模型、SQLite、旧库导入、封面搬迁
 - **封面自带**：导入时把命中的封面复制进 `数据/covers/`，旧前端目录可以整个删掉。
 - **库版本**：`setting.schema = '3'`，结构不兼容时删库重建，不会半读半崩。
 
+## 每个货架一个固定的分类标准
+
+顶栏中间那颗胶囊里的第二组 chip 是「分类」，它的含义按货架固定，不随游戏变：
+
+| 货架 | 按什么分 | 举例 |
+| --- | --- | --- |
+| 街机 | 厂商 | CAPCOM 51 / SNK 46 / IGS 23 / PSIKYO 13 / SEGA 13 … 认不出的归「未标注厂商」 |
+| 麻将 | 年份 | 2022 → 2006 → … → 1986，倒序时间线，未知年份排最后 |
+| 掌机 | 机种 | GBA / PSP / NGP，按它跑的核心里映出的机器名，不直接显示核心名 |
+| 家用机 | 机种＝平台本身 | FC / SFC / SEGA / Playstation …，所以这一排只有机种 chip，没有第二组 |
+| PC | 同上 | 只有机种 chip |
+
+实现是 `internal/library/split.go` 的 `menuAxis` + `(*Library).split()`：载入库之后按上面
+的轴重写每个游戏的 `menu`，再重建菜单，所以 chip 和筛选永远读同一个字段。旧前端那些
+把系列、类型、硬件名混在一起的菜单（`冒险岛`、`ACT`、`STV`）不再使用。
+
+- 厂商取自 `game.publisher`（ADB 抓的），没有就退回它原来的目录名（`SNK`、`CAPCOM`），
+  `彩京 → PSIKYO`、`STV/NAOMI/MODEL2/MODEL3 → SEGA`，`ACT/STG/OTHERS/古老的游戏` 这类
+  不是厂商的名字统一落「未标注厂商」；`CAPCOM / ARIKA` 这种合写只取第一个。
+- 年份轴按时间线排，不按游戏数排——1996 有 12 个也不会跑到 2022 前面。
+
+## 封面与厂商年份：Arcade Italia
+
+街机封面来自 [adb.arcadeitalia.net](https://adb.arcadeitalia.net)：不需要 key、不校验 referer，
+`media/mame.current/titles/<rom>.png?release=209` 就是盒子图，`ingames/<rom>.png` 是游戏内截图，
+romset 不存在就 404。同名的 `dettaglio_mame.php?game_name=<rom>` 是详情页，厂商 / 年份 / 类型
+都在 `table_caption` + `dettaglio` 的结构里，顺手一起抓。
+
+- 界面右下角状态栏有「补全封面 N」按钮，只在有缺口时出现，点一下后台抓、抓完自动刷新网格。
+- 无窗口跑（同一份 exe，必须用 exe 跑，`go run` 找不到运行根）：
+
+  ```
+  GameRoom.exe -fetch-covers [-limit N]
+  GameRoom.exe -fetch-info   [-limit N]
+  ```
+
+- 抓到的图落到 `数据/covers/<平台>/<rom>.png`，同时写回 `game.cover`；厂商年份写回
+  `game.publisher` / `game.year` / `game.genre`。
+- **ADB 会限流**：一口气抓十几张之后连 TLS 握手都会失败，隔一阵才恢复。所以客户端默认
+  每张之间停 400ms，网络错误重试三次（2s / 4s 退避）。批量抓请一批一批来。
+- 有些 romset 就是没图（`ssf2tnl`、`wofaha2`、`deathsm2` 只有 0.6KB 占位图），这类会一直留在
+  「补全封面」的计数里，属于正常缺口。
+
 ## 启动一个游戏时发生什么
 
 1. `rom/<平台>/<相对路径>` 拼成绝对路径，`sim.exe`（相对工程根或绝对）定位模拟器

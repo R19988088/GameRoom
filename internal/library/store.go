@@ -1,0 +1,287 @@
+package library
+
+import (
+	"database/sql"
+	"fmt"
+	"path/filepath"
+	"regexp"
+	"strings"
+
+	_ "modernc.org/sqlite"
+)
+
+// schemaVersion is the shape of the tables below. A library of another
+// version is rebuilt from the old frontend's data rather than patched.
+const schemaVersion = "3"
+
+// ErrOldSchema says the database was written by an earlier version of
+// this launcher.
+var ErrOldSchema = fmt.Errorf("库版本过旧（%s），需要重新导入", "v1")
+
+// schema is the launcher's data, one table per kind of thing.
+//
+// It replaces the old frontend's tables, which mixed display names with
+// file paths, kept thirty media folders on each platform, and let a game
+// point at an emulator by a row id that could disappear. Here a platform
+// is its key, a menu is a name under a platform, a game is a rom file,
+// and a sim is an emulator.
+const schema = `
+PRAGMA journal_mode=WAL;
+
+CREATE TABLE IF NOT EXISTS platform (
+	id    INTEGER PRIMARY KEY,
+	key   TEXT NOT NULL UNIQUE,
+	name  TEXT NOT NULL,
+	grp   TEXT NOT NULL DEFAULT '',
+	exts  TEXT NOT NULL DEFAULT '',
+	sort  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS menu (
+	id           INTEGER PRIMARY KEY,
+	platform_key TEXT NOT NULL REFERENCES platform(key) ON DELETE CASCADE,
+	name         TEXT NOT NULL,
+	sort         INTEGER NOT NULL DEFAULT 0,
+	UNIQUE (platform_key, name)
+);
+
+CREATE TABLE IF NOT EXISTS game (
+	id           INTEGER PRIMARY KEY,
+	platform_key TEXT NOT NULL REFERENCES platform(key) ON DELETE CASCADE,
+	menu         TEXT NOT NULL DEFAULT '',
+	title        TEXT NOT NULL,
+	rom_path     TEXT NOT NULL,
+	size         INTEGER NOT NULL DEFAULT 0,
+	cover        TEXT NOT NULL DEFAULT '',
+	year         INTEGER NOT NULL DEFAULT 0,
+	publisher    TEXT NOT NULL DEFAULT '',
+	genre        TEXT NOT NULL DEFAULT '',
+	region       TEXT NOT NULL DEFAULT '',
+	favorite     INTEGER NOT NULL DEFAULT 0,
+	core         TEXT NOT NULL DEFAULT '',
+	sim_id       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS game_platform ON game (platform_key, menu);
+CREATE UNIQUE INDEX IF NOT EXISTS game_rom ON game (platform_key, rom_path);
+
+CREATE TABLE IF NOT EXISTS sim (
+	id           INTEGER PRIMARY KEY,
+	platform_key TEXT NOT NULL REFERENCES platform(key) ON DELETE CASCADE,
+	name         TEXT NOT NULL,
+	exe          TEXT NOT NULL,
+	core         TEXT NOT NULL DEFAULT '',
+	args         TEXT NOT NULL DEFAULT '',
+	unzip        INTEGER NOT NULL DEFAULT 0,
+	is_default   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS setting (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
+`
+
+// Open opens the launcher's database, creating it when missing.
+func Open(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+	// One connection: the launcher reads once and writes rarely.
+	db.SetMaxOpenConns(1)
+
+	// A file that already holds tables was written by an earlier version:
+	// its columns are not this schema's, and the launcher says so instead
+	// of half-reading it.
+	if tables, err := tableCount(db); err == nil && tables > 0 {
+		if !hasColumn(db, "game", "favorite") || !hasColumn(db, "platform", "grp") {
+			db.Close()
+			return nil, ErrOldSchema
+		}
+	}
+	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create schema: %w", err)
+	}
+	if old := Setting(db, "schema"); old != "" && old != schemaVersion {
+		db.Close()
+		return nil, ErrOldSchema
+	}
+	if err := SetSetting(db, "schema", schemaVersion); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+// tableCount counts the tables a database file already holds.
+func tableCount(db *sql.DB) (int, error) {
+	var n int
+	err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&n)
+	return n, err
+}
+
+// hasColumn reports whether a table has a column of that name.
+func hasColumn(db *sql.DB, table, column string) bool {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false
+		}
+		if name == column {
+			return true
+		}
+	}
+	return false
+}
+
+// coreArg matches "-L <path>" in a RetroArch command line.
+var coreArg = regexp.MustCompile(`(?i)-L\s+(?:"([^"]+)"|(\S+))`)
+
+// SplitCore takes the core out of a RetroArch command line, so the
+// launcher can name it and find it on whichever system it runs:
+//
+//	"-L cores\geolith_libretro.dll {RomFullPath}" -> "geolith", "{RomFullPath}"
+func SplitCore(args string) (core, rest string) {
+	rest = strings.TrimSpace(args)
+	m := coreArg.FindStringSubmatchIndex(args)
+	if m == nil {
+		return "", rest
+	}
+	path := ""
+	if m[2] >= 0 {
+		path = args[m[2]:m[3]]
+	} else if m[4] >= 0 {
+		path = args[m[4]:m[5]]
+	}
+	base := filepath.Base(strings.ReplaceAll(path, "\\", "/"))
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
+	if strings.HasSuffix(strings.ToLower(name), "_libretro") {
+		core = name[:len(name)-len("_libretro")]
+	}
+	rest = strings.TrimSpace(args[:m[0]] + " " + args[m[1]:])
+	return core, rest
+}
+
+// Imported reports whether the launcher has imported a library already.
+func Imported(db *sql.DB) bool {
+	var v string
+	err := db.QueryRow(`SELECT value FROM setting WHERE key = 'imported'`).Scan(&v)
+	return err == nil && v == "1"
+}
+
+// Setting reads a setting, "" when it is not set.
+func Setting(db *sql.DB, key string) string {
+	var v string
+	if err := db.QueryRow(`SELECT value FROM setting WHERE key = ?`, key).Scan(&v); err != nil {
+		return ""
+	}
+	return v
+}
+
+// execer is a connection or a transaction: both write settings.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// SetSetting writes a setting.
+func SetSetting(db execer, key, value string) error {
+	_, err := db.Exec(`INSERT INTO setting (key, value) VALUES (?, ?)
+		ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+// Load reads the whole library.
+func Load(db *sql.DB) (*Library, error) {
+	l := &Library{}
+
+	rows, err := db.Query(`SELECT id, key, name, grp, exts, sort FROM platform ORDER BY sort, name`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var p Platform
+		var exts string
+		if err := rows.Scan(&p.ID, &p.Key, &p.Name, &p.Group, &exts, &p.Sort); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		p.Exts = splitList(exts)
+		l.Platforms = append(l.Platforms, p)
+	}
+	rows.Close()
+
+	mrows, err := db.Query(`SELECT id, platform_key, name, sort FROM menu ORDER BY platform_key, sort, name`)
+	if err != nil {
+		return nil, err
+	}
+	for mrows.Next() {
+		var m Menu
+		if err := mrows.Scan(&m.ID, &m.PlatformKey, &m.Name, &m.Sort); err != nil {
+			mrows.Close()
+			return nil, err
+		}
+		l.Menus = append(l.Menus, m)
+	}
+	mrows.Close()
+
+	grows, err := db.Query(`SELECT id, platform_key, menu, title, rom_path, size, cover, year,
+		publisher, genre, region, favorite, core, sim_id
+		FROM game ORDER BY favorite DESC, title`)
+	if err != nil {
+		return nil, err
+	}
+	for grows.Next() {
+		var g Game
+		if err := grows.Scan(&g.ID, &g.PlatformKey, &g.Menu, &g.Title, &g.RomPath, &g.Size,
+			&g.Cover, &g.Year, &g.Publisher, &g.Genre, &g.Region, &g.Favorite,
+			&g.Core, &g.SimID); err != nil {
+			grows.Close()
+			return nil, err
+		}
+		l.Games = append(l.Games, g)
+	}
+	grows.Close()
+
+	srows, err := db.Query(`SELECT id, platform_key, name, exe, core, args, unzip, is_default FROM sim ORDER BY platform_key, id`)
+	if err != nil {
+		return nil, err
+	}
+	for srows.Next() {
+		var s Sim
+		if err := srows.Scan(&s.ID, &s.PlatformKey, &s.Name, &s.Exe, &s.Core, &s.Args, &s.Unzip, &s.IsDefault); err != nil {
+			srows.Close()
+			return nil, err
+		}
+		l.Sims = append(l.Sims, s)
+	}
+	srows.Close()
+
+	l.index()
+	return l, nil
+}
+
+// splitList reads a "|"-separated list, dropping empty entries.
+func splitList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, "|")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// joinList writes a "|"-separated list.
+func joinList(values []string) string { return strings.Join(values, "|") }

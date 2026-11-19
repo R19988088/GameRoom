@@ -1,0 +1,15 @@
+# 程序与数据：运行时才有，不进仓库
+*.exe
+*.db
+*.db-wal
+*.db-shm
+数据/
+exe/
+rom/
+模拟器/
+
+# 系统与编辑器杂物
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

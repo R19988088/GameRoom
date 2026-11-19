@@ -17,6 +17,7 @@
 GameRoom.exe
 模拟器/
   RetroArch/            retroarch.exe + cores/ system/ shaders/ config/ saves/ states/
+  Magpie/               给外部程序套 CRT 的捕获层（可选，见下）
 rom/
   arc/  fc/  sfc/  ps/  SEGA/  掌机/  任天堂/  微软/  majiang/  3DO/
 数据/
@@ -117,6 +118,27 @@ shaders/
 - 滤镜本体不随本仓库分发（体积与授权原因）；找不到预设时不会拦着游戏启动，只是不套滤镜
 - 建议同时关掉 RetroArch 自己的 `auto_shaders_enable`（或至少别留别的 `config/global.slangp`），免得两边打架
 
+
+## 外部程序的滤镜（PC 游戏 / 非 RetroArch 的模拟器）
+
+RetroArch 里的游戏直接吃 shader，画面最准。跑在 RetroArch 之外的程序（Dolphin、Citra、
+Xenia、直接双击的 PC 游戏）拿不到 shader，所以由一份外部捕获层补上：
+
+- 工具是 [Magpie](https://github.com/Blinue/Magpie)（GPL-3.0，约 10 MB），放在 `模拟器/Magpie/`，
+  不随仓库分发，需要自行下载 release 解压进去
+- 它用 Windows 图形捕获拿窗口画面，**不往游戏目录写任何文件**，32/64 位程序都能抓
+- 启动外部程序后 GameRoom 会：等它的窗口出现（30 秒超时，兼容启动器移交给子进程的情况）→
+  把窗口置前 → 起 Magpie（已起就复用，并把它自己的窗口最小化）→ 发一次 Magpie 的缩放热键
+  （默认 `Win+Shift+A`）
+- GameRoom 会把 Magpie 的默认缩放模式改成内置的 **CRT-Geom**（曲线 + 荫罩 + 扫描线），
+  这样热键一按就是 CRT，而不是默认的 Lanczos
+
+**一致性的边界**：Magpie 的 CRT 是 CRT-Geom 家族，观感和 PhosphorLine 同路但不逐像素相同。
+要做到完全一致有两条路：
+
+1. 把能上 RetroArch 核心的模拟器换回核心（`citra`/`dolphin`/`pcsx2`/`dosbox` 在 `cores/` 里都有），
+   这样它们和街机走同一条 shader 管线，效果 100% 一致；
+2. 把 `phosphor-line` 的 pass 移植成 MagpieFX（HLSL compute），需要逐个 pass 改写，工作量不小。
 
 ## 从 simUI 迁移（一次性）
 

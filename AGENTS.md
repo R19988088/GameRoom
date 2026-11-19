@@ -146,6 +146,24 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
 换核心只需改 `sim` 表的 `core` 字段，`game.sim_id` 不用动；核心文件放在
 `模拟器/RetroArch/cores/`，各平台换成对应后缀即可。
 
+## 外部程序的滤镜（`takeover_windows.go`）
+
+RetroArch 之外的程序没有 shader，靠 `模拟器/Magpie` 这份捕获层补：
+
+1. `launch.Start` 起进程后，非 RetroArch 的分支调用 `launch.TakeOver(pid, exeName, MagpieFilter{Exe})`
+   （goroutine，别放在 UI 线程）
+2. `waitWindow` 每 250 ms 枚举一次顶层窗口，30 秒超时；先按 PID 匹配，再按**同名的进程**匹配——
+   Windows 11 的 Notepad、以及各种启动器会把窗口移交给另一个进程，光看 PID 会抓空
+3. `front` 把窗口还原并置前，然后 `scaleHotkey` 用 `keybd_event` 发 `Win+Shift+A`
+   （Magpie 的默认缩放热键，全局钩子，所以要发在游戏窗口置前之后）
+4. Magpie 没运行时先 `configureMagpie`（把 `%LOCALAPPDATA%\Magpie\config\v5\config.json` 的
+   `profiles[0].scalingMode` 指到 `scalingModes` 里名字为 `CRT-Geom` 的那一项），再启动它，
+   等 2.5 秒把 Magpie 自己的窗口最小化，免得盖住游戏
+5. 找不到 Magpie 也不报错：只做窗口置前，游戏照常跑
+
+限制：Magpie 需要 Windows 10 1903+、DirectX 11 级别显卡；独占全屏的游戏抓不到（要跑窗口化）；
+UWP 与部分带保护的窗口可能拒绝捕获。观感是 CRT-Geom 家族，与 PhosphorLine 同路但不逐像素相同。
+
 ## 与 simUI 的关系
 
 代码和数据上都已经和 simUI 脱钩了：UI 是 MyGo 自绘、数据是自己建的 SQLite、启动自己拼命令，

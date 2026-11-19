@@ -350,6 +350,10 @@ func (a *App) launchGame(g library.Game) {
 
 	name := g.Title
 	a.status = "已启动：" + name
+	if !launch.IsRetroArch(sim.Exe) {
+		a.status = "已启动：" + name + "（交给 Magpie 套 CRT）"
+		go launch.TakeOver(cmd.Process.Pid, filepath.Base(t.Exe), launch.MagpieFilter{Exe: a.magpieExe()})
+	}
 	go func() {
 		err := cmd.Wait()
 		a.win.Update(func() {
@@ -360,6 +364,16 @@ func (a *App) launchGame(g library.Game) {
 			}
 		})
 	}()
+}
+
+// magpieExe is where the CRT filter for external programs lives; empty means
+// the folder has none and only window management happens.
+func (a *App) magpieExe() string {
+	exe := filepath.Join(a.root, "模拟器", "Magpie", "Magpie.exe")
+	if _, err := os.Stat(exe); err != nil {
+		return ""
+	}
+	return exe
 }
 
 func (a *App) launchChosen() {

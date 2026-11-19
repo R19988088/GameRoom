@@ -119,6 +119,36 @@ shaders/
 - 建议同时关掉 RetroArch 自己的 `auto_shaders_enable`（或至少别留别的 `config/global.slangp`），免得两边打架
 
 
+## 家用机 / 掌机：一个系统一个核心
+
+旧库里同一个平台会散着好几种模拟器（一个 FC 里既有 VirtuaNES 也有 RetroArch，SEGA 里 Mega Drive
+和 Model 2 混在一条 sim 里）。GameRoom 一律走 RetroArch，按**目录优先、扩展名其次**选核心，
+所以同一个系统的每局游戏都吃同一套 shader：
+
+| 平台 | 目录 | 系统 | 核心 |
+| --- | --- | --- | --- |
+| fc | 全部 | FC / NES | `mesen` |
+| sfc | 全部 | SFC / SNES | `snes9x` |
+| 3DO | 全部 | 3DO | `opera` |
+| ps | `ps/` | PlayStation | `duckstation` |
+| ps | `ps2/`（或 .iso） | PlayStation 2 | `pcsx2` |
+| SEGA | `MD/`（其余兜底） | Mega Drive / Master System | `genesis_plus_gx` |
+| SEGA | `DC/`（.gdi/.cdi） | Dreamcast | `flycast` |
+| SEGA | `SS/` | Saturn | `mednafen_saturn` |
+| SEGA | `Model 2/` `Model 3/` `STV/` | 街机基板 | `mame` |
+| 任天堂 | `3ds/`（.cia/.cci） | 3DS | `citra` |
+| 任天堂 | `wii/`（.rvz/.wbfs） | Wii / GameCube | `dolphin` |
+| 任天堂 | `GB/`（.gb/.gbc） | Game Boy | `gearboy` |
+| 任天堂 | `switch/`（.nsp/.xci） | Switch | Ryujinx（外部，无 libretro 核心） |
+| 掌机 | `GBA/`（.gba） | GBA | `mgba` |
+| 掌机 | `PSP/`（.iso/.cso） | PSP | `ppsspp` |
+| 掌机 | `NGP/`（.ngc） | Neo Geo Pocket | `mednafen_ngp` |
+
+导入时 `library.NormalizeConsoles` 会执行这套规则：清掉旧库的按游戏核心覆盖、把 sim 收成
+「每（平台, 核心）一条」、把没人用的 sim（指向旧 simUI 目录的 VirtuaNES、Snes9x 等）删掉、
+每个平台留一个默认。街机（`arc`、`majiang`）和 PC（`微软`）不动——街机的手工 MAME / FBNeo
+选择比一律归一更合理，PC 留待后面处理。
+
 ## 外部程序的滤镜（PC 游戏 / 非 RetroArch 的模拟器）
 
 RetroArch 里的游戏直接吃 shader，画面最准。跑在 RetroArch 之外的程序（Dolphin、Citra、

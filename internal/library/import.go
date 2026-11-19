@@ -61,6 +61,11 @@ func Import(db *sql.DB, oldPath, oldRoot, root string) error {
 	if err != nil {
 		return fmt.Errorf("read games: %w", err)
 	}
+	// The old library let every game pick its own emulator, so one console
+	// held a dozen of them. Everything here runs through RetroArch with
+	// the canonical core for its system instead, which is what keeps the
+	// CRT shader the same from game to game.
+	NormalizeConsoles(&sims, games)
 	// The old library's extension lists were mostly RetroArch's whole
 	// supported set copied in, "o", "xml" and "wav" among them. What a
 	// platform really holds is what its roms say, so the lists come from

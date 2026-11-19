@@ -146,6 +146,27 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
 换核心只需改 `sim` 表的 `core` 字段，`game.sim_id` 不用动；核心文件放在
 `模拟器/RetroArch/cores/`，各平台换成对应后缀即可。
 
+## 核心标准化（`internal/library/cores.go`）
+
+旧库让每局游戏各自记一个模拟器，于是同一个平台里混着七八种。现在统一到「一个系统一个核心」：
+
+- `CanonicalCore(platform, romPath)` 是唯一判据，**目录优先、扩展名其次**。一个平台目录常装多个系统：
+  `SEGA` 里同时有 `MD/`、`DC/`、`SS/`、`Model 2/`、`Model 3/`、`STV/`；`ps` 里同时有 PS1 和 PS2；
+  `掌机` 里同时有 GBA、PSP、NGP。所以先按路径段判断，扩展名只做兜底。
+- `NormalizeConsoles(&sims, games)` 在 `Import` 读完库后调用：给每局游戏选核心、清掉旧的按游戏
+  `core` 覆盖、把 sim 收成「每（平台, 核心）一条」（复用同核心的旧 sim，缺的按
+  `模拟器/RetroArch/retroarch.exe` + `{RomFullPath}` 新建）、每平台按游戏数最多的一条设为默认、
+  最后删掉没人引用的 console sim（旧库里指向 `E:/game/0_RetroArch Sim ui/games/simulators/...`
+  的 VirtuaNES、Snes9x 这类由此消失）。
+- Ryujinx 是唯一保留的外部 exe：RetroArch 没有 Switch 的 libretro 核心。识别方式是 core 为空且
+  exe 路径含 `ryujinx`，它的 sim 原样保留、游戏照旧指向它（启动走 Magpie 那条链路）。
+- 街机（`arc`、`majiang`）与 PC（`微软`）不参与这套归一：街机手工挑的 MAME / FBNeo 比一律归一更合理。
+- 加一个平台：在 `CanonicalCore` 里加分支、在 `coreNames` 里加显示名，并在 `cores_test.go`
+  里补两个用例（目录判定 + 扩展名兜底各一条）。
+
+库里已按此校正过：`587` 局 console/handheld 全部改到规范核心、无缺失 dll、无空 sim；唯一外部的是
+2 局 Switch（Ryujinx）。改动前备份在 `数据/launcher.db.bak_before_console_std_*`。
+
 ## 外部程序的滤镜（`takeover_windows.go`）
 
 RetroArch 之外的程序没有 shader，靠 `模拟器/Magpie` 这份捕获层补：

@@ -1,31 +1,128 @@
 package library
 
 import (
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 )
 
-// menuAxis is the one standard a shelf splits its games by, fixed per shelf so
-// the chips in the top bar always mean the same thing:
+// The standards a shelf can file its games by. Every shelf offers one or two
+// of them, and the bar shows a switch to move between them:
 //
-//	街机   → 厂商（CAPCOM / SNK / IGS …）
-//	麻将   → 年份（2022 / 1996 …）
-//	掌机   → 机种（GBA / PSP / NGP，取自它跑在哪个核心上）
-//	家用机 → 机种，就是它的平台本身（FC / SFC / PS / SEGA …），所以没有菜单
-//	PC     → 同上，没有菜单
-//
-// 空的 axis 表示这个平台不另分菜单：上面那排机种 chip 已经把它分完了。
-func menuAxis(p Platform) string {
-	switch {
-	case p.Key == "arc":
-		return "publisher"
-	case p.Key == "majiang":
-		return "year"
-	case p.Group == "handheld":
-		return "core"
+//	街机   → 基板（CPS2 / MVS / NAOMI …）⇄ 厂商（CAPCOM / SNK …）
+//	家用机 → 机种（FC / SFC / PS …）    ⇄ 厂商（NINTENDO / SONY …）
+//	掌机   → 机种（GBA / PSP …）        ⇄ 厂商（NINTENDO / SONY / SNK …）
+//	麻将   → 年份（2022 … 1986），只有这一种
+const (
+	AxisMachine = "machine" // 机种
+	AxisMaker   = "maker"   // 厂商
+	AxisBoard   = "board"   // 基板
+	AxisYear    = "year"    // 年份
+)
+
+// AxesOf lists the standards a shelf offers, the first one being its default.
+// 街机 opens on 厂商, because every arcade game has one, while the 基板 is only
+// known for the romsets whose page has been read; the switch still offers it.
+func AxesOf(group string) []string {
+	switch group {
+	case "arcade":
+		return []string{AxisMaker, AxisBoard}
+	case "mahjong":
+		return []string{AxisYear}
 	}
-	return ""
+	return []string{AxisMachine, AxisMaker}
+}
+
+// AxisName is what the switch calls a standard.
+func AxisName(axis string) string {
+	switch axis {
+	case AxisMachine:
+		return "机种"
+	case AxisMaker:
+		return "厂商"
+	case AxisBoard:
+		return "基板"
+	case AxisYear:
+		return "年份"
+	}
+	return axis
+}
+
+// boards is what MAME's driver source is known as on a cabinet. Anything not
+// listed keeps its source name, uppercased — that is still the hardware family
+// MAME groups the romset by.
+var boards = map[string]string{
+	"neogeo":        "MVS",
+	"neogeo_mv1":    "MVS",
+	"cps1":          "CPS1",
+	"cps2":          "CPS2",
+	"cps3":          "CPS3",
+	"psikyo":        "PSIKYO",
+	"psikyosh":      "PSIKYO SH2",
+	"stv":           "ST-V",
+	"model1":        "MODEL1",
+	"model2":        "MODEL2",
+	"model3":        "MODEL3",
+	"naomi":         "NAOMI",
+	"naomigd":       "NAOMI GD",
+	"pgm":           "PGM",
+	"pgm2":          "PGM2",
+	"taito_f2":      "TAITO F2",
+	"taito_f3":      "TAITO F3",
+	"taito_z":       "TAITO Z",
+	"taitowlf":      "TAITO WOLF",
+	"gx":            "KONAMI GX",
+	"hornet":        "HORNET",
+	"system16":      "SYSTEM16",
+	"segas32":       "SEGA S32",
+	"hikaru":        "HIKARU",
+	"m72":           "M72",
+	"m92":           "M92",
+	"m107":          "M107",
+	"kaneko16":      "SUPER KANEKO",
+	"cave":          "CAVE",
+	"toaplan1":      "TOAPLAN1",
+	"toaplan2":      "TOAPLAN2",
+	"nmk16":         "NMK16",
+	"megasys1":      "MEGASYS1",
+	"deco32":        "DECO32",
+	"deco16ic":      "DECO16",
+	"midtunit":      "MIDWAY T-UNIT",
+	"midwunit":      "MIDWAY W-UNIT",
+	"midxunit":      "MIDWAY X-UNIT",
+	"midyunit":      "MIDWAY Y-UNIT",
+	"konamigx":      "KONAMI GX",
+	"namcos12":      "SYSTEM 12",
+	"namcos11":      "SYSTEM 11",
+	"namcos21":      "SYSTEM 21",
+	"namcos2":       "SYSTEM 2",
+	"zn":            "SONY ZN",
+	"ssv":           "SSV",
+	"dc_atomiswave": "ATOMISWAVE",
+	"fuukifg3":      "FUUKI FG3",
+	"segaic16":      "SEGA SYSTEM C",
+	"segahang":      "SEGA HANG-ON",
+	"galaxian":      "GALAXIAN",
+	"pacman":        "PAC-MAN",
+	"mappy":         "MAPPY",
+}
+
+// BoardOf names the hardware of a romset from its driver source:
+//
+//	"snk/neogeo.cpp"     -> MVS
+//	"capcom/cps2.cpp"    -> CPS2
+//	"universal/mrdo.cpp" -> MRDO
+func BoardOf(source string) string {
+	base := strings.ToLower(filepath.Base(strings.ReplaceAll(source, "\\", "/")))
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	if b, ok := boards[base]; ok {
+		return b
+	}
+	if base == "" {
+		return "未标注基板"
+	}
+	return strings.ToUpper(strings.ReplaceAll(base, "_", " "))
 }
 
 // makers renames what the old library filed under a folder name into the
@@ -47,8 +144,7 @@ var notAMaker = map[string]bool{
 
 // PublisherOf names the manufacturer of an arcade game: its own publisher
 // when the import filled one, else the folder it was filed under (SNK,
-// CAPCOM …), else 未标注厂商. Arcade cabinets are known by who built them, so
-// this is the one split the 街机 shelf uses.
+// CAPCOM …), else 未标注厂商.
 func PublisherOf(g Game) string {
 	if m := makerName(g.Publisher); m != "" {
 		return m
@@ -76,12 +172,24 @@ func makerName(publisher string) string {
 	return m
 }
 
-// yearOf is the year a mahjong table came out, "年份未知" when nobody wrote it.
-func yearOf(year int) string {
-	if year <= 0 {
-		return "年份未知"
-	}
-	return strconv.Itoa(year)
+// platformMakers is who built a console: the machine's maker, not the games'.
+var platformMakers = map[string]string{
+	"fc":   "NINTENDO",
+	"sfc":  "NINTENDO",
+	"任天堂":  "NINTENDO",
+	"ps":   "SONY",
+	"SEGA": "SEGA",
+	"3DO":  "3DO",
+	"微软":   "MICROSOFT",
+}
+
+// coreMakers is the maker of the machine a handheld core emulates.
+var coreMakers = map[string]string{
+	"mgba":         "NINTENDO",
+	"gambatte":     "NINTENDO",
+	"mesen":        "NINTENDO",
+	"ppsspp":       "SONY",
+	"mednafen_ngp": "SNK",
 }
 
 // machines are the cores of the handheld shelf, named as the machine each
@@ -109,80 +217,126 @@ func machineOf(sim *Sim) string {
 	return "未知机种"
 }
 
-// split rebuilds the menus from the shelf's axis and rewrites each game's
-// menu to match, so the chips the bar shows and the filter it applies always
-// come from the same field. The library's own menu table is dropped: the old
-// frontend's menus mixed makers, hardware, genres and series.
-func (l *Library) split() {
-	counts := map[string]map[string]int{}
+// makerOf names who made the machine a console or handheld game runs on.
+func makerOf(l *Library, g Game, p Platform) string {
+	if p.Group == "handheld" {
+		if sim := l.SimFor(g); sim != nil {
+			if m, ok := coreMakers[strings.ToLower(sim.Core)]; ok {
+				return m
+			}
+		}
+		if m, ok := platformMakers[p.Key]; ok {
+			return m
+		}
+		return "未标注厂商"
+	}
+	if m, ok := platformMakers[p.Key]; ok {
+		return m
+	}
+	if m := makerName(p.Name); m != "" {
+		return m
+	}
+	return "未标注厂商"
+}
+
+// boardOf is the 基板 of an arcade game: what its page said, else unknown.
+func boardOf(g Game) string {
+	if b := BoardOf(g.Board); b != "未标注基板" {
+		return b
+	}
+	return "未标注基板"
+}
+
+// yearOf is the year a mahjong table came out, "年份未知" when nobody wrote it.
+func yearOf(year int) string {
+	if year <= 0 {
+		return "年份未知"
+	}
+	return strconv.Itoa(year)
+}
+
+// menuName is the chip a game falls under for one axis. On the machine axis a
+// console's machine *is* its platform, so there is no menu; a handheld
+// platform (掌机) runs several machines, so each game files under its own.
+func (l *Library) menuName(g Game, p Platform, axis string) string {
+	switch axis {
+	case AxisBoard:
+		return boardOf(g)
+	case AxisMaker:
+		if p.Group == "arcade" {
+			return PublisherOf(g)
+		}
+		return makerOf(l, g, p)
+	case AxisYear:
+		return yearOf(g.Year)
+	case AxisMachine:
+		if p.Group == "handheld" {
+			return machineOf(l.SimFor(g))
+		}
+		return ""
+	}
+	return ""
+}
+
+// SplitGroup rewrites the menu of every game on a shelf for one axis, so the
+// chips the bar draws and the filter it applies always read the same field.
+func (l *Library) SplitGroup(group, axis string) {
 	for i := range l.Games {
 		g := &l.Games[i]
 		p := l.Platform(g.PlatformKey)
-		if p == nil {
+		if p == nil || p.Group != group {
 			continue
 		}
-		switch menuAxis(*p) {
-		case "publisher":
-			g.Menu = PublisherOf(*g)
-		case "year":
-			g.Menu = yearOf(g.Year)
-		case "core":
-			g.Menu = machineOf(l.SimFor(*g))
-		default:
-			g.Menu = ""
-		}
-		if g.Menu == "" {
-			continue
-		}
-		if counts[p.Key] == nil {
-			counts[p.Key] = map[string]int{}
-		}
-		counts[p.Key][g.Menu]++
+		g.Menu = l.menuName(*g, *p, axis)
 	}
+}
 
-	l.Menus = make([]Menu, 0, len(l.Menus))
-	for _, p := range l.Platforms {
-		axis := menuAxis(p)
-		c := counts[p.Key]
-		if axis == "" || len(c) == 0 {
+// Chips are the bar's chips for a shelf and an axis: the values it files the
+// games by, with how many games each holds.
+func (l *Library) Chips(group, axis string) []Chip {
+	counts := map[string]int{}
+	for _, g := range l.Games {
+		p := l.Platform(g.PlatformKey)
+		if p == nil || p.Group != group {
 			continue
 		}
-		names := make([]string, 0, len(c))
-		for name := range c {
-			names = append(names, name)
+		name := l.menuName(g, *p, axis)
+		if name == "" {
+			continue
 		}
-		sort.Slice(names, func(i, j int) bool {
-			// What could not be filed goes last: an "unknown" chip with the
-			// most games should not push the real makers off the bar.
-			if ri, rj := unknownRank(names[i]), unknownRank(names[j]); ri != rj {
-				return ri < rj
-			}
-			if axis == "year" {
-				// The year axis is a timeline, not a popularity list: newest
-				// table first whatever its game count, the unknown year last.
-				if yi, yj := yearRank(names[i]), yearRank(names[j]); yi != yj {
-					return yi > yj
-				}
-				return names[i] < names[j]
-			}
-			// Busiest first: the chips that matter are the ones with games.
-			if c[names[i]] != c[names[j]] {
-				return c[names[i]] > c[names[j]]
-			}
-			return names[i] < names[j]
-		})
-		for i, name := range names {
-			l.Menus = append(l.Menus, Menu{PlatformKey: p.Key, Name: name, Sort: i})
-		}
+		counts[name]++
 	}
-	l.index()
+	chips := make([]Chip, 0, len(counts))
+	for name, n := range counts {
+		chips = append(chips, Chip{Name: name, Count: n})
+	}
+	sort.Slice(chips, func(i, j int) bool {
+		// What could not be filed goes last: an "unknown" chip with the most
+		// games should not push the real makers off the bar.
+		if ri, rj := unknownRank(chips[i].Name), unknownRank(chips[j].Name); ri != rj {
+			return ri < rj
+		}
+		if axis == AxisYear {
+			// The year axis is a timeline, not a popularity list: newest
+			// table first whatever its game count.
+			if yi, yj := yearRank(chips[i].Name), yearRank(chips[j].Name); yi != yj {
+				return yi > yj
+			}
+			return chips[i].Name < chips[j].Name
+		}
+		if chips[i].Count != chips[j].Count {
+			return chips[i].Count > chips[j].Count
+		}
+		return chips[i].Name < chips[j].Name
+	})
+	return chips
 }
 
 // unknownRank is 1 for the buckets that mean "we could not tell", so they
 // sort after every chip that carries a name.
 func unknownRank(name string) int {
 	switch name {
-	case "未标注厂商", "年份未知", "未知机种":
+	case "未标注厂商", "未标注基板", "年份未知", "未知机种":
 		return 1
 	}
 	if strings.HasPrefix(name, "未标注") {
@@ -191,7 +345,7 @@ func unknownRank(name string) int {
 	return 0
 }
 
-// yearRank turns a year menu into a number to sort by, 0 for 年份未知.
+// yearRank turns a year chip into a number to sort by, 0 for 年份未知.
 func yearRank(name string) int {
 	n, err := strconv.Atoi(name)
 	if err != nil {

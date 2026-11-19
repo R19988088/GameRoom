@@ -35,12 +35,21 @@ var Groups = []struct{ Key, Name string }{
 	{"pc", "PC"},
 }
 
-// Menu is one split of a platform's games, as "SNK" or "格斗".
+// Menu is one split of a platform's games, as "SNK" or "格斗". The launcher
+// derives them from a shelf's axis instead of reading the table the old
+// frontend wrote; Chip is what the bar actually draws.
 type Menu struct {
 	ID          int
 	PlatformKey string
 	Name        string
 	Sort        int
+}
+
+// Chip is one pill on the bar: a classification value and how many games it
+// holds, across a whole shelf.
+type Chip struct {
+	Name  string
+	Count int
 }
 
 // Game is one rom.
@@ -56,7 +65,10 @@ type Game struct {
 	Publisher   string
 	Genre       string
 	Region      string
-	Favorite    bool
+	// Board is the arcade hardware a romset runs on, as MAME names its driver
+	// source ("snk/neogeo.cpp"): the 基板 the 街机 shelf files games by.
+	Board    string
+	Favorite bool
 	// Core overrides the sim's core for this game alone, "" to use the
 	// sim's. Old frontends kept this in a JSON blob per game.
 	Core  string

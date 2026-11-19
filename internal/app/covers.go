@@ -85,7 +85,8 @@ type infoTarget struct {
 	title string
 }
 
-// missingInfo lists the arcade and 麻将 games without a manufacturer or a year.
+// missingInfo lists the arcade and 麻将 games whose page has not been read:
+// no manufacturer, no year, or no 基板.
 func missingInfo(lib *library.Library, root string) []infoTarget {
 	var out []infoTarget
 	for _, g := range lib.Games {
@@ -93,7 +94,7 @@ func missingInfo(lib *library.Library, root string) []infoTarget {
 		if p == nil || p.Group != "arcade" && p.Group != "mahjong" {
 			continue
 		}
-		if g.Publisher != "" && g.Year != 0 {
+		if g.Publisher != "" && g.Year != 0 && g.Board != "" {
 			continue
 		}
 		base := path.Base(filepath.ToSlash(g.RomPath))
@@ -107,13 +108,14 @@ func missingInfo(lib *library.Library, root string) []infoTarget {
 }
 
 // downloadInfo reads each target's page and writes what it says into the
-// library: manufacturer, year, genre. progress is called per target.
+// library: manufacturer, year, genre, and the driver source the 基板 comes
+// from. progress is called per target.
 func downloadInfo(db *sql.DB, targets []infoTarget, progress func(done, total, ok int)) (ok, failed int) {
 	adb := covers.NewADB()
 	for i, t := range targets {
-		maker, year, genre, err := adb.Info(t.rom)
+		info, err := adb.Info(t.rom)
 		if err == nil {
-			if sErr := library.SetInfo(db, t.id, strings.ToUpper(maker), year, genre); sErr != nil {
+			if sErr := library.SetInfo(db, t.id, strings.ToUpper(info.Maker), info.Year, info.Genre, info.Board); sErr != nil {
 				err = sErr
 			}
 		}

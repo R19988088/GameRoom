@@ -3,11 +3,13 @@
 用 Go + [MyGo](https://github.com/egoist/mygo) 自绘 UI 的模拟器前端，**以游戏厅（街机）为主场，同时覆盖家用机 / 掌机 / PC**。
 它替代了原来的 simUI：只看封面、双击即玩、默认套 CRT 滤镜。
 
-- 顶部是三个分开的胶囊（不是一条大横条），封面从它们后面滚过去、被磨砂模糊掉：
+- 顶栏一条平铺的行，**不套层**：每颗 chip 自己就是一颗小药丸，没有"大胶囊装 chip"这种嵌层，
+  封面从 chip 之间和药丸后面穿过去；药丸本身是一层液态玻璃，封面滑到它后面会透上来并模糊：
   - 左：货架按钮（`街机 267 ▾`），点开是 街机 / 麻将 / 家用机 / 掌机 / PC 的菜单
-  - 中：当前货架的机种 chip（默认只显示局数最多的 5 个，其余收进 `更多 N`）＋ 该机种的分类 chip，
-    两者合成一条可横向滚动；单机种的货架（街机、麻将）只显示分类
-  - 右：搜索框，Liquid Glass 里再嵌一层 Liquid Glass
+  - 中：紧跟一颗很小的切换药丸（`⇄ 厂商`），换这一个货架的**分类标准**；麻将只有年份，不显示它
+  - 中：之后是分类 chip（`全部 267 / CAPCOM 51 / SNK 40 …`），整段可横向滚动
+  - 右：搜索框，自己一层玻璃，里面不再嵌一层
+- 每个货架有固定的分类标准，见「分类标准」一节
 - 封面横版展示、保持原始比例（街机 flyer 不裁切），没有视频、GIF、右侧介绍面板
 - 数据自己管：一份 SQLite，核心只存名字，换系统自动拼 `.dll / .so / .dylib`
 - 默认 CRT 滤镜来自 **[脑浆油条](https://space.bilibili.com/)** 的 PhosphorLine 系列
@@ -76,8 +78,8 @@ internal/library/  数据模型、SQLite、旧库导入、封面搬迁
 | 表 | 说明 |
 | --- | --- |
 | `platform` | `key`（`rom/` 下的目录名）、`name`、`grp`（货架：`arcade`/`console`/`handheld`/`pc`）、`exts`、`sort` |
-| `menu` | 某平台下的分类（SNK / CAPCOM / 彩京 …） |
-| `game` | `title` 与 `rom_path` 分开；`size` 字节数、`cover` 相对 `数据/` 的路径、`favorite`、`core`（本游戏单独指定的核心）、`sim_id` |
+| `menu` | 旧前端的分类表，**已不再读**（分类在载入时按轴现算） |
+| `game` | `title` 与 `rom_path` 分开；`size` 字节数、`cover` 相对 `数据/` 的路径、`favorite`、`core`（本游戏单独指定的核心）、`sim_id`、`board`（MAME driver source 折出来的基板） |
 | `sim` | 模拟器：`exe`、`core`（核心名）、`args`（其余参数，含 `{RomFullPath}`）、`is_default` |
 | `setting` | `schema`（库版本）、`imported` 等 |
 
@@ -92,23 +94,28 @@ internal/library/  数据模型、SQLite、旧库导入、封面搬迁
 
 ## 每个货架一个固定的分类标准
 
-顶栏中间那颗胶囊里的第二组 chip 是「分类」，它的含义按货架固定，不随游戏变：
+顶栏中间最靠左那颗小药丸是「分类标准」的切换（`⇄ 厂商`），它换的是整条货架的分类口径：
 
-| 货架 | 按什么分 | 举例 |
-| --- | --- | --- |
-| 街机 | 厂商 | CAPCOM 51 / SNK 46 / IGS 23 / PSIKYO 13 / SEGA 13 … 认不出的归「未标注厂商」 |
-| 麻将 | 年份 | 2022 → 2006 → … → 1986，倒序时间线，未知年份排最后 |
-| 掌机 | 机种 | GBA / PSP / NGP，按它跑的核心里映出的机器名，不直接显示核心名 |
-| 家用机 | 机种＝平台本身 | FC / SFC / SEGA / Playstation …，所以这一排只有机种 chip，没有第二组 |
-| PC | 同上 | 只有机种 chip |
+| 货架 | 默认标准 | 可切换 | 举例 |
+| --- | --- | --- | --- |
+| 街机 | 厂商 | 厂商 ⇄ **基板** | 厂商：CAPCOM 51 / SNK 40 / IGS 21 … 认不出的归「未标注厂商」<br>基板：MVS 29 / ST-V 9 / CPS1 8 / CPS2 7 / NAOMI 6 / PGM 6 … 未知归「未标注基板」 |
+| 麻将 | 年份 | 只有年份，不显示切换 | 2022 → 2006 → … → 1986，倒序时间线，未知年份排最后 |
+| 家用机 | 机种 | 机种 ⇄ **厂商** | 机种：FC / SFC / SEGA / 任天堂 / 3DO …<br>厂商：NINTENDO 417 / SEGA 64 / SONY 14 / 3DO 1 |
+| 掌机 | 机种 | 机种 ⇄ **厂商** | 机种：GBA / PSP / NGP<br>厂商：NINTENDO / SONY / SNK（按核心映出的机器归属） |
+| PC | 机种 | 机种 ⇄ 厂商 | 同上，机种就是平台本身 |
 
-实现是 `internal/library/split.go` 的 `menuAxis` + `(*Library).split()`：载入库之后按上面
-的轴重写每个游戏的 `menu`，再重建菜单，所以 chip 和筛选永远读同一个字段。旧前端那些
-把系列、类型、硬件名混在一起的菜单（`冒险岛`、`ACT`、`STV`）不再使用。
+口径由 `internal/library/split.go` 的 `AxesOf(group)` 定，切一次就把整货架每个游戏的 `menu`
+按新轴重写一遍（`SplitGroup`），chip 和筛选读的永远是同一个字段。旧前端那些把系列、类型、
+硬件名混在一起的菜单（`冒险岛`、`ACT`、`STV`）不再使用；`menu` 表也彻底不读了。
 
-- 厂商取自 `game.publisher`（ADB 抓的），没有就退回它原来的目录名（`SNK`、`CAPCOM`），
+- **厂商**：取 `game.publisher`（ADB 抓的），没有就退回它原来的目录名（`SNK`、`CAPCOM`），
   `彩京 → PSIKYO`、`STV/NAOMI/MODEL2/MODEL3 → SEGA`，`ACT/STG/OTHERS/古老的游戏` 这类
   不是厂商的名字统一落「未标注厂商」；`CAPCOM / ARIKA` 这种合写只取第一个。
+- **基板**：取 `game.board`，来源是 MAME 的 driver source（`snk/neogeo.cpp`、`capcom/cps2.cpp`），
+  经 `BoardOf` 折成牌子名（`MVS`、`CPS1`、`CPS2`、`ST-V`、`NAOMI`、`PGM`、`SYSTEM 12`、`KONAMI GX` …），
+  没收录的就大写源名兜底。
+- 街机默认开在厂商，是因为基板只有 124/267 抓得到（ADB 没有页的 romset 就没有 driver source），
+  默认开基板会让一半游戏落在「未标注基板」里；切换仍然给着。
 - 年份轴按时间线排，不按游戏数排——1996 有 12 个也不会跑到 2022 前面。
 
 ## 封面与厂商年份：Arcade Italia
@@ -126,8 +133,8 @@ romset 不存在就 404。同名的 `dettaglio_mame.php?game_name=<rom>` 是详�
   GameRoom.exe -fetch-info   [-limit N]
   ```
 
-- 抓到的图落到 `数据/covers/<平台>/<rom>.png`，同时写回 `game.cover`；厂商年份写回
-  `game.publisher` / `game.year` / `game.genre`。
+- 抓到的图落到 `数据/covers/<平台>/<rom>.png`，同时写回 `game.cover`；厂商 / 年份 / 类型 /
+  **基板**（`Driver source`）写回 `game.publisher` / `game.year` / `game.genre` / `game.board`。
 - **ADB 会限流**：一口气抓十几张之后连 TLS 握手都会失败，隔一阵才恢复。所以客户端默认
   每张之间停 400ms，网络错误重试三次（2s / 4s 退避）。批量抓请一批一批来。
 - 有些 romset 就是没图（`ssf2tnl`、`wofaha2`、`deathsm2` 只有 0.6KB 占位图），这类会一直留在

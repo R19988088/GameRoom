@@ -85,41 +85,54 @@ func (a *ADB) Cover(rom string) ([]byte, error) {
 	return nil, ErrNoCover
 }
 
-// Info is what a romset's page says about the game: who built it, when, and
-// what kind of game it is. Empty strings for what the page does not fill.
-func (a *ADB) Info(rom string) (maker, year, genre string, err error) {
+// Info is what a romset's page says about the game: who built it, when, what
+// kind of game it is, and which MAME driver runs it. Empty strings for what
+// the page does not fill.
+type Info struct {
+	Maker string
+	Year  string
+	Genre string
+	// Board is the driver source, as "snk/neogeo.cpp": the 基板 the 街机 shelf
+	// files games by.
+	Board string
+}
+
+// Info reads a romset's page.
+func (a *ADB) Info(rom string) (Info, error) {
+	var info Info
 	rom = strings.ToLower(strings.TrimSpace(rom))
 	if rom == "" {
-		return "", "", "", ErrNoCover
+		return info, ErrNoCover
 	}
 	if a.Pause > 0 {
 		time.Sleep(a.Pause)
 	}
 	req, err := http.NewRequest(http.MethodGet, a.detail(rom), nil)
 	if err != nil {
-		return "", "", "", err
+		return info, err
 	}
 	req.Header.Set("User-Agent", "GameRoom/1.0 (cover fetch)")
 	resp, err := a.Client.Do(req)
 	if err != nil {
-		return "", "", "", err
+		return info, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", "", "", ErrNoCover
+		return info, ErrNoCover
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return "", "", "", err
+		return info, err
 	}
 	page := string(body)
-	maker = adbValue(page, "Manufacturer")
-	year = adbValue(page, "Year")
-	genre = adbValue(page, "Genre")
-	if maker == "" && year == "" {
-		return "", "", "", ErrNoCover
+	info.Maker = adbValue(page, "Manufacturer")
+	info.Year = adbValue(page, "Year")
+	info.Genre = adbValue(page, "Genre")
+	info.Board = adbText(page, "Driver source")
+	if info.Maker == "" && info.Year == "" {
+		return info, ErrNoCover
 	}
-	return maker, year, genre, nil
+	return info, nil
 }
 
 // adbValue reads the value the page's table puts after a caption:
@@ -140,6 +153,46 @@ func adbValue(page, caption string) string {
 		rest = rest[:k]
 	}
 	return strings.TrimSpace(rest)
+}
+
+// adbText is adbValue for the rows whose value is a link instead of a
+// dettaglio span — the driver source reads "snk/neogeo.cpp" inside an <a>.
+func adbText(page, caption string) string {
+	i := strings.Index(page, `<div class="table_caption">`+caption)
+	if i < 0 {
+		return ""
+	}
+	j := strings.Index(page[i:], `class="table_value">`)
+	if j < 0 {
+		return ""
+	}
+	rest := page[i+j+len(`class="table_value">`):]
+	// The value ends where the cell does, at the first nested block or the
+	// closing tag — the row's caption column follows.
+	if k := strings.Index(rest, "<div"); k >= 0 {
+		rest = rest[:k]
+	}
+	if k := strings.Index(rest, `</div>`); k >= 0 {
+		rest = rest[:k]
+	}
+	var b strings.Builder
+	depth := 0
+	for _, r := range rest {
+		switch {
+		case r == '<':
+			depth++
+		case r == '>':
+			if depth > 0 {
+				depth--
+			}
+			if depth == 0 {
+				b.WriteByte(' ')
+			}
+		case depth == 0:
+			b.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }
 
 // get asks for one picture under one kind of the media tree.

@@ -47,6 +47,8 @@ func testApp(lib *library.Library, group, platform string) *App {
 		icons:    map[string]*ui.Bitmap{},
 		pending:  map[string]bool{},
 	}
+	a.axis = a.defaultAxis()
+	lib.SplitGroup(group, a.axis)
 	a.recount()
 	a.refilter()
 	return a
@@ -54,43 +56,58 @@ func testApp(lib *library.Library, group, platform string) *App {
 
 type rect struct{ x, y, w, h float32 }
 
-// TestTopRowIsThreeCapsules: the shelf picker, the shelf's chips and the
-// search sit in one row as three separate capsules, not one long bar.
-func TestTopRowIsThreeCapsules(t *testing.T) {
+// TestTopBarIsFlat: the shelf picker, the chips and the search sit on one
+// row, and the chips are chips — short pills of their own, not content inside
+// a bigger plate of glass.
+func TestTopBarIsFlat(t *testing.T) {
 	a := testApp(fakeLibrary(), "arcade", "arc")
 	tt := ui.NewTester(a.view, 1500, 940)
 	tt.Frame()
 
+	// Topmost wins: the status line also starts with the shelf's name, and it
+	// sits at the bottom of the window.
 	find := func(prefix string) rect {
+		best := rect{-1, -1, 0, 0}
 		for _, info := range tt.AccessAll() {
-			if strings.HasPrefix(info.Name, prefix) && info.Bounds.H < 70 {
-				return rect{info.Bounds.X, info.Bounds.Y, info.Bounds.W, info.Bounds.H}
+			if !strings.HasPrefix(info.Name, prefix) || info.Bounds.H >= 70 {
+				continue
+			}
+			if best.y < 0 || info.Bounds.Y < best.y {
+				best = rect{info.Bounds.X, info.Bounds.Y, info.Bounds.W, info.Bounds.H}
 			}
 		}
-		return rect{-1, -1, 0, 0}
+		return best
 	}
 	shelf, all, search := find("街机"), find("全部"), find("搜索游戏名")
 	if shelf.y < 0 || all.y < 0 || search.y < 0 {
-		t.Fatalf("not all three capsules found: shelf %v all %v search %v", shelf, all, search)
+		t.Fatalf("not every part of the bar was found: shelf %v all %v search %v", shelf, all, search)
 	}
 	// One row: their middles line up (text nodes sit a few DIPs off a
 	// button's box, so compare centres).
 	for _, r := range []rect{shelf, all, search} {
 		if d := (r.y + r.h/2) - (shelf.y + shelf.h/2); d > 4 || d < -4 {
-			t.Errorf("capsule centred at %v, shelf centred at %v: not one row",
+			t.Errorf("part centred at %v, shelf centred at %v: not one row",
 				r.y+r.h/2, shelf.y+shelf.h/2)
 		}
 	}
-	// Three capsules, not one: there is a gap between each pair.
+	// Flat: the chips are shorter than the picker, so nothing wraps them —
+	// if a plate of glass held them, every chip would be as tall as it.
+	if all.h > 34 {
+		t.Errorf("the 全部 chip is %v tall: it is inside a plate, not flat on the bar", all.h)
+	}
+	if shelf.h < 42 {
+		t.Errorf("the shelf picker is only %v tall, want one full-height pill", shelf.h)
+	}
+	// Three things, not one bar: a gap between each pair.
 	if shelf.x+shelf.w > all.x-4 {
-		t.Errorf("shelf ends at %v, chips begin at %v: one bar, not two capsules", shelf.x+shelf.w, all.x)
+		t.Errorf("shelf ends at %v, chips begin at %v: one bar, not two", shelf.x+shelf.w, all.x)
 	}
 	if all.x+all.w > search.x-4 {
-		t.Errorf("chips end at %v, search begins at %v: one bar, not two capsules", all.x+all.w, search.x)
+		t.Errorf("chips end at %v, search begins at %v: one bar, not two", all.x+all.w, search.x)
 	}
 	// And the row floats: everything in it ends above the covers.
-	if all.y+all.h > 82 {
-		t.Errorf("the chips capsule ends at %v, covers start at 98:", all.y+all.h)
+	if all.y+all.h > 70 {
+		t.Errorf("the chips end at %v, covers start at 64:", all.y+all.h)
 	}
 	var cardTop float32 = 1e6
 	for _, info := range tt.AccessAll() {
@@ -98,7 +115,7 @@ func TestTopRowIsThreeCapsules(t *testing.T) {
 			cardTop = info.Bounds.Y
 		}
 	}
-	if cardTop < 82 {
-		t.Errorf("a card starts at %v, under the capsules", cardTop)
+	if cardTop < 60 {
+		t.Errorf("a card starts at %v, under the bar", cardTop)
 	}
 }

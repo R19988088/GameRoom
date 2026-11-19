@@ -124,27 +124,51 @@ chip 里的「分类」按货架固定，由 `menuAxis` 决定，`(*Library).spl
 ## 行为约定
 
 - **只显示封面**：不出视频、不出 GIF、不做右侧介绍面板。
-- **顶部是三个分开的胶囊**（Apple TV 味，不是一条大横条）：`toolbar()` 用一条 `Row` 摆三个
-  子元素，每个都过 `a.capsule(el)` 上 `Material(glass.Glass{Clarity: 0.55, Tint: "#0d0f168f"})`
-  + `Border` + `Shadow` + `Radius(18)`：
-  1. 左：货架按钮本身就是一颗胶囊（`Height(60)`、`PaddingX(18)`），显示"货架名 + 局数 + `▾`"，
-     点开 `ui.PopoverBase(c, anchor, &a.shelfOpen, …)` 列出五个货架（街机 / **麻将** / 家用机 /
-     掌机 / PC），当前项橙色 `#e8763a1f` 高亮。
-  2. 中：`contentRow()` 一颗胶囊装两段 —— 先机种 chip（`topPlatforms(5)`，多的进 `更多 N`
-     popover；**只摆局数最多的五个**，选中的机种永远保证有一个 chip，否则它下面的游戏会"无主"），
-     再一条 1px 竖线，再该机种的分类 chip；整段放在 `ScrollHorizontal` 里横滚。单机种货架
-     （街机只剩 arc、麻将只剩 majiang）不画机种 chip，直接只有分类。
-  3. 右：搜索框，胶囊里再嵌一层 `glass.Glass{}`（`Width(320)`），所以是"液态"的磨砂玻璃。
-- **封面从胶囊后面滚过去**：`view()` 里先画 `body`（`Absolute().Left(26).Top(26).Right(26).Bottom(34)`
+- **顶栏是平铺的一条，不套层**（Apple TV 味）：`toolbar()` 一条 `Row`（`Left/Right 20`、`Top 14`、
+  `Height 46`、`Gap 10`）摆三样东西，**没有任何一样把 chip 包在里面**：
+  1. 左：货架按钮，一整颗（`a.glass(el)`：`Radius(14)` + `Material(glass.Glass{Clarity: 0.5,
+     Tint: "#0d0f168f"})` + `Border(1, #ffffff1f)` + `Shadow(0, 10, 26, 0, #00000099)`），`Height(46)`、
+     `PaddingX(16)`，显示"货架名 + 局数 + `▾`"，点开 `ui.PopoverBase` 列出五个货架，当前项橙色高亮。
+  2. 中：`ScrollHorizontal(...).Grow(1).MinWidth(0).Height(46).ClipX()` —— **一个看不见的滚动条**，
+     自己没有任何玻璃；里面 `Row` 直接铺 chip。`contentRow()` 输出：**分类标准切换药丸**
+     （`axisSwitch()`：`⇄` + 当前标准名，点击 `nextAxis()` 轮换；`AxesOf` 只有一个轴时——麻将——不画）
+     + 1px 细线 + 分类 chip（`全部` + `Chips`）。机种轴下 chip 就是平台 chip（`topPlatforms(5)`，
+     多的进 `更多 N`，只摆局数最多的五个，选中的机种保证有一个）。
+     **单平台货架不画机种 chip**；**机种轴下没有分类，连 `全部` 都不画**，只剩机种 chip。
+  3. 右：搜索框，`a.glass(...)` 一层药丸（`Width(300)`、`Height(46)`、`PaddingX(14)`），里面直接是
+     `TextInputBase`（无样式控件，不带自己的底），所以只有一层玻璃。
+  chip 本身（`chip()` → `chipBase()`）：`ButtonBase` + `Height(32)`、`Radius(16)`、
+  `Material(glass.Glass{Clarity: 0.45, Tint: "#0d0f16a6"})` + `Border(1, #ffffff24)` +
+  `Shadow(0,8,20,0,#00000066)`；选中换 `Tint #e8763a3b` / 描边 `#e8763aa6` + 600 字重。
+  **小药丸一律走 `chipBase()`**（状态栏的「补全封面 N」也是），这样它们都是同一层玻璃。
+  **加东西时别再引入一层容器药丸**：`layout_test.go` 的 `TestTopBarIsFlat` 断言 chip 高度 ≤ 34
+  而货架按钮 ≥ 42，就是为了钉死"chip 不在盘子里"。
+- **封面从 chip 之间穿过去**：`view()` 里先画 `body`（`Absolute().Left(26).Top(26).Right(26).Bottom(34)`
   的 `GridView`），再画 `statusBar`，最后才画 `toolbar`。网格的**内容内边距** `Padding(64, 0, 0, 0)`
-  让首行落在胶囊下方，而这块 padding 是随内容一起滚的（`list.go` 原文 "Padding pads the content,
-  scrolling with it"），所以一滚封面就钻到胶囊底下、被玻璃糊掉。**注意 `Padding` 的参数顺序是
-  上/右/下/左**，写反了会压住内容（`internal/app/layout_test.go` 盯着这件事）。
-- 顶部三个胶囊的位置由 `internal/app/layout_test.go` 的 `TestTopRowIsThreeCapsules` 盯着：
-  三者同一行（比中心点）、两两之间有空隙（不是一条长条）、整行底边在 82 以内、卡片不钻到胶囊下面；
+  让首行落在顶栏下方，而这块 padding 是随内容一起滚的（`list.go` 原文 "Padding pads the content,
+  scrolling with it"），所以一滚封面就钻到顶栏底下、从药丸和 chip 之间露出来。**注意 `Padding` 的
+  参数顺序是上/右/下/左**，写反了会压住内容。
+- 位置由 `internal/app/layout_test.go` 的 `TestTopBarIsFlat` 盯着：三样东西同一行（比中心点）、
+  两两之间有空隙、chip 比货架按钮矮（不套层）、整行底边在 70 以内、卡片不钻到顶栏下面；
   `bar_test.go` 还盯着货架在最左、`更多` 不压搜索框；`shelf_test.go` 确认菜单点得开；
   `shelf_one_test.go` 确认单机种货架不画机种 chip、麻将自成货架；`render_test.go` 采样像素确认
   搜索框的玻璃真的画出来了。
+- **封面一张一张解码**：`a.image()` 只把路径塞进 `a.jobs` 队列（`pending` 去重），
+  `pumpImages()` 一次只起一个 goroutine 读文件 + `DecodeBitmapScaled`，解完在 `win.Update` 里写入
+  `covers` / `icons` 并**再调一次 `pumpImages()` 拉下一张**。滚动再快也只有一个解码器在跑。
+- **分类标准（axis）是按货架定的、可切换的**：`library.AxesOf(group)` 给出这个货架有哪几套口径
+  （街机 `[maker, board]`、麻将 `[year]`、家用机/掌机/PC `[machine, maker]`），第一个是默认。
+  `SplitGroup(group, axis)` 把整货架每个游戏的 `menu` 按该轴重写，`Chips` 再汇总；切轴就重写一遍，
+  chip 与筛选读的永远是 `menu` 这一个字段。`menu` 表不再读。车库里 `a.axis/a.chips/shelfTotal`
+  记着当前口径，`chooseAxis/nextAxis` 改它，`recount` 重算 chip，`refilter` 重算列表。
+- **分类口径**：厂商 = `publisher` 归一（`PublisherOf`/`makerName`，认不出落「未标注厂商」）；
+  基板 = `board`（MAME driver source）经 `BoardOf` 折成牌子名（`MVS`/`CPS1`/`CPS2`/`ST-V`/`NAOMI`…
+  没收录就大写源名兜底）；年份按时间线降序、未知排末（`unknownRank`/`yearRank`）；机种在
+  家用机就是平台本身（无分类），在掌机按核心映出的机器（`machineOf`）。
+- 街机默认开厂商而非基板：`board` 只有 124/267 抓得到（ADB 没页的 romset 就没有 driver source），
+  默认开基板会让一半游戏落进「未标注基板」。
+- 进一个货架、或切到机种轴时，选的是**局数最多**的那台机器（`biggestPlatform`），不是平台表第一行
+  ——否则家用机会开局停在只有 1 个游戏的 3DO。
 - 封面用 `Fit(Contain)` 保持原始比例（街机 flyer 不裁切），卡片本身 16:9 左右。
 - **第一版只启动 RetroArch**：`internal/launch` 只认 `retroarch.exe`；其它模拟器只在状态栏
   提示“本版只启动 RetroArch”。

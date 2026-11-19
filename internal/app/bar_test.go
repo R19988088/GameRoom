@@ -42,6 +42,8 @@ func newTestApp(lib *library.Library, platform string) *App {
 		icons:    map[string]*ui.Bitmap{},
 		pending:  map[string]bool{},
 	}
+	a.axis = a.defaultAxis()
+	lib.SplitGroup(a.group, a.axis)
 	a.recount()
 	a.refilter()
 	return a
@@ -117,7 +119,7 @@ func TestBarHasThreeParts(t *testing.T) {
 		t.Errorf("the search field runs past the window: %v", search)
 	}
 	// All three sit on the bar's one line.
-	if shelf.Y < 18 || search.Y+search.H > 78 {
+	if shelf.Y < 10 || search.Y+search.H > 62 {
 		t.Errorf("the parts are not inside the bar: shelf %v, search %v", shelf, search)
 	}
 }

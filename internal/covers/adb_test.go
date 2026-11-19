@@ -62,7 +62,8 @@ func TestCoverIgnoresAnErrorPage(t *testing.T) {
 	}
 }
 
-// TestInfoReadsThePage: manufacturer, year and genre come off the detail page.
+// TestInfoReadsThePage: manufacturer, year, genre come off the detail page,
+// and the driver source — a link, not a dettaglio — is the 基板.
 func TestInfoReadsThePage(t *testing.T) {
 	page := `<div class="table_row new_row">
 	  <div class="table_caption">Manufacturer: </div>
@@ -75,6 +76,10 @@ func TestInfoReadsThePage(t *testing.T) {
 	<div class="table_row new_row">
 	  <div class="table_caption">Genre: </div>
 	  <div class="table_value"> <span class="dettaglio">Fighter</span></div>
+	</div>
+	<div class="table_row new_row">
+	  <div class="table_caption">Driver source: </div>
+	  <div class="table_value"> <a id='inputid95' href="https://adb.arcadeitalia.net/x">snk/neogeo.cpp</a> <div>…</div></div>
 	</div>`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(page))
@@ -82,12 +87,15 @@ func TestInfoReadsThePage(t *testing.T) {
 	defer srv.Close()
 
 	adb := &ADB{Client: srv.Client(), Base: srv.URL, Pause: time.Millisecond}
-	maker, year, genre, err := adb.Info("kof98")
+	info, err := adb.Info("kof98")
 	if err != nil {
 		t.Fatalf("Info: %v", err)
 	}
-	if maker != "SNK" || year != "1998" || genre != "Fighter" {
-		t.Errorf("got %q %q %q", maker, year, genre)
+	if info.Maker != "SNK" || info.Year != "1998" || info.Genre != "Fighter" {
+		t.Errorf("got %+v", info)
+	}
+	if info.Board != "snk/neogeo.cpp" {
+		t.Errorf("driver source = %q, want snk/neogeo.cpp", info.Board)
 	}
 }
 
@@ -99,7 +107,7 @@ func TestInfoOfAnEmptyPage(t *testing.T) {
 	defer srv.Close()
 
 	adb := &ADB{Client: srv.Client(), Base: srv.URL, Pause: 0}
-	if _, _, _, err := adb.Info("zzz"); err != ErrNoCover {
+	if _, err := adb.Info("zzz"); err != ErrNoCover {
 		t.Errorf("err = %v, want ErrNoCover", err)
 	}
 }

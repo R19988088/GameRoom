@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS game (
 	publisher    TEXT NOT NULL DEFAULT '',
 	genre        TEXT NOT NULL DEFAULT '',
 	region       TEXT NOT NULL DEFAULT '',
+	board        TEXT NOT NULL DEFAULT '',
 	favorite     INTEGER NOT NULL DEFAULT 0,
 	core         TEXT NOT NULL DEFAULT '',
 	sim_id       INTEGER NOT NULL DEFAULT 0
@@ -112,6 +113,14 @@ func Open(path string) (*sql.DB, error) {
 	if err := SetSetting(db, "schema", schemaVersion); err != nil {
 		db.Close()
 		return nil, err
+	}
+	// The 基板 column arrived after the first libraries were written; adding
+	// it in place keeps the covers and the metadata already fetched.
+	if !hasColumn(db, "game", "board") {
+		if _, err := db.Exec(`ALTER TABLE game ADD COLUMN board TEXT NOT NULL DEFAULT ''`); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("add board: %w", err)
+		}
 	}
 	return db, nil
 }
@@ -184,9 +193,10 @@ func SetCover(db *sql.DB, gameID int, cover string) error {
 	return err
 }
 
-// SetInfo records what the game's page says: manufacturer, year, genre. An
-// empty value leaves the column as it was.
-func SetInfo(db *sql.DB, gameID int, publisher, year, genre string) error {
+// SetInfo records what the game's page says: manufacturer, year, genre, and
+// the driver source the 基板 is read from. An empty value leaves the column as
+// it was.
+func SetInfo(db *sql.DB, gameID int, publisher, year, genre, board string) error {
 	y := 0
 	if year != "" {
 		y, _ = strconv.Atoi(strings.TrimSpace(year))
@@ -194,8 +204,9 @@ func SetInfo(db *sql.DB, gameID int, publisher, year, genre string) error {
 	_, err := db.Exec(`UPDATE game SET
 		publisher = CASE WHEN ? <> '' THEN ? ELSE publisher END,
 		year      = CASE WHEN ? > 0 THEN ? ELSE year END,
-		genre     = CASE WHEN ? <> '' THEN ? ELSE genre END
-		WHERE id = ?`, publisher, publisher, y, y, genre, genre, gameID)
+		genre     = CASE WHEN ? <> '' THEN ? ELSE genre END,
+		board     = CASE WHEN ? <> '' THEN ? ELSE board END
+		WHERE id = ?`, publisher, publisher, y, y, genre, genre, board, board, gameID)
 	return err
 }
 
@@ -244,7 +255,7 @@ func Load(db *sql.DB) (*Library, error) {
 	// menus from the games, so a shelf's chips follow one fixed standard.
 
 	grows, err := db.Query(`SELECT id, platform_key, menu, title, rom_path, size, cover, year,
-		publisher, genre, region, favorite, core, sim_id
+		publisher, genre, region, favorite, core, sim_id, board
 		FROM game ORDER BY favorite DESC, title`)
 	if err != nil {
 		return nil, err
@@ -253,7 +264,7 @@ func Load(db *sql.DB) (*Library, error) {
 		var g Game
 		if err := grows.Scan(&g.ID, &g.PlatformKey, &g.Menu, &g.Title, &g.RomPath, &g.Size,
 			&g.Cover, &g.Year, &g.Publisher, &g.Genre, &g.Region, &g.Favorite,
-			&g.Core, &g.SimID); err != nil {
+			&g.Core, &g.SimID, &g.Board); err != nil {
 			grows.Close()
 			return nil, err
 		}
@@ -277,9 +288,23 @@ func Load(db *sql.DB) (*Library, error) {
 
 	// The menus the shelf shows are derived from the games themselves
 	// (see split.go); the old library's menu table mixed makers, hardware
-	// and genres, and is ignored.
-	l.split()
+	// and genres, and is ignored. Load leaves every shelf on its default
+	// standard, and the bar switches from there.
+	for _, group := range groups() {
+		if axes := AxesOf(group); len(axes) > 0 {
+			l.SplitGroup(group, axes[0])
+		}
+	}
 	return l, nil
+}
+
+// groups lists the shelves the loaded platforms belong to, in bar order.
+func groups() []string {
+	out := make([]string, 0, len(Groups))
+	for _, g := range Groups {
+		out = append(out, g.Key)
+	}
+	return out
 }
 
 // splitList reads a "|"-separated list, dropping empty entries.

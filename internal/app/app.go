@@ -49,9 +49,10 @@ type App struct {
 	win   *mygo.Window
 	theme ui.Theme
 
-	group    string // the shelf shown: arcade, console, handheld, pc
-	platform string // the chosen platform's key
-	menu     string // "" shows every menu of the platform
+	group    string // the shelf shown: arcade, mahjong, console, handheld, pc
+	axis     string // how the shelf files its games: board, maker, machine, year
+	platform string // the chosen platform's key, "" when the axis has no machine
+	menu     string // "" shows every game of the shelf
 	query    string
 	chosen   int // the item chosen in the grid
 	grid     ui.GridState
@@ -63,13 +64,19 @@ type App struct {
 
 	shown         []library.Game
 	counts        map[string]int // games shown per platform
-	menuCounts    map[string]int // games shown per menu of a.platform
-	platformTotal int
+	menuCounts    map[string]int // games shown per value of the axis
+	chips         []library.Chip // the axis' values, in bar order
+	platformTotal int            // games of the chosen platform
+	shelfTotal    int            // games of the whole shelf
 	status        string
 
 	covers  map[string]*ui.Bitmap // by path; nil once known missing
 	icons   map[string]*ui.Bitmap
 	pending map[string]bool
+
+	// The decode queue: pictures wait here and are decoded one at a time.
+	jobs    []imageJob
+	loading bool
 
 	// The cover-fetching run: how many covers the 街机 shelf is missing, and
 	// whether a fetch is in flight, with its progress.
@@ -106,16 +113,15 @@ func boot() {
 	}
 	if a.lib != nil && len(a.lib.Platforms) > 0 {
 		a.group = "arcade"
-		key := ""
-		for _, p := range a.lib.PlatformsOf(a.group) {
-			key = p.Key
-			break
-		}
-		if key == "" {
+		a.axis = a.defaultAxis()
+		a.lib.SplitGroup(a.group, a.axis)
+		a.platform = a.biggestPlatform(a.group)
+		if a.platform == "" {
 			a.group = a.lib.Platforms[0].Group
-			key = a.lib.Platforms[0].Key
+			a.axis = a.defaultAxis()
+			a.lib.SplitGroup(a.group, a.axis)
+			a.platform = a.biggestPlatform(a.group)
 		}
-		a.platform = key
 		a.recount()
 		a.refilter()
 		a.countMissing()
@@ -286,22 +292,33 @@ func (a *App) reload() {
 	a.counts = lib.Counts()
 	a.covers = map[string]*ui.Bitmap{}
 	a.pending = map[string]bool{}
+	// Load put every shelf back on its default standard; restore the one the
+	// user was looking at.
+	if a.axis != "" {
+		a.lib.SplitGroup(a.group, a.axis)
+	}
 	a.countMissing()
 	a.recount()
 	a.refilter()
 }
 
-// refilter rebuilds the grid's games: the platform's, the menu's, the
-// search's.
+// refilter rebuilds the grid's games: those of the shelf, of the axis and of
+// the search.
 func (a *App) refilter() {
 	a.shown = a.shown[:0]
 	if a.lib != nil {
 		q := strings.ToLower(strings.TrimSpace(a.query))
+		machine := a.axis == library.AxisMachine || a.axis == ""
 		for _, g := range a.lib.Games {
-			if g.PlatformKey != a.platform {
+			p := a.lib.Platform(g.PlatformKey)
+			if p == nil || p.Group != a.group {
 				continue
 			}
-			if a.menu != "" && g.Menu != a.menu {
+			if machine {
+				if g.PlatformKey != a.platform {
+					continue
+				}
+			} else if a.menu != "" && g.Menu != a.menu {
 				continue
 			}
 			if q != "" && !strings.Contains(strings.ToLower(g.Title), q) {
@@ -324,6 +341,66 @@ func (a *App) choosePlatform(key string) {
 	a.refilter()
 }
 
+// axes are the standards the shelf offers.
+func (a *App) axes() []string { return library.AxesOf(a.group) }
+
+// defaultAxis is the standard a shelf opens on: the first it offers.
+func (a *App) defaultAxis() string {
+	if ax := a.axes(); len(ax) > 0 {
+		return ax[0]
+	}
+	return library.AxisMachine
+}
+
+// chooseAxis switches how the shelf files its games, the switch on the bar.
+func (a *App) chooseAxis(axis string) {
+	if a.axis == axis {
+		return
+	}
+	a.axis, a.menu, a.moreOpen = axis, "", false
+	if a.lib != nil {
+		a.lib.SplitGroup(a.group, axis)
+		if axis == library.AxisMachine {
+			// The 机种 axis needs a platform on screen, and the shelf's
+			// busiest one is what a person expects to land on.
+			a.platform = a.biggestPlatform(a.group)
+		}
+	}
+	a.recount()
+	a.refilter()
+}
+
+// biggestPlatform is the platform of a shelf with the most games, so entering
+// a shelf (or its 机种 axis) does not open on a one-game machine.
+func (a *App) biggestPlatform(group string) string {
+	if a.lib == nil {
+		return ""
+	}
+	best, bestN := "", -1
+	counts := a.lib.Counts()
+	for _, p := range a.lib.PlatformsOf(group) {
+		if n := counts[p.Key]; n > bestN {
+			best, bestN = p.Key, n
+		}
+	}
+	return best
+}
+
+// nextAxis is the switch's click: the other standard of the shelf.
+func (a *App) nextAxis() {
+	ax := a.axes()
+	if len(ax) < 2 {
+		return
+	}
+	for i, x := range ax {
+		if x == a.axis {
+			a.chooseAxis(ax[(i+1)%len(ax)])
+			return
+		}
+	}
+	a.chooseAxis(ax[0])
+}
+
 // chooseGroup switches the shelf; the first platform on it becomes the
 // one shown.
 func (a *App) chooseGroup(group string) {
@@ -331,37 +408,36 @@ func (a *App) chooseGroup(group string) {
 		return
 	}
 	a.group, a.menu, a.query = group, "", ""
+	a.axis = a.defaultAxis()
 	a.shelfOpen, a.moreOpen = false, false
-	for _, p := range a.lib.PlatformsOf(group) {
-		a.platform = p.Key
-		a.recount()
-		a.refilter()
-		return
-	}
-	// An empty shelf shows nothing rather than the last shelf's games.
-	a.platform = ""
-	a.menuCounts = map[string]int{}
-	a.platformTotal = 0
+	a.lib.SplitGroup(group, a.axis)
+	a.platform = a.biggestPlatform(group)
+	a.recount()
 	a.refilter()
 }
 
-// recount counts the games of the chosen platform, and of each of its
-// menus, as the sidebar shows them.
+// recount counts what the bar shows: the games of each platform, of the whole
+// shelf, and of each value of the axis.
 func (a *App) recount() {
 	a.menuCounts = map[string]int{}
-	a.platformTotal = 0
+	a.platformTotal, a.shelfTotal = 0, 0
 	if a.lib == nil {
 		return
 	}
 	for _, g := range a.lib.Games {
-		if g.PlatformKey != a.platform {
+		p := a.lib.Platform(g.PlatformKey)
+		if p == nil || p.Group != a.group {
 			continue
 		}
-		a.platformTotal++
+		a.shelfTotal++
+		if g.PlatformKey == a.platform {
+			a.platformTotal++
+		}
 		if g.Menu != "" {
 			a.menuCounts[g.Menu]++
 		}
 	}
+	a.chips = a.lib.Chips(a.group, a.axis)
 }
 
 func (a *App) chooseMenu(name string) {
@@ -380,6 +456,26 @@ func (a *App) platformName() string {
 		return p.Name
 	}
 	return "GameRoom"
+}
+
+// scopeName is what the status bar calls the games on screen: the platform
+// when the shelf is filed by machine, otherwise the shelf and the value
+// chosen on it.
+func (a *App) scopeName() string {
+	if a.axis == library.AxisMachine || a.axis == "" {
+		return a.platformName()
+	}
+	name := ""
+	for _, g := range library.Groups {
+		if g.Key == a.group {
+			name = g.Name
+		}
+	}
+	value := a.menu
+	if value == "" {
+		value = "全部"
+	}
+	return name + " · " + value
 }
 
 // launchGame starts the chosen game, when its emulator is RetroArch.
@@ -461,49 +557,79 @@ func (a *App) coverAbs(cover string) string {
 	return filepath.Join(a.root, "数据", filepath.FromSlash(cover))
 }
 
-// cover loads a cover once, in the background, at the size the grid
-// shows it. A missing file is remembered as missing, not retried.
+// cover loads a cover once, at the size the grid shows it. A missing file is
+// remembered as missing, not retried.
 func (a *App) cover(path string) *ui.Bitmap {
-	if path == "" {
-		return nil
-	}
-	if b, ok := a.covers[path]; ok {
-		return b
-	}
-	if a.pending[path] {
-		return nil
-	}
-	a.pending[path] = true
-	go func() {
-		var b *ui.Bitmap
-		if data, err := os.ReadFile(path); err == nil {
-			b, _ = ui.DecodeBitmapScaled(data, 420)
-		}
-		a.win.Update(func() { a.covers[path] = b })
-	}()
-	return nil
+	return a.image(path, 420, false)
 }
 
 // icon loads a platform's icon, small.
 func (a *App) icon(path string) *ui.Bitmap {
+	return a.image(path, 64, true)
+}
+
+// imageJob is one picture waiting its turn in the decode queue.
+type imageJob struct {
+	path string
+	max  int
+	icon bool
+}
+
+// image asks for a picture: it is returned at once when it is already in
+// memory, otherwise it is queued and decoded later, one at a time. A path
+// already queued or already tried is not asked for twice.
+func (a *App) image(path string, max int, icon bool) *ui.Bitmap {
 	if path == "" {
 		return nil
 	}
-	if b, ok := a.icons[path]; ok {
+	var have map[string]*ui.Bitmap
+	if icon {
+		have = a.icons
+	} else {
+		have = a.covers
+	}
+	if b, ok := have[path]; ok {
 		return b
 	}
 	if a.pending[path] {
 		return nil
 	}
 	a.pending[path] = true
+	a.jobs = append(a.jobs, imageJob{path: path, max: max, icon: icon})
+	a.pumpImages()
+	return nil
+}
+
+// pumpImages decodes the queue strictly one picture at a time: scrolling fast
+// must not open a decoder per visible card. Each finished picture asks for the
+// next, so the order the grid asked in is the order they arrive.
+func (a *App) pumpImages() {
+	if a.loading || len(a.jobs) == 0 {
+		return
+	}
+	job := a.jobs[0]
+	a.jobs = a.jobs[1:]
+	a.loading = true
 	go func() {
 		var b *ui.Bitmap
-		if data, err := os.ReadFile(path); err == nil {
-			b, _ = ui.DecodeBitmapScaled(data, 64)
+		if data, err := os.ReadFile(job.path); err == nil {
+			b, _ = ui.DecodeBitmapScaled(data, job.max)
 		}
-		a.win.Update(func() { a.icons[path] = b })
+		done := func() {
+			if job.icon {
+				a.icons[job.path] = b
+			} else {
+				a.covers[job.path] = b
+			}
+			a.loading = false
+			a.pumpImages()
+		}
+		if a.win == nil {
+			done()
+			return
+		}
+		a.win.Update(done)
 	}()
-	return nil
 }
 
 // buildTheme is the dark, warm palette the launcher draws with: near

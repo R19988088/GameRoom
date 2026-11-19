@@ -16,18 +16,35 @@
 ```
 GameRoom.exe
 模拟器/
-  RetroArch/            retroarch.exe、cores/、system/、shaders/ 同级
+  RetroArch/            retroarch.exe + cores/ system/ shaders/ config/ saves/ states/
 rom/
   arc/  fc/  sfc/  ps/  SEGA/  掌机/  任天堂/  微软/  majiang/  3DO/
 数据/
   launcher.db           SQLite：平台、分类、游戏、模拟器、设置
   config.json           simuiRoot（仅首次导入用）、crtShader
   covers/<平台>/        封面副本（约 735 张 / 153 MB）
-  retroarch-shader.cfg  每次启动生成的滤镜覆盖文件
 ```
 
-`模拟器/RetroArch` 与 `rom/*` 可以是 Windows 目录联接（junction）或 macOS/Linux 的软链接，
-指向已有的大文件目录，本仓库不占空间，也不分发任何 ROM、BIOS 与模拟器本体。
+`rom/*` 可以是 Windows 目录联接（junction）或 macOS/Linux 的软链接，指向已有的大文件目录，
+本仓库不占空间，也不分发任何 ROM、BIOS 与模拟器本体。
+
+### 自带的 RetroArch 是怎么放的
+
+把一份装了几年、被 simUI 反复改过的 RetroArch 收干净，只留跑游戏要用的东西（约 5.7 GB）：
+
+| 保留 | 内容 |
+| --- | --- |
+| `retroarch.exe` + 根目录 dll | 主程序与运行库 |
+| `cores/` | **只留** `<名字>_libretro.dll`，52 个核心；清掉 `xxx.dll-`、`xxx.dll 2406`、`*.cpp` 这类历史遗留，也把误放在根目录的 `geolith_libretro.dll` 归位 |
+| `system/` | BIOS 与 MAME 需要的资源：`neogeo.zip`、`scph*.bin`、`system/mame`、`system/fbneo`、`system/bios`、`system/DC` 等 |
+| `saves/` `states/` | 存档与即时存档（原样带走，别丢） |
+| `shaders/` | 收成一个预设 + 两个依赖目录（见下节） |
+| `config/` | 手柄映射、核心选项（`Geolith/Geolith.opt` 等） |
+| `assets/` `autoconfig/` | 界面资源与手柄自动配置 |
+
+去掉的是纯缓存与现成用不到的大件：`cache*/`、`database/`、`thumbnails/`、`screenshots/`、
+`recordings/`、`playlists/`、`logs/`、`downloads/`、`overlays/`、`shaders 精简/`，
+以及 `system/pcsx2*`、`system/xenia`、`system/dolphin-emu`（库里没有对应游戏）。
 
 ## 它由什么组成
 
@@ -73,17 +90,33 @@ internal/library/  数据模型、SQLite、旧库导入、封面搬迁
 1. `rom/<平台>/<相对路径>` 拼成绝对路径，`sim.exe`（相对工程根或绝对）定位模拟器
 2. `sim.core` → `模拟器/RetroArch/cores/<core>_libretro.dll`
 3. `sim.args` 里的 `{RomFullPath}` `{RomDir}` `{RomName}` `{RomBase}` 展开
-4. 读出 `数据/config.json` 的 `crtShader`，写 `数据/retroarch-shader.cfg`，用 `--appendconfig` 交给 RetroArch
+4. 读 `数据/config.json` 的 `crtShader`，把预设转写进 RetroArch 的 `config/global.slangp`
 5. 工作目录设为 RetroArch 所在目录，拉起进程
 
 ## CRT 滤镜
 
-默认采用 **脑浆油条** 的 **PhosphorLine**（预设 `shaders_slang/202603.slangp`）：
+默认采用 **脑浆油条** 的 **PhosphorLine**：`模拟器/RetroArch/shaders/202603.slangp`。
 
-- 滤镜本体放在 `模拟器/RetroArch/shaders/shaders_slang/`，**不随本仓库分发**（体积与授权原因）
-- 想换滤镜：改 `数据/config.json` 的 `crtShader`，如 `"shaders_slang/crt/crt-lottes.slangp"`
-- 想关掉：把 `crtShader` 留空
-- RetroArch 侧若已有 `config/global.slangp`，会优先于这里的设置
+**它没法真的只留一个文件**——slang 管线里每个 pass 都是一支独立的 `.slang` 程序、各自占一张
+framebuffer，RetroArch 不支持把 8 个 pass 合进同一个文件。能做的是把预设收成一个文件、
+把依赖收进两个小目录，不再是一整包两千多个预设：
+
+```
+shaders/
+  202603.slangp        唯一的预设：8 pass 的管线 + 全部参数（可直接改数值调口味）
+  passes/              14 支 .slang（phosphor-line v2.0 的 pass）
+  fsr/                 4 支（FSR 边缘平滑 pass + 两个头文件）
+```
+
+- **怎么生效**：RetroArch 1.17 不认命令行传进来的 `video_shader`（实测仍回落到 stock shader），
+  它只认 `config/` 下的 per-content 全局预设。所以 GameRoom 启动游戏前把
+  `shaders/202603.slangp` 转写成 `config/global.slangp`（pass 路径加 `../shaders/` 前缀）——
+  日志可见 `Specific shader preset found at ...config/global.slangp` 与 8 支 pass 编译、0 错误。
+- 想换滤镜：把新的 `.slangp` 放进 `shaders/`，改 `数据/config.json` 的 `crtShader` 即可
+- 想关掉：`crtShader` 留空
+- 滤镜本体不随本仓库分发（体积与授权原因）；找不到预设时不会拦着游戏启动，只是不套滤镜
+- 建议同时关掉 RetroArch 自己的 `auto_shaders_enable`（或至少别留别的 `config/global.slangp`），免得两边打架
+
 
 ## 从 simUI 迁移（一次性）
 
@@ -97,6 +130,9 @@ internal/library/  数据模型、SQLite、旧库导入、封面搬迁
 - 只搬封面，视频 / GIF / doc / desc 全部丢弃
 - `sim_conf` 里的 JSON（每个游戏单独指定核心）解析成 `game.core`
 - 同一 `(平台, rom 路径)` 去重
+- 导入后核对一遍“库里点名的核心”是否真在 `cores/` 下存在：本例 `mame2016` 没有 dll
+  （3 个街机游戏 + 1 条 sim），统一改成 `mame`；`xenia` 的覆盖改空，回落到 sim 的
+  `xenia_launcher`。核对后 25 个核心名全部命中
 
 导入完成后 `simuiRoot` 可以留空。
 

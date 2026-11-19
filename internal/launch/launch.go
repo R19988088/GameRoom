@@ -31,8 +31,8 @@ func IsRetroArch(exe string) bool {
 
 // Options are what the launcher adds to a sim's own command line.
 type Options struct {
-	// Shader is a preset beside RetroArch's shaders folder, applied through
-	// a config override. Empty runs the game with RetroArch's own config.
+	// Shader is a preset beside RetroArch's shaders folder.
+	// Empty leaves RetroArch's own shader settings alone.
 	Shader string
 }
 
@@ -40,7 +40,7 @@ type Options struct {
 //
 // root is the launcher's folder: a sim's exe is relative to it when it
 // is not absolute, so the package can move as a whole.
-func Resolve(root string, sim library.Sim, romAbs string, opt Options) (Target, error) {
+func Resolve(root string, sim library.Sim, romAbs string) (Target, error) {
 	exe := filepath.FromSlash(sim.Exe)
 	if !filepath.IsAbs(exe) {
 		exe = filepath.Join(root, exe)
@@ -64,38 +64,85 @@ func Resolve(root string, sim library.Sim, romAbs string, opt Options) (Target, 
 	if len(args) == 0 && IsRetroArch(exe) {
 		args = []string{romAbs}
 	}
-	if opt.Shader != "" && IsRetroArch(exe) {
-		cfg, err := shaderConfig(root, filepath.Dir(exe), opt.Shader)
-		if err != nil {
-			return Target{}, err
-		}
-		args = append(args, "--appendconfig", cfg)
-	}
 	return Target{Exe: exe, Args: args, Work: filepath.Dir(exe)}, nil
 }
 
-// shaderConfig writes the two lines RetroArch reads to turn a shader preset
-// on, and returns the file to append to its config.
+// InstallShader points RetroArch at a shader preset for every game.
 //
-// The preset is named the way RetroArch names it: relative to its shaders
-// folder, as "shaders_slang/202603.slangp", because the passes inside a
-// preset are named that way too.
-func shaderConfig(root, exeDir, shader string) (string, error) {
+// RetroArch 1.17 ignores video_shader passed on the command line, but it does
+// load the per-content "global" preset in config/, so that is where the copy
+// goes. A preset names its passes relative to the shaders folder, so those
+// names gain the "../shaders/" prefix that the config folder needs. A missing
+// preset is not an error: the game starts in RetroArch's own look.
+func InstallShader(t Target, shader string) error {
+	if shader == "" || !IsRetroArch(t.Exe) {
+		return nil
+	}
+	exeDir := t.Work
+	preset := ""
+	for _, cand := range shaderCandidates(shader) {
+		p := filepath.Join(exeDir, "shaders", filepath.FromSlash(cand))
+		if _, err := os.Stat(p); err == nil {
+			preset = p
+			break
+		}
+	}
+	if preset == "" {
+		return nil
+	}
+	data, err := os.ReadFile(preset)
+	if err != nil {
+		return err
+	}
+	var out strings.Builder
+	for _, line := range strings.Split(string(data), "\n") {
+		if pass, ok := shaderPass(line); ok && !strings.HasPrefix(pass, "../") && !filepath.IsAbs(pass) {
+			line = strings.Replace(line, `"`+pass+`"`, `"../shaders/`+pass+`"`, 1)
+		}
+		out.WriteString(line)
+		out.WriteString("\n")
+	}
+	target := filepath.Join(exeDir, "config", "global.slangp")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(target, []byte(out.String()), 0o644)
+}
+
+// shaderPass returns the path from a "shaderN = "path"" line.
+func shaderPass(line string) (string, bool) {
+	if !strings.HasPrefix(line, "shader") {
+		return "", false
+	}
+	eq := strings.Index(line, "=")
+	if eq < 0 {
+		return "", false
+	}
+	from := strings.Index(line[eq:], `"`)
+	if from < 0 {
+		return "", false
+	}
+	rest := line[eq+from+1:]
+	to := strings.Index(rest, `"`)
+	if to < 0 {
+		return "", false
+	}
+	return rest[:to], true
+}
+
+// shaderCandidates lists the names a shader may live under, since the same
+// preset is kept either as one file at the top of shaders or inside the pack
+// it came from.
+func shaderCandidates(shader string) []string {
 	name := strings.TrimPrefix(filepath.ToSlash(shader), "/")
-	preset := filepath.Join(exeDir, "shaders", filepath.FromSlash(name))
-	if _, err := os.Stat(preset); err != nil {
-		return "", fmt.Errorf("找不到滤镜 %s：%s", name, preset)
+	out := []string{name}
+	if !strings.HasPrefix(name, "shaders_") {
+		out = append(out, "shaders_slang/"+name)
 	}
-	dir := filepath.Join(root, "数据")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		out = append(out, name[i+1:])
 	}
-	cfg := filepath.Join(dir, "retroarch-shader.cfg")
-	body := "video_shader_enable = \"true\"\nvideo_shader = \"" + name + "\"\n"
-	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
-		return "", err
-	}
-	return cfg, nil
+	return out
 }
 
 // coreFile is a core's file beside RetroArch: Windows loads a .dll,

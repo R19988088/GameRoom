@@ -16,8 +16,8 @@ exe/           构建产物 simui-d.exe
 源码/          Go 源码（go.mod、main.go、internal/）
 ```
 
-`模拟器/RetroArch` 与 `rom/*` 目前是 Windows 目录联接（junction），指向原 simUI 安装里的
-大文件（RetroArch 8.7GB、rom 86GB），所以本目录不占空间。换机器时：
+`rom/*` 目前是 Windows 目录联接（junction），指向原 simUI 安装里的
+大文件（rom 86GB），所以本目录不占空间；`模拟器/RetroArch` 已经是收干净的实体拷贝（5.7GB）。换机器时：
 
 - Windows：`New-Item -ItemType Junction -Path rom\arc -Target <原目录>`
 - macOS / Linux：`ln -s <原目录> rom/arc`（junction 是 Windows 专有）
@@ -40,7 +40,7 @@ go build -o "E:\game\Sim ui_D\exe\GameRoom.exe" .
 第一次运行会把原 simUI 的库导入 `数据/launcher.db`。原库位置写在 `数据/config.json`：
 
 ```json
-{ "simuiRoot": "E:/game/0_RetroArch Sim ui", "crtShader": "shaders_slang/202603.slangp" }
+{ "simuiRoot": "E:/game/0_RetroArch Sim ui", "crtShader": "202603.slangp" }
 ```
 
 导入完成后 `simuiRoot` 可以留空，不再读它（封面已复制进 `数据/covers/`）。
@@ -102,8 +102,28 @@ go build -o "E:\game\Sim ui_D\exe\GameRoom.exe" .
   `core` + 其余参数。
 - **游戏可以覆盖核心**：`game.core` 非空时用它的，空则用 sim 的（旧库给个别街机
   游戏指定过 `mame2010`/`mame2016`，导入时保留成这一列）。
+- `mame2016` 在 2026-11 核对时本机并没有这个核心，3 个街机游戏和 1 条 sim 引用了它 →
+  已统一改成 `mame`；`4B4E07EF_DDR_Universe_3` 的 `game.core='xenia'` 同样没有对应 dll，
+  已置空改用 sim 的核心。改完核对：`sim` 里 25 个不同的核心名，`cores/` 下 52 个
+  `*_libretro.dll` 全部命中，无缺失。
 - macOS 上传 `.app` 会自动指向 `Contents/MacOS/<名字>`。
 - 网格 3–6 列随窗口宽度自适应；Enter 或双击启动；搜索框按标题过滤。
+
+## 滤镜怎么落到 RetroArch 里
+
+`shaders` 只留一个预设：`shaders/202603.slangp`（脑浆油条 PhosphorLine，8 pass），
+依赖是 `shaders/passes/`（14 支 `.slang`）和 `shaders/fsr/`（FSR 平滑 pass + 头文件）。
+**不能真的并成一个文件**：每个 pass 是独立的 `.slang` 程序，各占一张 framebuffer。
+
+RetroArch 1.17 实测不认命令行里的 `video_shader`（加了 `--appendconfig` 也回落到 stock
+shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.InstallShader`
+在启动前把预设转写一份到 `config/global.slangp`：`shaderN = "passes/x.slang"`
+改成 `"../shaders/passes/x.slang"`（config 目录到 shaders 目录的相对路径）。
+日志会出现 `Specific shader preset found at ...config/global.slangp` 并编译全部 pass，
+可作为验证手段。预设不存在时直接跳过，不拦游戏启动。
+
+`数据/config.json` 的 `crtShader` 只是预设名（`202603.slangp`），换滤镜就把新 `.slangp` 丢进
+`shaders/` 并改这里；留空则不套滤镜。
 
 ## 跨平台核对（2026-11 查 buildbot.libretro.com）
 
@@ -133,7 +153,7 @@ go build -o "E:\game\Sim ui_D\exe\GameRoom.exe" .
 
 simUI 只剩**一次性导入**这一处：第一次启动读它的 `data.dll` 和 `games/*/title` 等美术目录。
 导入完成后 `数据/config.json` 里的 `simuiRoot` 可以留空，`E:\game\0_RetroArch Sim ui`
-整个目录都可以删（`模拟器/RetroArch` 那条 junction 除外——那是复用同一份 RetroArch 安装）。
+整个目录都可以删（RetroArch 已经复制成实体目录，不再依赖那边）。
 
 RetroArch 本身不是 simUI 的一部分。
 

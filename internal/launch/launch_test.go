@@ -3,6 +3,7 @@ package launch
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/R19988088/GameRoom/internal/library"
@@ -81,7 +82,7 @@ func TestResolve(t *testing.T) {
 		Core: "geolith",
 		Args: "{RomFullPath}",
 	}
-	target, err := Resolve(root, sim, rom, Options{})
+	target, err := Resolve(root, sim, rom)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -93,5 +94,43 @@ func TestResolve(t *testing.T) {
 	}
 	if target.Work != exeDir {
 		t.Fatalf("Work = %q, want %q", target.Work, exeDir)
+	}
+}
+
+// TestInstallShader checks that a preset under shaders becomes the global
+// preset RetroArch loads, with pass paths that work from config/.
+func TestInstallShader(t *testing.T) {
+	exeDir := t.TempDir()
+	preset := filepath.Join(exeDir, "shaders", "202603.slangp")
+	if err := os.MkdirAll(filepath.Dir(preset), 0o755); err != nil {
+		t.Skip(err)
+	}
+	body := "shaders = \"2\"\n\nshader0 = \"passes/a.slang\"\nshader1 = \"fsr/shaders/b.slang\"\n"
+	if err := os.WriteFile(preset, []byte(body), 0o644); err != nil {
+		t.Skip(err)
+	}
+	target := Target{Exe: filepath.Join(exeDir, "retroarch.exe"), Work: exeDir}
+	if err := InstallShader(target, "202603.slangp"); err != nil {
+		t.Fatalf("InstallShader: %v", err)
+	}
+	global := filepath.Join(exeDir, "config", "global.slangp")
+	data, err := os.ReadFile(global)
+	if err != nil {
+		t.Fatalf("global preset: %v", err)
+	}
+	for _, want := range []string{`"../shaders/passes/a.slang"`, `"../shaders/fsr/shaders/b.slang"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("global preset missing %s:\n%s", want, data)
+		}
+	}
+
+	// A preset that is not there changes nothing and returns no error.
+	before := string(data)
+	if err := InstallShader(target, "nope.slangp"); err != nil {
+		t.Fatalf("InstallShader with a missing preset: %v", err)
+	}
+	after, _ := os.ReadFile(global)
+	if string(after) != before {
+		t.Fatalf("a missing preset rewrote the global preset")
 	}
 }

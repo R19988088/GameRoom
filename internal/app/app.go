@@ -33,8 +33,10 @@ type config struct {
 }
 
 // defaultShader is 脑浆油条's PhosphorLine: a CRT look that keeps arcade
-// sprites readable at 4K, which is why it ships as the default.
-const defaultShader = "shaders_slang/202603.slangp"
+// sprites readable at 4K, which is why it ships as the default. The preset is
+// one file at the top of shaders/, and launch falls back to the pack it was
+// taken from when that name is not there.
+const defaultShader = "202603.slangp"
 
 // App holds what the window reads each frame, and the library behind it.
 type App struct {
@@ -332,11 +334,14 @@ func (a *App) launchGame(g library.Game) {
 	}
 
 	rom := filepath.Join(a.root, "rom", filepath.FromSlash(g.RomPath))
-	t, err := launch.Resolve(a.root, *sim, rom, launch.Options{Shader: a.cfg.CRTShader})
+	t, err := launch.Resolve(a.root, *sim, rom)
 	if err != nil {
 		a.status = err.Error()
 		return
 	}
+	// The CRT preset goes in as RetroArch's global shader; a missing one
+	// must not stop the game.
+	_ = launch.InstallShader(t, a.cfg.CRTShader)
 	cmd, err := launch.Start(t)
 	if err != nil {
 		a.status = "启动失败：" + err.Error()

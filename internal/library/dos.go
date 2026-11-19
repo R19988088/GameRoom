@@ -183,7 +183,7 @@ func dosGames(src, root string, rows map[string]dosRow) ([]Game, error) {
 // dosGame is one row: its title from list.csv, the archive's own name kept
 // beside it so the rom can still be found by the name it shipped under.
 func dosGame(key, stem, rel, root string, rows map[string]dosRow) Game {
-	g := Game{PlatformKey: key, Title: stem, Name: stem, RomPath: rel}
+	g := Game{PlatformKey: key, Title: stem, Name: titleFromRomName(stem), RomPath: rel}
 	if st, err := os.Stat(filepath.Join(root, "rom", filepath.FromSlash(rel))); err == nil {
 		g.Size = st.Size()
 	}
@@ -219,6 +219,24 @@ func dosGame(key, stem, rel, root string, rows map[string]dosRow) Game {
 
 // romNameParts is No-Intro's shape: the year, then the maker, in brackets.
 var romNameParts = regexp.MustCompile(`\((\d{4})\)\(([^)]+)\)`)
+
+// titleFromRomName is what the card shows for a game the catalogue has no
+// Chinese title for: the name alone, without No-Intro's brackets —
+// "Ash. (1994)(HimeyaSoft)(TW)[cr]" reads "Ash." on a shelf, its file name
+// stays whole in the database.
+func titleFromRomName(stem string) string {
+	name := stem
+	for _, cut := range []string{" (", "（", " ["} {
+		if i := strings.Index(name, cut); i > 0 {
+			name = name[:i]
+		}
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return stem
+	}
+	return name
+}
 
 // fromRomName reads the year and the maker out of a rom's file name.
 func fromRomName(stem string) (year int, maker string) {

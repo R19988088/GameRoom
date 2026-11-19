@@ -34,6 +34,23 @@ func TestDOSMakerIsTheGamesPublisher(t *testing.T) {
 	}
 }
 
+// TestTitleFromRomName: a game the catalogue has no Chinese title for shows
+// its name, not its whole file name.
+func TestTitleFromRomName(t *testing.T) {
+	cases := map[string]string{
+		"Ash. (1994)(HimeyaSoft)(TW)[cr]":              "Ash.",
+		"V.G. Variable Geo (1993)(Giga)(TW)[cr]":       "V.G. Variable Geo",
+		"YES! HG":                                      "YES! HG",
+		"(1995)(elf)(JP)":                              "(1995)(elf)(JP)",
+		"Doukyuusei 2 (1995)(elf)(JP)[tr zh waxixixi]": "Doukyuusei 2",
+	}
+	for in, want := range cases {
+		if got := titleFromRomName(in); got != want {
+			t.Errorf("titleFromRomName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestMakerAliasJoinsSpellings: 天堂鳥 and 天堂鸟 are one house.
 func TestMakerAliasJoinsSpellings(t *testing.T) {
 	if got := makerAlias["天堂鳥"]; got != "天堂鸟" {

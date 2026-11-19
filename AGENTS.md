@@ -313,8 +313,9 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
 - 元数据来自 `list.csv`（**UTF-8 带 BOM，不是 GBK**；列名 `文件名,游戏名称,类型,发行日期,发行商,地区…`），
   按 `文件名` 去掉扩展名匹配 rom 文件名；`title` 存 rom 名、`name` 存中文标题（和街机那套一致）。
 - 表里没有的游戏（`list.csv` 只有 83 行里的 81 行）从文件名里挖 `(1994)(HimeyaSoft)`：
-  `fromRomName` 补年份与厂商，`(TW)/(JP)` 这类两位大写地名不当厂商；`makerAlias` 把
-  `天堂鳥→天堂鸟` 这类简繁两种写法并成一个 chip。
+  `fromRomName` 补年份与厂商，`(TW)/(JP)` 这类两位大写地名不当厂商；`titleFromRomName` 把
+  `Ash. (1994)(HimeyaSoft)(TW)[cr]` 收成 `Ash.` 当显示名（`title` 列仍存完整 rom 名）；
+  `makerAlias` 把 `天堂鳥→天堂鸟` 这类简繁两种写法并成一个 chip。
 - PC98 的 zip 必须**先解出镜像**（`7z x -o"rom\pc98\<游戏名>" *.hdi *.fdi *.d88`），
   `imageIn()` 从游戏目录里挑镜像——所以一个游戏一个目录。
 - `np2kai` 要 `模拟器/RetroArch/system/np2kai/`（`bios.rom`、`FONT.ROM`、`font.bmp`、

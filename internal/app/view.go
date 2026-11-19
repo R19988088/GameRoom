@@ -578,9 +578,9 @@ func (a *App) fields(g library.Game) []cardField {
 // click — a field to type the value in.
 func (a *App) cardMenuPanel(c *ui.Context, t *ui.Theme, panel ui.Element, g library.Game) {
 	panel.Width(288).Padding(8).Radius(16).
-		Background(ui.Hex("#14151cf7")).
-		Border(1, ui.Hex("#ffffff26")).
-		Shadow(0, 26, 56, 0, ui.Hex("#000000cc"))
+		Background(ui.Hex("#1b1d26f7")).
+		Border(1, ui.Hex("#ffffff2e")).
+		Shadow(0, 26, 56, 0, ui.Hex("#000000e6"))
 	panel.Children(func() {
 		ui.Column(c).Gap(2).Children(func() {
 			ui.Row(c).Height(30).PaddingX(8).Gap(8).AlignItems(ui.Center).Children(func() {

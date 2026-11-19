@@ -333,6 +333,10 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
     仍是 Pure 菜单（能玩，但要选一次）。
   - 导入时**静态校验**批处理指向的文件真的在 zip 里（`checkCommands`），指空就**不注入**，
     宁可留在菜单也不给一个死命令行；`call CM` 这种会自动补 `.BAT/.COM/.EXE` 再找。
+  - 没有 `dosbox.conf` 的包按老合集 `loader.bat` 的那几条规则挑命令（顺序一致）：
+    `play.*`（bat/exe/com，任意目录）→ `<目录>/<目录>.bat` → 全包唯一一个 exe/com →
+    全包唯一一个 bat，`install/setup/readme/help/inst/dos4gw` 不算。这两条规则是从
+    `E:\game\0_GALGAMEonDOSUI\loader.bat` 原样搬过来的，老项目就是靠它们给没有 conf 的包配音命令。
   - 幂等：zip 里已有 `DOSBOX.BAT` 就跳过；改 zip 用 `zip.Writer.CreateRaw` 原样搬压缩字节，
     **每个条目 CRC 不变**（只有新增的 60 字节批处理是新的），重打包 1.6 GB 也不重压缩。
   - 注意：注入会改 zip 内容，用户重新从老合集拷原包回来会把这层"直启"覆盖掉——

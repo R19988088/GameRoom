@@ -143,13 +143,13 @@ func launchBody(zr *zip.ReadCloser) (body, reason string) {
 		}
 	}
 
-	// No dosbox.conf: fall back to the launcher scripts the game shipped, which
-	// in practice means "the one play.BAT inside its folder".
-	dir, bat, ok := shippedLauncher(zr)
+	// No dosbox.conf: fall back to the shape of the archive itself, the way the
+	// old collection's loader.bat picked a command by hand for each game.
+	dir, run, ok := shippedLauncher(zr)
 	if !ok {
-		return "", "没有 dosbox.conf，也找不到 play.BAT"
+		return "", "没有 dosbox.conf，也找不到可以启动的程序"
 	}
-	cmd := []string{"c:", "cd " + dir, "call " + bat}
+	cmd := []string{"c:", "cd " + dir, run}
 	if bad := checkCommands(cmd, zipNames(zr)); bad != "" {
 		return "", bad
 	}
@@ -212,32 +212,92 @@ func launchCommands(lines []string) []string {
 	return out
 }
 
-// shippedLauncher finds the folder + batch to run in an archive with no
-// dosbox.conf: the deepest-free shape of these zips is one top folder holding
-// the game and its play.BAT.
-func shippedLauncher(zr *zip.ReadCloser) (dir, bat string, ok bool) {
-	preferred := []string{"play.bat", "gameplay.bat", "game.bat", "start.bat"}
-	type entry struct{ path, name string }
-	var found []entry
+// shippedLauncher picks a command for an archive that has no dosbox.conf by
+// looking at how the archive is built. These are the rules the old collection's
+// loader.bat used for every game it could not read a config for, kept in the
+// same order, because the collection was curated against them:
+//
+//	play.* anywhere           → run "play" in its folder
+//	<folder>/<folder>.bat     → that script, a naming convention of the rips
+//	exactly one program       → that exe/com (install/setup/readme… do not count)
+//	exactly one .bat          → that script
+//
+// The answer is the working folder plus the command to type in it.
+func shippedLauncher(zr *zip.ReadCloser) (dir, run string, ok bool) {
+	type entry struct{ dir, name, path string }
+	var files []entry
 	for _, f := range zr.File {
 		if f.FileInfo().IsDir() {
 			continue
 		}
 		name := strings.ReplaceAll(f.Name, `\`, "/")
-		if !strings.HasSuffix(strings.ToLower(name), ".bat") {
-			continue
+		low := strings.ToLower(name)
+		d := ""
+		if i := strings.LastIndex(low, "/"); i >= 0 {
+			d = name[:i]
 		}
-		found = append(found, entry{strings.ToLower(name), name})
+		files = append(files, entry{d, name[strings.LastIndex(name, "/")+1:], low})
 	}
-	for _, want := range preferred {
-		for _, e := range found {
-			if strings.HasSuffix(e.path, "/"+want) {
-				parts := strings.Split(e.name, "/")
-				return strings.Join(parts[:len(parts)-1], "/"), parts[len(parts)-1], true
+
+	// play.* — the collection's own name for "start this one".
+	for _, want := range []string{"play.bat", "play.exe", "play.com"} {
+		for _, e := range files {
+			if strings.HasSuffix(e.path, "/"+want) || e.path == want {
+				return e.dir, "play", true
 			}
 		}
 	}
+
+	// <folder>/<folder>.bat.
+	for _, e := range files {
+		if !strings.HasSuffix(e.path, ".bat") {
+			continue
+		}
+		i := strings.LastIndex(e.path, "/")
+		if i <= 0 {
+			continue
+		}
+		folder := e.path[:i]
+		last := folder[strings.LastIndex(folder, "/")+1:]
+		if last == strings.TrimSuffix(e.path[i+1:], ".bat") {
+			return e.dir, "call " + e.name, true
+		}
+	}
+
+	// A single program in the archive is the game. Installers do not count:
+	// they are on the disk, but starting one is not playing.
+	skip := map[string]bool{"install": true, "setup": true, "readme": true, "help": true, "inst": true, "dos4gw": true}
+	count := func(exts ...string) (entry, bool) {
+		var got []entry
+		for _, e := range files {
+			ext := filepathExt(e.name)
+			for _, want := range exts {
+				if ext == want && !skip[strings.TrimSuffix(strings.ToLower(e.name), ext)] {
+					got = append(got, e)
+					break
+				}
+			}
+		}
+		if len(got) != 1 {
+			return entry{}, false
+		}
+		return got[0], true
+	}
+	if e, ok := count(".exe", ".com"); ok {
+		return e.dir, e.name, true
+	}
+	if e, ok := count(".bat"); ok {
+		return e.dir, "call " + e.name, true
+	}
 	return "", "", false
+}
+
+// filepathExt is the extension with its dot, lower case.
+func filepathExt(name string) string {
+	if i := strings.LastIndex(name, "."); i > 0 {
+		return strings.ToLower(name[i:])
+	}
+	return ""
 }
 
 // checkCommands verifies statically that the batch points at files that are in

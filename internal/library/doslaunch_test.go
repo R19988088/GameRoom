@@ -138,12 +138,17 @@ func TestLaunchBodyFallsBackToPlayBat(t *testing.T) {
 		t.Fatalf("prepareOne = %q, %v; want written", res, err)
 	}
 	body := readZipEntry(t, path, launchBat)
-	if !strings.Contains(body, "cd TENCHI") || !strings.Contains(body, "call PLAY.BAT") {
-		t.Fatalf("batch %q does not start play.BAT", body)
+	if !strings.Contains(body, "cd TENCHI") || !strings.Contains(body, "play") {
+		t.Fatalf("batch %q does not start play", body)
 	}
 
 	empty := filepath.Join(dir, "nothing.zip")
-	makeZip(t, empty, "", map[string]string{"DISC/DOSV.BAT": "font"})
+	makeZip(t, empty, "", map[string]string{
+		"DISC/DOSV.BAT":     "font",
+		"DISC/MAKEDISK.BAT": "disk",
+		"DISC/AI5V.EXE":     "exe",
+		"DISC/PLAY5V.COM":   "com",
+	})
 	res, err = prepareOne(empty)
 	if err != nil {
 		t.Fatal(err)

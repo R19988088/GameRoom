@@ -25,9 +25,11 @@ type Platform struct {
 	Sort  int
 }
 
-// Groups are the four shelves the top bar switches between.
+// Groups are the shelves the top bar switches between. 麻将 is a shelf of
+// its own: it is a different kind of table from the arcade.
 var Groups = []struct{ Key, Name string }{
 	{"arcade", "街机"},
+	{"mahjong", "麻将"},
 	{"console", "家用机"},
 	{"handheld", "掌机"},
 	{"pc", "PC"},

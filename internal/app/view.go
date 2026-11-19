@@ -11,46 +11,52 @@ import (
 	"github.com/R19988088/GameRoom/internal/library"
 )
 
-// view draws the window each frame: a floating bar that switches shelves
-// (街机, 家用机, 掌机, PC), a row of platform and menu pills, and a grid of
-// landscape covers.
+// view draws the window each frame: covers fill the window and scroll under
+// the floating bar, the platform's menus float below it, and the bar itself
+// is a plate of glass the covers show through.
 func (a *App) view(c *ui.Context) {
 	c.SetTheme(&a.theme)
 	t := &a.theme
 	c.Root().Background(t.Background)
 
 	ui.Box(c).Fill().Children(func() {
-		// The content starts under the floating bar and ends above the
-		// status line, which the bar's shadow needs room for.
-		ui.Column(c).Fill().Padding(98, 26, 40, 26).Children(func() {
-			if a.lib == nil {
-				a.message(c, t, "没有数据", a.status)
-				return
-			}
-			a.chips(c, t)
-			a.body(c, t)
-		})
+		if a.lib == nil {
+			a.message(c, t, "没有数据", a.status)
+			return
+		}
+		// Drawn first, so covers pass under the capsules floating above them.
+		a.body(c, t)
 		a.statusBar(c, t)
-		// Drawn last: a floating bar sits over the covers.
+		// Drawn last: the capsules float over the covers, glassy enough to
+		// see them behind.
 		a.toolbar(c, t)
 	})
 }
 
-// toolbar is the floating bar in three parts: the shelf picker on the left,
-// the chosen shelf's platforms in the middle (five of them, the rest behind
-// 更多), and the search field on the right.
+// toolbar is the top row: three separate capsules of glass rather than one
+// long bar — the shelf picker, the shelf's platforms and menus, and the
+// search. The cover art scrolls behind all three.
 func (a *App) toolbar(c *ui.Context, t *ui.Theme) {
-	bar := ui.Row(c).Absolute().Left(24).Top(18).Right(24).Height(60).
-		Padding(9, 10, 9, 10).Radius(18).AlignItems(ui.Center).Gap(10).
-		Background(ui.Hex("#141519d9")).
-		Border(1, ui.Hex("#ffffff14")).
-		Shadow(0, 16, 40, 0, ui.Hex("#000000a6"))
-	bar.Children(func() {
+	ui.Row(c).Absolute().Left(24).Top(18).Right(24).Height(60).Gap(14).
+		AlignItems(ui.Stretch).Children(func() {
+		// The picker is a capsule of its own, not content inside one.
 		a.shelfSwitch(c, t)
-		ui.Box(c).Width(1).Height(24).Background(ui.Hex("#ffffff10"))
-		a.platformRow(c, t)
-		a.searchField(c, t)
+
+		mid := a.capsule(ui.Row(c).Grow(1).MinWidth(0).Padding(6, 10, 6, 10).AlignItems(ui.Center))
+		mid.Children(func() { a.contentRow(c, t) })
+
+		find := a.capsule(ui.Row(c).Width(320).PaddingX(12).PaddingY(11).AlignItems(ui.Center))
+		find.Children(func() { a.searchField(c, t) })
 	})
+}
+
+// capsule is one of the three pills on the top row: a plate of glass the
+// covers show through, blurred.
+func (a *App) capsule(el ui.Element) ui.Element {
+	return el.Radius(18).
+		Material(glass.Glass{Clarity: 0.55, Tint: ui.Hex("#0d0f168f")}).
+		Border(1, ui.Hex("#ffffff1f")).
+		Shadow(0, 16, 40, 0, ui.Hex("#000000a6"))
 }
 
 // shelfSwitch is one button naming the shelf shown; its menu lists all four,
@@ -66,10 +72,9 @@ func (a *App) shelfSwitch(c *ui.Context, t *ui.Theme) {
 		count = a.lib.GameCountOf(a.group)
 	}
 
-	anchor := ui.ButtonBase(c).Height(38).PaddingX(14).Radius(12).
-		AlignItems(ui.Center).Gap(9).Background(ui.Hex("#ffffff14"))
+	anchor := a.capsule(ui.ButtonBase(c).Height(60).PaddingX(18).AlignItems(ui.Center).Gap(9))
 	if anchor.Hovered() {
-		anchor.Background(ui.Hex("#ffffff1f"))
+		anchor.Border(1, ui.Hex("#ffffff3d"))
 	}
 	anchor.Children(func() {
 		ui.Text(c, name).FontSize(13).FontWeight(700).TextColor(t.Text).SingleLine()
@@ -124,20 +129,36 @@ func (a *App) shelfSwitch(c *ui.Context, t *ui.Theme) {
 	})
 }
 
-// platformRow is the middle: the shelf's five busiest platforms, and a
-// 更多 button for the rest.
-func (a *App) platformRow(c *ui.Context, t *ui.Theme) {
-	ui.Row(c).Grow(1).Gap(6).AlignItems(ui.Center).Children(func() {
-		for _, p := range a.topPlatforms(5) {
-			p := p
-			a.pill(c, t, p.Name, a.counts[p.Key], p.Key == a.platform, func() {
-				a.choosePlatform(p.Key)
-			})
-		}
-		rest := a.restPlatforms(5)
-		if len(rest) > 0 {
-			a.morePlatforms(c, t, rest)
-		}
+// contentRow is what the middle capsule holds: the shelf's five busiest
+// platforms when it has more than one (the rest behind 更多), then a rule,
+// then the chosen platform's menus. Both scroll sideways inside the capsule.
+func (a *App) contentRow(c *ui.Context, t *ui.Theme) {
+	ui.ScrollHorizontal(c).Fill().ClipX().Children(func() {
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+			top := a.topPlatforms(5)
+			if len(top) > 1 {
+				for _, p := range top {
+					p := p
+					a.pill(c, t, p.Name, a.counts[p.Key], p.Key == a.platform, func() {
+						a.choosePlatform(p.Key)
+					})
+				}
+				if rest := a.restPlatforms(5); len(rest) > 0 {
+					a.morePlatforms(c, t, rest)
+				}
+				ui.Box(c).Width(1).Height(20).Background(ui.Hex("#ffffff17"))
+			}
+			if a.lib == nil {
+				return
+			}
+			a.pill(c, t, "全部", a.platformTotal, a.menu == "", func() { a.chooseMenu("") })
+			for _, m := range a.lib.MenusOf(a.platform) {
+				m := m
+				a.pill(c, t, m.Name, a.menuCounts[m.Name], a.menu == m.Name, func() {
+					a.chooseMenu(m.Name)
+				})
+			}
+		})
 	})
 }
 
@@ -245,12 +266,13 @@ func (a *App) morePlatforms(c *ui.Context, t *ui.Theme, rest []library.Platform)
 	})
 }
 
-// searchField is the right end: a lens of liquid glass over the covers.
+// searchField is the right capsule: a lens of liquid glass inside the
+// capsule, so the covers behind it blur twice.
 func (a *App) searchField(c *ui.Context, t *ui.Theme) {
-	field := ui.Box(c).Width(236).Height(38).PaddingX(13).Radius(12).
+	field := ui.Box(c).Height(38).Fill().PaddingX(13).Radius(12).
 		AlignItems(ui.Center).
-		Material(glass.Glass{Clarity: 0.6, Tint: ui.Hex("#ffffff1a")}).
-		Border(1, ui.Hex("#ffffff20"))
+		Material(glass.Glass{Clarity: 0.6, Tint: ui.Hex("#ffffff14")}).
+		Border(1, ui.Hex("#ffffff24"))
 	field.Children(func() {
 		in := ui.TextInputBase(c.Key("search"), &a.query).Fill().FontSize(12.5).
 			TextColor(t.Text).Placeholder("搜索游戏名").Label("搜索游戏名").
@@ -261,41 +283,25 @@ func (a *App) searchField(c *ui.Context, t *ui.Theme) {
 	})
 }
 
-// chips lists the chosen platform's menus, the row under the bar.
-func (a *App) chips(c *ui.Context, t *ui.Theme) {
-	if a.lib == nil {
-		return
-	}
-	menus := a.lib.MenusOf(a.platform)
-	if len(menus) == 0 {
-		return
-	}
-	ui.ScrollHorizontal(c).Height(38).ClipX().Children(func() {
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			a.pill(c, t, "全部", a.platformTotal, a.menu == "", func() { a.chooseMenu("") })
-			for _, m := range menus {
-				m := m
-				a.pill(c, t, m.Name, a.menuCounts[m.Name], a.menu == m.Name, func() {
-					a.chooseMenu(m.Name)
-				})
-			}
-		})
-	})
+// pill is a chip in the middle capsule: a platform, or one of the menus.
+func (a *App) pill(c *ui.Context, t *ui.Theme, name string, count int, chosen bool, run func()) {
+	a.chip(c, t, name, count, chosen, ui.Hex("#ffffff0d"), ui.Hex("#ffffff1a"), ui.Hex("#ffffff26"), run)
 }
 
-// pill is a platform or menu chip, or the "all" of a platform's menus.
-func (a *App) pill(c *ui.Context, t *ui.Theme, name string, count int, chosen bool, run func()) {
-	bg := ui.Hex("#ffffff08")
+func (a *App) chip(c *ui.Context, t *ui.Theme, name string, count int, chosen bool, bg, hover, hoverBorder ui.Color, run func()) {
 	text := t.TextMuted
 	if chosen {
-		bg = ui.Hex("#ffffff1c")
+		bg = ui.Hex("#ffffff26")
 		text = t.Text
 	}
 	p := ui.ButtonBase(c).Height(30).PaddingX(12).Radius(15).
 		AlignItems(ui.Center).Gap(7).Background(bg)
+	if chosen {
+		p.Border(1, ui.Hex("#ffffff33"))
+	}
 	if !chosen && p.Hovered() {
-		p.Background(ui.Hex("#ffffff12"))
-		p.Border(1, ui.Hex("#ffffff1f"))
+		p.Background(hover)
+		p.Border(1, hoverBorder)
 	}
 	p.Children(func() {
 		ui.Text(c, name).FontSize(12).FontWeight(500).TextColor(text).SingleLine()
@@ -308,7 +314,9 @@ func (a *App) pill(c *ui.Context, t *ui.Theme, name string, count int, chosen bo
 	}
 }
 
-// body is the grid of the games that pass the platform, menu and search.
+// body is the grid of the games that pass the platform, menu and search. It
+// owns the window: its first row sits under the floating bar and the menus,
+// and scrolling carries the covers up behind them.
 func (a *App) body(c *ui.Context, t *ui.Theme) {
 	if len(a.shown) == 0 {
 		a.message(c, t, "这里还没有游戏", "换个平台或分类，或检查 rom 目录")
@@ -318,13 +326,16 @@ func (a *App) body(c *ui.Context, t *ui.Theme) {
 	a.grid.Key = func(i int) any { return a.shown[i].ID }
 	a.grid.Label = func(i int) string { return a.shown[i].Title }
 	a.grid.Selected = &a.chosen
-	ui.Column(c).Grow(1).Padding(0, 8, 0, 0).Children(func() {
+	ui.Column(c).Absolute().Left(26).Top(26).Right(26).Bottom(34).Children(func() {
 		// 200 wide keeps five cards on a 1000-DIP window, as a shelf of
 		// landscape covers reads; the cover itself keeps its own shape.
 		grid := ui.GridView(c, &a.grid, len(a.shown), 200, 172, func(i int) {
 			a.cell(c, t, i)
 		})
-		grid.Grow(1)
+		// The bars float over the top 96 DIPs, so the grid's content starts
+		// below them and scrolls up underneath: padding here scrolls with
+		// the content, unlike the space around it.
+		grid.Fill().Padding(64, 0, 0, 0)
 		if grid.Submitted() {
 			a.launchChosen()
 		}

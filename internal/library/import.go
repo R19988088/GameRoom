@@ -609,13 +609,15 @@ func coreOverride(conf string, simID int) string {
 	return ""
 }
 
-// groupOf puts a platform on one of the four shelves the top bar shows.
-// The old library has no such notion: a platform is a folder, and what
-// ran on it is what decides.
+// groupOf puts a platform on one of the shelves the top bar shows. The old
+// library has no such notion: a platform is a folder, and what ran on it is
+// what decides. 麻将 is its own shelf rather than a corner of the arcade.
 func groupOf(key string) string {
 	switch key {
-	case "arc", "majiang":
+	case "arc":
 		return "arcade"
+	case "majiang":
+		return "mahjong"
 	case "掌机":
 		return "handheld"
 	case "微软":

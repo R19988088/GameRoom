@@ -85,18 +85,27 @@ go build -o "E:\game\Sim ui_D\exe\GameRoom.exe" .
 ## 行为约定
 
 - **只显示封面**：不出视频、不出 GIF、不做右侧介绍面板。
-- **顶部浮动工具条**（Apple TV 味，一条三区）：左区是一个货架按钮（显示当前货架名 + 局数 + `▾`），
-  点开才是四个货架的菜单；中区是当前货架的机种 chip，**默认只摆局数最多的五个**，其余的进右侧
-  `更多 N` 菜单（选中的机种永远保证有一个 chip，否则它下面的游戏会"无主"）；右区是搜索框，
-  底材用 `plugins/glass` 的 `glass.Glass{}`（真正的背景模糊 + 边缘高光，D3D/CPU 都有 shader，
-  不依赖 macOS），所以是"液态"的磨砂玻璃而不是半透明色块。
-  两个下拉都用 `ui.PopoverBase(c, anchor, &a.shelfOpen, …)`：位置自动贴着按钮、点外面或 Esc 自动关，
-  panel 用 `Background/Radius/Border/Shadow` 自己画（`a.shelfOpen`、`a.moreOpen` 是状态位）。
-  内容列因此从 `Padding(98, 26, 40, 26)` 开始——**注意 `Padding` 的参数顺序是 上/右/下/左**，
-  写反了工具条就会压在分类 chip 上（`internal/app/layout_test.go` 专门盯着这件事）。
-- 工具条下面是**当前机种**的分类 chip（可横向滚动），再下面是封面网格。
-- 顶部三区的位置由 `internal/app/bar_test.go` 盯着：货架按钮在最左、`更多` 在它右边、搜索框在最右且
-  不出窗口；`shelf_test.go` 确认货架菜单点得开；`render_test.go` 采样像素，确认搜索框的玻璃真的画出来了。
+- **顶部是三个分开的胶囊**（Apple TV 味，不是一条大横条）：`toolbar()` 用一条 `Row` 摆三个
+  子元素，每个都过 `a.capsule(el)` 上 `Material(glass.Glass{Clarity: 0.55, Tint: "#0d0f168f"})`
+  + `Border` + `Shadow` + `Radius(18)`：
+  1. 左：货架按钮本身就是一颗胶囊（`Height(60)`、`PaddingX(18)`），显示"货架名 + 局数 + `▾`"，
+     点开 `ui.PopoverBase(c, anchor, &a.shelfOpen, …)` 列出五个货架（街机 / **麻将** / 家用机 /
+     掌机 / PC），当前项橙色 `#e8763a1f` 高亮。
+  2. 中：`contentRow()` 一颗胶囊装两段 —— 先机种 chip（`topPlatforms(5)`，多的进 `更多 N`
+     popover；**只摆局数最多的五个**，选中的机种永远保证有一个 chip，否则它下面的游戏会"无主"），
+     再一条 1px 竖线，再该机种的分类 chip；整段放在 `ScrollHorizontal` 里横滚。单机种货架
+     （街机只剩 arc、麻将只剩 majiang）不画机种 chip，直接只有分类。
+  3. 右：搜索框，胶囊里再嵌一层 `glass.Glass{}`（`Width(320)`），所以是"液态"的磨砂玻璃。
+- **封面从胶囊后面滚过去**：`view()` 里先画 `body`（`Absolute().Left(26).Top(26).Right(26).Bottom(34)`
+  的 `GridView`），再画 `statusBar`，最后才画 `toolbar`。网格的**内容内边距** `Padding(64, 0, 0, 0)`
+  让首行落在胶囊下方，而这块 padding 是随内容一起滚的（`list.go` 原文 "Padding pads the content,
+  scrolling with it"），所以一滚封面就钻到胶囊底下、被玻璃糊掉。**注意 `Padding` 的参数顺序是
+  上/右/下/左**，写反了会压住内容（`internal/app/layout_test.go` 盯着这件事）。
+- 顶部三个胶囊的位置由 `internal/app/layout_test.go` 的 `TestTopRowIsThreeCapsules` 盯着：
+  三者同一行（比中心点）、两两之间有空隙（不是一条长条）、整行底边在 82 以内、卡片不钻到胶囊下面；
+  `bar_test.go` 还盯着货架在最左、`更多` 不压搜索框；`shelf_test.go` 确认菜单点得开；
+  `shelf_one_test.go` 确认单机种货架不画机种 chip、麻将自成货架；`render_test.go` 采样像素确认
+  搜索框的玻璃真的画出来了。
 - 封面用 `Fit(Contain)` 保持原始比例（街机 flyer 不裁切），卡片本身 16:9 左右。
 - **第一版只启动 RetroArch**：`internal/launch` 只认 `retroarch.exe`；其它模拟器只在状态栏
   提示“本版只启动 RetroArch”。

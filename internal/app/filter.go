@@ -324,11 +324,43 @@ func deltaOf(i int) float {
 	return 0.1
 }
 
-// roundSDF is how far p is outside a rounded rectangle of half size h and corner
-// radius r.
-func roundSDF(p vec2, h vec2, r float) float {
-	q := abs(p) - h + vec2(r, r)
-	return length(max(q, vec2(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r
+// push is PP-reflex's aa(): a coordinate moved from t toward x by the factor s.
+func push(x float, t float, s float) float {
+	return (x-t)*s + t
+}
+
+// arcHit is PP-reflex's bb(): where the ray from p toward v crosses the tube's
+// corner arc, the arc centred on o with radius r, in the corner's own quadrant.
+func arcHit(p vec2, v vec2, o vec2, r float) vec2 {
+	dx := v.x - p.x
+	dy := v.y - p.y
+	ix := p.x - o.x
+	iy := p.y - o.y
+	a1 := dx*dx + dy*dy
+	b1 := 2.0 * (ix*dx + iy*dy)
+	c1 := ix*ix + iy*iy - r*r
+	d1 := b1*b1 - 4.0*a1*c1
+	if a1 < 0.000001 || d1 < 0.0 {
+		return vec2(0.0, 0.0)
+	}
+	root := sqrt(d1)
+	t1 := (-b1 + root) / (2.0 * a1)
+	if t1 >= 0.0 && t1 <= 1.0 {
+		px1 := p.x + t1*dx
+		py1 := p.y + t1*dy
+		if px1 >= o.x && py1 >= o.y {
+			return vec2(px1, py1)
+		}
+	}
+	t2 := (-b1 - root) / (2.0 * a1)
+	if t2 >= 0.0 && t2 <= 1.0 {
+		px2 := p.x + t2*dx
+		py2 := p.y + t2*dy
+		if px2 >= o.x && py2 >= o.y {
+			return vec2(px2, py2)
+		}
+	}
+	return vec2(0.0, 0.0)
 }
 
 // tap is one sample of diffusion's glow, in linear light.
@@ -393,8 +425,7 @@ func LayerEffect(pos vec2) vec4 {
 	size := rectSize()
 	ps := pixelScale()
 	uv := pos / size
-	c := uv - vec2(0.5, 0.5)
-	c = warp(c)
+	c := warp(uv - vec2(0.5, 0.5))
 
 	isz := image0Size()
 	// The picture inside the glass: PIC_SIZE and BORDER_SIZE leave the bezel.
@@ -402,35 +433,7 @@ func LayerEffect(pos vec2) vec4 {
 	if half < 0.02 {
 		half = 0.02
 	}
-	rad := CORNER * 0.08 * (0.3 + 0.7*B_CORNER)
-	rad = rad * (1.0 + FILLET_D*0.2)
-	if rad < 0.0 {
-		rad = 0.0
-	}
-	// Outside the glass is dark; its corners are the rounding.
-	if roundSDF(c, vec2(0.5, 0.5), rad) > 0.0 {
-		return vec4(0.0, 0.0, 0.0, 1.0)
-	}
-
-	// The bezel: the picture mirrored into the border, dimmed as PP-reflex dims
-	// it, so the glass around the picture carries its reflection.
-	if abs(c.x) > half || abs(c.y) > half {
-		bx := c.x
-		by := c.y
-		if abs(bx) > half {
-			bx = (2.0*half - abs(bx)) * bx / abs(bx)
-		}
-		if abs(by) > half {
-			by = (2.0*half - abs(by)) * by / abs(by)
-		}
-		bx = bx * (1.0 + E_OFFSET*0.5)
-		np := (vec2(bx, by)/(2.0*half) + vec2(0.5, 0.5)) * isz
-		col := clamp(image0At(np).xyz, vec3(0.0), vec3(1.0))
-		dist := max(abs(c.x)-half, abs(c.y)-half) / (0.5 - half + 0.0001)
-		dim := REFLECTION * REFLECTION * 0.9
-		col = col*col*dim*(1.0-dist*0.8)
-		return vec4(pow(clamp(col, vec3(0.0), vec3(1.0)), vec3(1.0/GAMMA)), 1.0)
-	}
+	aspect := size.x / size.y
 
 	suv := vec2(c.x, c.y)/(2.0*half) + vec2(0.5, 0.5)
 	np := suv * isz
@@ -491,8 +494,107 @@ func LayerEffect(pos vec2) vec4 {
 	zz := clamp(yy-vv+vec3(0.5), vec3(0.0), vec3(1.0))
 	zz = zz * pp / (pp*MASK_INTENSITY + vec3(1.0-MASK_INTENSITY))
 
+	// The bezel, drawn the way PP-reflex draws it: outside the picture the same
+	// frame is mirrored across the edge, magnified 1.5x, and around the ends it is
+	// mirrored through the tube's own arc. The glass therefore carries the picture
+	// to its rim and its corners curve, instead of falling to a flat cut or a spike.
+	ex := aspect * half
+	ey := half
+	ax := abs(c.x) * aspect
+	ay := abs(c.y)
+	rad := (CORNER*0.1 + E_OFFSET*0.01) * (2.0 * half)
+	if rad < 0.0008 {
+		rad = 0.0008
+	}
+	ocx := ex - rad
+	ocy := ey - rad
+	r2 := REFLECTION * REFLECTION
+
+	qx := ax
+	qy := ay
+	if qx > ex {
+		qx = ex - 1.5*(qx-ex)
+	}
+	if qy > ey {
+		qy = ey - 1.5*(qy-ey)
+	}
+	sx := qx/ex*0.5 + 0.5
+	sy := qy/ey*0.5 + 0.5
+	sx = 0.5 + (sx-0.5)*0.95
+	sy = 0.5 + (sy-0.5)*0.95
+	if c.x < 0.0 {
+		sx = 1.0 - sx
+	}
+	if c.y < 0.0 {
+		sy = 1.0 - sy
+	}
+	rs := image0At(vec2(sx, sy)*isz).xyz
+	rs = rs * rs * r2
+
+	edgeT := max(ax-ex, ay-ey) * size.y * ps
+	if edgeT < 0.0 {
+		edgeT = 0.0
+	}
+	if edgeT > 1.0 {
+		edgeT = 1.0
+	}
+	fin := mix(zz, rs, edgeT)
+
+	if ax > ocx && ay > ocy {
+		dd2 := length(vec2(ax-ocx, ay-ocy)) - rad
+		if dd2 > 0.0 {
+			// the virtual eye, swung off the corner by FILLET_D
+			cvx := ocx - rad*5.0*(1.0-B_CORNER)*cos(FILLET_D*1.5707963)
+			cvy := ocy - rad*5.0*(1.0-B_CORNER)*sin(FILLET_D*1.5707963)
+			q := arcHit(vec2(ax, ay), vec2(cvx, cvy), vec2(ocx, ocy), rad)
+			if q.x > 0.0 || q.y > 0.0 {
+				rrx := (q.x-ocx)/rad
+				rry := (q.y-ocy)/rad
+				ssx := q.x - cvx
+				ssy := q.y - cvy
+				tx2 := (rrx-0.5)*-2.0
+				ty2 := (rry-0.5)*-2.0
+				l1 := sqrt(ssx*ssx+ssy*ssy)
+				l2 := sqrt((ssx*tx2)*(ssx*tx2) + (ssy*ty2)*(ssy*ty2))
+				if l2 > 0.000001 {
+					tx2 = tx2 * (l1/l2)
+					ty2 = ty2 * (l1/l2)
+				}
+				tx2 = tx2 * (1.0 + rrx*0.5)
+				ty2 = ty2 * (1.0 + rry*0.5)
+				nx := (ax-q.x)*tx2 + q.x
+				ny := (ay-q.y)*ty2 + q.y
+				if nx > ex {
+					nx = ex - 1.5*(nx-ex)
+				}
+				if ny > ey {
+					ny = ey - 1.5*(ny-ey)
+				}
+				bx2 := 1.0 + pow(rrx*rry, 2.0)
+				cx3 := nx/ex*0.5 + 0.5
+				cy3 := ny/ey*0.5 + 0.5
+				cx3 = 0.5 + (cx3-0.5)*0.95
+				cy3 = 0.5 + (cy3-0.5)*0.95
+				if c.x < 0.0 {
+					cx3 = 1.0 - cx3
+				}
+				if c.y < 0.0 {
+					cy3 = 1.0 - cy3
+				}
+				cc3 := image0At(vec2(cx3, cy3)*isz).xyz
+				cc3 = cc3 * bx2
+				cc3 = cc3*cc3*r2
+				cornerT := dd2 * size.y * ps
+				if cornerT > 1.0 {
+					cornerT = 1.0
+				}
+				fin = mix(fin, cc3, cornerT)
+			}
+		}
+	}
+
 	// The chain ends in display space, as PP-reflex's does.
-	return vec4(pow(clamp(zz, vec3(0.0), vec3(1.0)), vec3(1.0/GAMMA)), 1.0)
+	return vec4(pow(clamp(fin, vec3(0.0), vec3(1.0)), vec3(1.0/GAMMA)), 1.0)
 }
 `
 

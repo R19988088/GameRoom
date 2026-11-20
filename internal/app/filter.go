@@ -38,9 +38,9 @@ func defaultCRT() crtParams {
 		"LINEAR": 0.2, "CURVE_X": 0.07, "CURVE_Y": 0.07,
 		"MASK_INTENSITY": 0.9, "MASK_TYPE": 0, "ss": 0.5,
 		"DIFFUSION": 0.05, "DIFF_OVEREXP": 0, "REFLECTION": 0.25,
-		"E_OFFSET": 1.8, "FILLET_D": -0.5, "B_CORNER": 0.8, "BORDER_SIZE": 0,
+		"E_OFFSET": 1.8, "REFLECT_GAP": 0.02, "FILLET_D": -0.5, "B_CORNER": 0.8, "BORDER_SIZE": 0,
 		"LINE_PITCH_COEF": 1, "LINE_THICKNESS": 0.95, "LINE_OPACITY": 0.95,
-		"PIC_SIZE": 1, "INT_TOL": 0.05, "INT_SCALE": 0, "GAMMA": 2.2,
+		"PIC_SIZE": 0.5, "INT_TOL": 0.05, "INT_SCALE": 0, "GAMMA": 2.2,
 	}
 }
 
@@ -119,38 +119,40 @@ type knob struct {
 	hi    float64
 	kind  int
 	mul   float64
+	step  float64
 }
 
 var knobs = []knob{
-	{"GAMMA", "模拟伽马", 1, 4, 0, 1},
-	{"CURVE_X", "CRT曲率 X", 0, 1, 0, 1},
-	{"CURVE_Y", "CRT曲率 Y", 0, 1, 0, 1},
-	{"PIC_SIZE", "图像尺寸 (%)", 5, 10, 0, 10},
-	{"MASK_INTENSITY", "阴影蒙版强度", 0, 0.95, 0, 1},
-	{"MASK_TYPE", "蒙版类型", 0, 1, 0, 1},
-	{"ss", "蒙版尺寸", 0, 10, 0, 1},
-	{"LINE_THICKNESS", "扫描线粗细", 0.1, 2, 0, 1},
-	{"LINE_OPACITY", "扫描线不透明度", 0, 0.95, 0, 1},
-	{"LINE_PITCH_COEF", "扫描线间距", 0.1, 10, 0, 1},
-	{"LINEAR", "水平延伸", 0, 1, 0, 1},
-	{"SOFTEN", "柔化", 0, 1, 0, 1},
-	{"SHARPEN", "S-Video 锐化", 0, 2, 0, 1},
-	{"NTSCintensity", "NTSC 色彩强度", 0, 2, 0, 1},
-	{"SAT", "饱和度", 0, 1.5, 0, 1},
-	{"BLK", "黑电平 (%)", -17.5, 7.5, 0, 1},
-	{"EXPOSURE", "曝光", 0.1, 2, 0, 1},
-	{"CT", "色温", -2.8, 2.8, 0, 1},
-	{"CORNER", "圆角", 0, 1, 0, 1},
-	{"BORDER_SIZE", "边框尺寸", 0, 0.5, 0, 1},
-	{"INT_TOL", "允许过扫描", 0, 0.1, 0, 1},
-	{"INT_SCALE", "强制整数缩放", 0, 1, 1, 1},
-	{"DIFFUSION", "光晕扩散", 0, 1, 0, 1},
-	{"DIFF_OVEREXP", "允许扩散过曝", 0, 1, 0, 1},
-	{"REFLECTION", "边框反射强度", 0, 1, 0, 1},
-	{"E_OFFSET", "边框反射偏移", 0, 2, 0, 1},
-	{"B_CORNER", "边框圆角大小", 0, 1, 0, 1},
-	{"FILLET_D", "边框圆角曲率", -0.5, 0.5, 0, 1},
-	{"PPOY", "图像位置 Y", -50, 50, 0, 1},
+	{"GAMMA", "模拟伽马", 1, 4, 0, 1, 0.1},
+	{"CURVE_X", "CRT曲率 X", 0, 1, 0, 1, 0.1},
+	{"CURVE_Y", "CRT曲率 Y", 0, 1, 0, 1, 0.1},
+	{"PIC_SIZE", "图像尺寸 (%)", 5, 10, 0, 10, 0.1},
+	{"MASK_INTENSITY", "阴影蒙版强度", 0, 0.95, 0, 1, 0.1},
+	{"MASK_TYPE", "蒙版类型", 0, 1, 0, 1, 0.1},
+	{"ss", "蒙版尺寸", 0, 10, 0, 1, 0.1},
+	{"LINE_THICKNESS", "扫描线粗细", 0.1, 2, 0, 1, 0.1},
+	{"LINE_OPACITY", "扫描线不透明度", 0, 0.95, 0, 1, 0.1},
+	{"LINE_PITCH_COEF", "扫描线间距", 0.1, 10, 0, 1, 0.1},
+	{"LINEAR", "水平延伸", 0, 1, 0, 1, 0.1},
+	{"SOFTEN", "柔化", 0, 1, 0, 1, 0.1},
+	{"SHARPEN", "S-Video 锐化", 0, 2, 0, 1, 0.1},
+	{"NTSCintensity", "NTSC 色彩强度", 0, 2, 0, 1, 0.1},
+	{"SAT", "饱和度", 0, 1.5, 0, 1, 0.1},
+	{"BLK", "黑电平 (%)", -17.5, 7.5, 0, 1, 0.1},
+	{"EXPOSURE", "曝光", 0.1, 2, 0, 1, 0.1},
+	{"CT", "色温", -2.8, 2.8, 0, 1, 0.1},
+	{"CORNER", "圆角", 0, 1, 0, 1, 0.1},
+	{"BORDER_SIZE", "边框尺寸", 0, 0.5, 0, 1, 0.1},
+	{"INT_TOL", "允许过扫描", 0, 0.1, 0, 1, 0.1},
+	{"INT_SCALE", "强制整数缩放", 0, 1, 1, 1, 0.1},
+	{"DIFFUSION", "光晕扩散", 0, 1, 0, 1, 0.1},
+	{"DIFF_OVEREXP", "允许扩散过曝", 0, 1, 0, 1, 0.1},
+	{"REFLECTION", "边框反射强度", 0, 1, 0, 1, 0.1},
+	{"E_OFFSET", "边框反射偏移", 0, 2, 0, 1, 0.1},
+	{"REFLECT_GAP", "反射间距 (%)", 0, 0.24, 0, 100, 1},
+	{"B_CORNER", "边框圆角大小", 0, 1, 0, 1, 0.1},
+	{"FILLET_D", "边框圆角曲率", -0.5, 0.5, 0, 1, 0.1},
+	{"PPOY", "图像位置 Y", -50, 50, 0, 1, 0.1},
 }
 
 // value is the number the shader runs with: what the player set, or the preset's
@@ -180,6 +182,17 @@ func (a *App) crtEffect() (shader.Effect, bool) {
 	for _, k := range knobs {
 		u[uniformName(k.key)] = float64(a.value(k.key))
 	}
+	// The shape the core asks its picture to be drawn at, which the glass fits the
+	// frame into: a 320×200 DOS picture is 4:3, not its pixels' own shape.
+	aspect := a.gameAspect
+	if aspect < 0.4 || aspect > 5 {
+		if a.gameBmp != nil {
+			if bw, bh := ui.ImageSize(a.gameBmp); bw > 0 && bh > 0 {
+				aspect = bw / bh
+			}
+		}
+	}
+	u["GAME_ASPECT"] = float64(aspect)
 	return a.fxShader.Effect(shader.Options{
 		Uniforms:        u,
 		Images:          [4]*ui.Bitmap{a.gameBmp},
@@ -229,6 +242,8 @@ var DIFFUSION float
 var DIFF_OVEREXP float
 var REFLECTION float
 var E_OFFSET float
+var REFLECT_GAP float
+var GAME_ASPECT float
 var B_CORNER float
 var FILLET_D float
 
@@ -324,11 +339,6 @@ func deltaOf(i int) float {
 	return 0.1
 }
 
-// push is PP-reflex's aa(): a coordinate moved from t toward x by the factor s.
-func push(x float, t float, s float) float {
-	return (x-t)*s + t
-}
-
 // arcHit is PP-reflex's bb(): where the ray from p toward v crosses the tube's
 // corner arc, the arc centred on o with radius r, in the corner's own quadrant.
 func arcHit(p vec2, v vec2, o vec2, r float) vec2 {
@@ -340,34 +350,49 @@ func arcHit(p vec2, v vec2, o vec2, r float) vec2 {
 	b1 := 2.0 * (ix*dx + iy*dy)
 	c1 := ix*ix + iy*iy - r*r
 	d1 := b1*b1 - 4.0*a1*c1
-	if a1 < 0.000001 || d1 < 0.0 {
+	if a1 < 0.000001 {
+		return vec2(0.0, 0.0)
+	}
+	if d1 < 0.0 {
 		return vec2(0.0, 0.0)
 	}
 	root := sqrt(d1)
 	t1 := (-b1 + root) / (2.0 * a1)
-	if t1 >= 0.0 && t1 <= 1.0 {
-		px1 := p.x + t1*dx
-		py1 := p.y + t1*dy
-		if px1 >= o.x && py1 >= o.y {
-			return vec2(px1, py1)
+	if t1 >= 0.0 {
+		if t1 <= 1.0 {
+			px1 := p.x + t1*dx
+			py1 := p.y + t1*dy
+			if px1 >= o.x && py1 >= o.y {
+				return vec2(px1, py1)
+			}
 		}
 	}
 	t2 := (-b1 - root) / (2.0 * a1)
-	if t2 >= 0.0 && t2 <= 1.0 {
-		px2 := p.x + t2*dx
-		py2 := p.y + t2*dy
-		if px2 >= o.x && py2 >= o.y {
-			return vec2(px2, py2)
+	if t2 >= 0.0 {
+		if t2 <= 1.0 {
+			px2 := p.x + t2*dx
+			py2 := p.y + t2*dy
+			if px2 >= o.x && py2 >= o.y {
+				return vec2(px2, py2)
+			}
 		}
 	}
 	return vec2(0.0, 0.0)
+}
+
+// fold mirrors a coordinate into the picture again and again, so the glass never
+// runs out of picture however far from the frame it is read.
+func fold(raw float) float {
+	t := raw + 1.0
+	t = t - 2.0*floor(t*0.5)
+	return abs(t - 1.0)
 }
 
 // tap is one sample of diffusion's glow, in linear light.
 func tap(np vec2, o vec2, k float) vec3 {
 	d2 := dot(o, o)
 	wt := exp(-d2 * 0.35)
-	return pow(clamp(image0At(np+o*k).xyz, vec3(0.0), vec3(1.0)), vec3(GAMMA)) * wt
+	return pow(clamp(image0Sample(np+o*k).xyz, vec3(0.0), vec3(1.0)), vec3(GAMMA)) * wt
 }
 
 // glow is diffusion-h and diffusion-v as one: the picture blurred in linear
@@ -421,6 +446,35 @@ func sampled(np vec2, isz vec2) vec3 {
 	return clamp(col, vec3(0.0), vec3(1.0))
 }
 
+// mirrorBlur is the glass of the bezel: the picture sampled around a point of
+// itself with a wide, soft kernel, so the reflection reads as haze on glass and
+// not as a second, crisp copy of the frame.
+func mirrorBlur(p vec2, isz vec2, r float) vec3 {
+	// Bilinear taps on three rings, so the kernel covers the glass evenly and the
+	// reflection reads as haze instead of a handful of copies of the frame.
+	lo := vec2(0.0, 0.0)
+	hi := isz - vec2(1.0, 1.0)
+	s := image0Sample(clamp(p, lo, hi)).xyz * 4.0
+	s = s + blurRing(p, lo, hi, r*0.35, 0.0) * 2.0
+	s = s + blurRing(p, lo, hi, r*0.75, 0.3) * 1.5
+	s = s + blurRing(p, lo, hi, r*1.25, 0.7) * 1.0
+	s = s + blurRing(p, lo, hi, r*2.0, 1.1) * 0.6
+	return s / 44.8
+}
+
+// blurRing is a ring of eight bilinear taps around p at radius r, turned by a.
+func blurRing(p vec2, lo vec2, hi vec2, r float, a float) vec3 {
+	s := image0Sample(clamp(p+vec2(r*cos(a), r*sin(a)), lo, hi)).xyz
+	s = s + image0Sample(clamp(p+vec2(r*cos(a+0.785), r*sin(a+0.785)), lo, hi)).xyz
+	s = s + image0Sample(clamp(p+vec2(r*cos(a+1.571), r*sin(a+1.571)), lo, hi)).xyz
+	s = s + image0Sample(clamp(p+vec2(r*cos(a+2.356), r*sin(a+2.356)), lo, hi)).xyz
+	s = s + image0Sample(clamp(p+vec2(r*cos(a+3.142), r*sin(a+3.142)), lo, hi)).xyz
+	s = s + image0Sample(clamp(p+vec2(r*cos(a+3.927), r*sin(a+3.927)), lo, hi)).xyz
+	s = s + image0Sample(clamp(p+vec2(r*cos(a+4.712), r*sin(a+4.712)), lo, hi)).xyz
+	s = s + image0Sample(clamp(p+vec2(r*cos(a+5.498), r*sin(a+5.498)), lo, hi)).xyz
+	return s
+}
+
 func LayerEffect(pos vec2) vec4 {
 	size := rectSize()
 	ps := pixelScale()
@@ -428,22 +482,150 @@ func LayerEffect(pos vec2) vec4 {
 	c := warp(uv - vec2(0.5, 0.5))
 
 	isz := image0Size()
-	// The picture inside the glass: PIC_SIZE and BORDER_SIZE leave the bezel.
-	half := 0.5 * PIC_SIZE * (1.0 - BORDER_SIZE)
-	if half < 0.02 {
-		half = 0.02
+	// The picture keeps its own shape inside the window; PIC_SIZE trims it and
+	// BORDER_SIZE takes the glass's rim off what is left. Everything outside the
+	// picture is the glass, so the reflection reaches the window's own edges.
+	ar := isz.x / isz.y
+	if GAME_ASPECT > 0.4 {
+		if GAME_ASPECT < 5.0 {
+			ar = GAME_ASPECT
+		}
 	}
-	aspect := size.x / size.y
+	ratio := size.x / size.y
+	rw := 1.0
+	rh := 1.0
+	if ratio > ar {
+		rw = ar / ratio
+		rh = 1.0
+	} else {
+		rw = 1.0
+		rh = ratio / ar
+	}
+	rw = rw * PIC_SIZE * (1.0 - BORDER_SIZE)
+	rh = rh * PIC_SIZE * (1.0 - BORDER_SIZE)
+	if rw < 0.03 {
+		rw = 0.03
+	}
+	if rh < 0.03 {
+		rh = 0.03
+	}
+	hx := rw * 0.5
+	hy := rh * 0.5
 
-	suv := vec2(c.x, c.y)/(2.0*half) + vec2(0.5, 0.5)
+	ax := abs(c.x)
+	ay := abs(c.y)
+	// The glass is measured in the picture's own pixels, so the gap, the corner
+	// radius and the mirror read the same on both axes and stay off the frame.
+	pw := hx * size.x * 2.0 * ps
+	ph := hy * size.y * 2.0 * ps
+	qx := ax * size.x * ps
+	qy := ay * size.y * ps
+	ex := pw * 0.5
+	ey := ph * 0.5
+	// The glass sits outside the picture's own rounded frame: the frame's corners
+	// are cut by an arc tangent to both of its edges, so the black band and the
+	// mirror follow that one outline and meet each other without a seam.
+	gp := REFLECT_GAP * ph
+	rad := CORNER * 0.1 * ph * (0.5 + B_CORNER)
+	if rad < 1.0 {
+		rad = 1.0
+	}
+	ccx := ex - rad
+	ccy := ey - rad
+	if ccx < 0.0 {
+		ccx = 0.0
+	}
+	if ccy < 0.0 {
+		ccy = 0.0
+	}
+
+	// How far outside the rounded frame this fragment sits, in pixels, and which
+	// part of the frame it faces.
+	d := max(qx-ex, qy-ey)
+	nx := 0.0
+	ny := 0.0
+	nc := 1.0
+	arc := false
+	if qx > ccx && qy > ccy {
+		nx = (qx-ccx) / rad
+		ny = (qy-ccy) / rad
+		nc = sqrt(nx*nx+ny*ny)
+		if nc < 0.0001 {
+			nc = 0.0001
+		}
+		d = (nc - 1.0) * rad
+		arc = true
+	}
+
+	// The mirror is a plain one: what sits d outside the frame is read from d
+	// inside it, so the glass shows the picture at its own size, turned over. The
+	// glass fades out over half the picture's height, well before the window ends,
+	// so it never has to repeat or smear.
+	if d > 0.0 {
+		if d < gp {
+			// The black band the glass keeps between itself and the frame.
+			return vec4(0.0, 0.0, 0.0, 1.0)
+		}
+		mx := qx
+		my := qy
+		wc := 1.0
+		if arc {
+			// Round the corner: read along the radius the fragment meets the frame's
+			// arc at, so the picture bends round the tube and joins the flat mirror
+			// exactly where the arc becomes tangent to the frame's edges.
+			du := nx / nc
+			dv := ny / nc
+			e := (2.0 - nc) * rad
+			if e < -rad {
+				e = -rad
+			}
+			mx = ccx + du*e
+			my = ccy + dv*e
+			wc = 1.0 + (du*dv)*(du*dv)
+		} else {
+			if qx > ex {
+				mx = ex - (qx-ex)
+			}
+			if qy > ey {
+				my = ey - (qy-ey)
+			}
+		}
+		// PP-reflex pulls the sample 5% toward the middle before it reads it.
+		ux := 0.5 + mx*0.95/pw
+		uy := 0.5 + my*0.95/ph
+		if c.x < 0.0 {
+			ux = 1.0 - ux
+		}
+		if c.y < 0.0 {
+			uy = 1.0 - uy
+		}
+		// The haze thickens the further the glass runs from the frame.
+		db := d / ph
+		mr := 1.2 + min(db*isz.y*0.35, 16.0)
+		rcol := mirrorBlur(vec2(ux, uy)*isz, isz, mr)
+		// Fade to black over half the picture's height: the glass reads as a haze
+		// round the frame, not as a second copy across the whole window.
+		fade := 1.0 - db/(0.5+REFLECTION*0.4)
+		if fade < 0.0 {
+			fade = 0.0
+		}
+		fade = fade * fade
+		ii := (REFLECTION*1.7)*(REFLECTION*1.7)*wc*fade
+		if ii < 0.0 {
+			ii = 0.0
+		}
+		return vec4(rcol*pow(ii, 1.0/GAMMA), 1.0)
+	}
+
+	suv := vec2(c.x/(2.0*hx), c.y/(2.0*hy)) + vec2(0.5, 0.5)
 	np := suv * isz
 	np.y = np.y + PPOY*0.01*isz.y
 	col := sampled(np, isz)
 
 	// The scanlines: the core's own lines taken to the output's rows by an
 	// integer scale, so the mask lands on the rows the game drew.
-	dp := pos * ps
-	rows := size.y * ps * PIC_SIZE * (1.0 - BORDER_SIZE)
+	dp := vec2(suv.x*size.x, suv.y*size.y) * ps
+	rows := size.y * ps * rh
 	sc := floor(rows/isz.y*(1.0+INT_TOL))
 	if sc < 1.0 {
 		sc = 1.0
@@ -494,107 +676,8 @@ func LayerEffect(pos vec2) vec4 {
 	zz := clamp(yy-vv+vec3(0.5), vec3(0.0), vec3(1.0))
 	zz = zz * pp / (pp*MASK_INTENSITY + vec3(1.0-MASK_INTENSITY))
 
-	// The bezel, drawn the way PP-reflex draws it: outside the picture the same
-	// frame is mirrored across the edge, magnified 1.5x, and around the ends it is
-	// mirrored through the tube's own arc. The glass therefore carries the picture
-	// to its rim and its corners curve, instead of falling to a flat cut or a spike.
-	ex := aspect * half
-	ey := half
-	ax := abs(c.x) * aspect
-	ay := abs(c.y)
-	rad := (CORNER*0.1 + E_OFFSET*0.01) * (2.0 * half)
-	if rad < 0.0008 {
-		rad = 0.0008
-	}
-	ocx := ex - rad
-	ocy := ey - rad
-	r2 := REFLECTION * REFLECTION
-
-	qx := ax
-	qy := ay
-	if qx > ex {
-		qx = ex - 1.5*(qx-ex)
-	}
-	if qy > ey {
-		qy = ey - 1.5*(qy-ey)
-	}
-	sx := qx/ex*0.5 + 0.5
-	sy := qy/ey*0.5 + 0.5
-	sx = 0.5 + (sx-0.5)*0.95
-	sy = 0.5 + (sy-0.5)*0.95
-	if c.x < 0.0 {
-		sx = 1.0 - sx
-	}
-	if c.y < 0.0 {
-		sy = 1.0 - sy
-	}
-	rs := image0At(vec2(sx, sy)*isz).xyz
-	rs = rs * rs * r2
-
-	edgeT := max(ax-ex, ay-ey) * size.y * ps
-	if edgeT < 0.0 {
-		edgeT = 0.0
-	}
-	if edgeT > 1.0 {
-		edgeT = 1.0
-	}
-	fin := mix(zz, rs, edgeT)
-
-	if ax > ocx && ay > ocy {
-		dd2 := length(vec2(ax-ocx, ay-ocy)) - rad
-		if dd2 > 0.0 {
-			// the virtual eye, swung off the corner by FILLET_D
-			cvx := ocx - rad*5.0*(1.0-B_CORNER)*cos(FILLET_D*1.5707963)
-			cvy := ocy - rad*5.0*(1.0-B_CORNER)*sin(FILLET_D*1.5707963)
-			q := arcHit(vec2(ax, ay), vec2(cvx, cvy), vec2(ocx, ocy), rad)
-			if q.x > 0.0 || q.y > 0.0 {
-				rrx := (q.x-ocx)/rad
-				rry := (q.y-ocy)/rad
-				ssx := q.x - cvx
-				ssy := q.y - cvy
-				tx2 := (rrx-0.5)*-2.0
-				ty2 := (rry-0.5)*-2.0
-				l1 := sqrt(ssx*ssx+ssy*ssy)
-				l2 := sqrt((ssx*tx2)*(ssx*tx2) + (ssy*ty2)*(ssy*ty2))
-				if l2 > 0.000001 {
-					tx2 = tx2 * (l1/l2)
-					ty2 = ty2 * (l1/l2)
-				}
-				tx2 = tx2 * (1.0 + rrx*0.5)
-				ty2 = ty2 * (1.0 + rry*0.5)
-				nx := (ax-q.x)*tx2 + q.x
-				ny := (ay-q.y)*ty2 + q.y
-				if nx > ex {
-					nx = ex - 1.5*(nx-ex)
-				}
-				if ny > ey {
-					ny = ey - 1.5*(ny-ey)
-				}
-				bx2 := 1.0 + pow(rrx*rry, 2.0)
-				cx3 := nx/ex*0.5 + 0.5
-				cy3 := ny/ey*0.5 + 0.5
-				cx3 = 0.5 + (cx3-0.5)*0.95
-				cy3 = 0.5 + (cy3-0.5)*0.95
-				if c.x < 0.0 {
-					cx3 = 1.0 - cx3
-				}
-				if c.y < 0.0 {
-					cy3 = 1.0 - cy3
-				}
-				cc3 := image0At(vec2(cx3, cy3)*isz).xyz
-				cc3 = cc3 * bx2
-				cc3 = cc3*cc3*r2
-				cornerT := dd2 * size.y * ps
-				if cornerT > 1.0 {
-					cornerT = 1.0
-				}
-				fin = mix(fin, cc3, cornerT)
-			}
-		}
-	}
-
 	// The chain ends in display space, as PP-reflex's does.
-	return vec4(pow(clamp(fin, vec3(0.0), vec3(1.0)), vec3(1.0/GAMMA)), 1.0)
+	return vec4(pow(clamp(zz, vec3(0.0), vec3(1.0)), vec3(1.0/GAMMA)), 1.0)
 }
 `
 
@@ -666,8 +749,17 @@ func (a *App) filterPanel(c *ui.Context, t *ui.Theme) {
 			Shadow(0, 26, 60, 0, ui.Hex("#000000cc"))
 		col.Children(func() {
 			ui.Row(c).Height(28).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "脑浆油条 参数").FontSize(12).FontWeight(700).
-					TextColor(t.Text.Alpha(0.92)).Grow(1)
+				// The title is the panel's own handle: a double click drops every
+				// number the player moved and puts the preset back.
+				title := ui.ButtonBase(c).Grow(1).Height(28).AlignItems(ui.Center)
+				title.Children(func() {
+					ui.Text(c, "脑浆油条 参数").FontSize(12).FontWeight(700).
+						TextColor(t.Text.Alpha(0.92)).SingleLine()
+				})
+				if title.DoubleClicked() {
+					a.cfg.CRTTune = map[string]float32{}
+					a.saveTune()
+				}
 				close := ui.ButtonBase(c).Width(26).Height(26).Radius(13).Center().
 					Background(ui.Hex("#ffffff14"))
 				close.Children(func() {
@@ -742,7 +834,7 @@ func (a *App) knobSwitch(c *ui.Context, t *ui.Theme, k knob) {
 	on := a.value(k.key) > 0.5
 	// The switch of a phone's settings: a short track, a knob that sits at the
 	// end it is not, green once it is on.
-	track := ui.Box(c).Width(44).Height(26)
+	track := ui.ButtonBase(c).Width(44).Height(26).Background(ui.Hex("#00000000"))
 	track.Draw(func(p *ui.Painter, r ui.Rect) {
 		trackColor := ui.Hex("#ffffff2b")
 		knobX := r.X + 2
@@ -755,9 +847,9 @@ func (a *App) knobSwitch(c *ui.Context, t *ui.Theme, k knob) {
 	})
 	if track.Clicked() {
 		if on {
-			a.setKnob(k, 0)
+			a.setKnob(k, 0.0)
 		} else {
-			a.setKnob(k, 1)
+			a.setKnob(k, 1.0)
 		}
 	}
 }
@@ -771,14 +863,16 @@ func (a *App) knobStepper(c *ui.Context, t *ui.Theme, k knob) {
 		Material(glass.Glass{Clarity: 0.78, Tint: ui.Hex("#ffffff10")}).
 		Border(1, ui.Hex("#ffffff24"))
 	pill.Children(func() {
-		back := ui.Box(c).Width(22).Height(22).Center()
+		back := ui.ButtonBase(c).Width(22).Height(22).Center().Radius(11).
+			Background(ui.Hex("#ffffff0f"))
 		back.Children(func() {
 			ui.Text(c, "‹").FontSize(11).TextColor(t.Text.Alpha(0.65))
 		})
 		if back.Clicked() {
 			a.nudge(k, -0.1)
 		}
-		mid := ui.Box(c).Grow(1).Height(22).Center()
+		mid := ui.ButtonBase(c).Grow(1).Height(22).Center().Radius(8).
+			Background(ui.Hex("#ffffff05"))
 		mid.Children(func() {
 			ui.Text(c, fmt1(float32(v))).FontSize(10.5).TextColor(t.Text.Alpha(0.9))
 		})
@@ -788,7 +882,8 @@ func (a *App) knobStepper(c *ui.Context, t *ui.Theme, k knob) {
 		} else if a.dragKey == k.key {
 			a.dragKey = ""
 		}
-		fwd := ui.Box(c).Width(22).Height(22).Center()
+		fwd := ui.ButtonBase(c).Width(22).Height(22).Center().Radius(11).
+			Background(ui.Hex("#ffffff0f"))
 		fwd.Children(func() {
 			ui.Text(c, "›").FontSize(11).TextColor(t.Text.Alpha(0.65))
 		})
@@ -798,10 +893,10 @@ func (a *App) knobStepper(c *ui.Context, t *ui.Theme, k knob) {
 	})
 }
 
-// nudge moves a parameter by a tenth of what its control shows.
+// nudge moves a parameter by one step of what its control shows.
 func (a *App) nudge(k knob, delta float64) {
 	cur := float64(a.value(k.key)) * k.mul
-	a.setKnob(k, round1(cur+delta)/float32(k.mul))
+	a.setKnob(k, roundStep(cur+delta, k.step)/k.mul)
 }
 
 // dragKnob moves a parameter with the drag of its middle: the first frame starts
@@ -809,19 +904,27 @@ func (a *App) nudge(k knob, delta float64) {
 func (a *App) dragKnob(k knob, dx float64) {
 	if a.dragKey != k.key {
 		a.dragKey = k.key
-		a.dragVal = float64(a.value(k.key))
+		a.dragVal = float64(a.value(k.key)) * k.mul
 	}
-	a.dragVal += dx * (k.hi - k.lo) / k.mul / 220
+	a.dragVal += dx * (k.hi - k.lo) / 220
 	a.dragVal = math.Max(k.lo, math.Min(k.hi, a.dragVal))
-	a.setKnob(k, round1(a.dragVal/k.mul))
+	a.setKnob(k, roundStep(a.dragVal, k.step)/k.mul)
 }
 
 // setKnob records a parameter as the player moved it.
-func (a *App) setKnob(k knob, v float32) {
+func (a *App) setKnob(k knob, v float64) {
 	if a.cfg.CRTTune == nil {
 		a.cfg.CRTTune = map[string]float32{}
 	}
-	a.cfg.CRTTune[k.key] = round1(float64(v))
+	a.cfg.CRTTune[k.key] = float32(v)
+}
+
+// roundStep keeps a control at the step it moves in.
+func roundStep(v float64, step float64) float64 {
+	if step <= 0 {
+		step = 0.1
+	}
+	return math.Round(v/step) * step
 }
 
 // round1 keeps a parameter at a tenth of a unit.

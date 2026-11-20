@@ -102,31 +102,34 @@ func (a *App) gamePicture(c *ui.Context, w, h float32) {
 	if a.gameBmp == nil {
 		return
 	}
-	bw, bh := ui.ImageSize(a.gameBmp)
-	if bw <= 0 || bh <= 0 {
-		return
+	// The glass owns the whole window: the picture sits inside it at PIC_SIZE and
+	// the bezel reflects the picture out to the window's own edges, in the same
+	// page as the game. Without the shader nothing carries that reflection, so the
+	// picture falls back to its own shape, centred.
+	fx, ok := a.crtEffect()
+	px, py, pw, ph := float32(0), float32(0), w, h
+	if !ok {
+		bw, bh := ui.ImageSize(a.gameBmp)
+		if bw <= 0 || bh <= 0 {
+			return
+		}
+		ratio := bw / bh
+		if a.gameAspect > 0.4 && a.gameAspect < 5 {
+			ratio = a.gameAspect
+		}
+		pw, ph = w, w/ratio
+		if ph > h {
+			ph, pw = h, h*ratio
+		}
+		px, py = (w-pw)/2, (h-ph)/2
 	}
-	ratio := bw / bh
-	if a.gameAspect > 0.4 && a.gameAspect < 5 {
-		ratio = a.gameAspect
-	}
-	pw, ph := w, w/ratio
-	if ph > h {
-		ph, pw = h, h*ratio
-	}
-	ui.Box(c).Absolute().Left((w - pw) / 2).Top((h - ph) / 2).Width(pw).Height(ph).Children(func() {
+	ui.Box(c).Absolute().Left(px).Top(py).Width(pw).Height(ph).Children(func() {
 		pic := ui.Box(c).Fill().Background(ui.Hex("#000000")).Children(func() {
 			ui.Image(c, a.gameBmp).Fill()
 		})
-		// The tube's own look: the preset's shader over the picture, in this page,
-		// in the same window as the game and the two controls over it.
-		if fx, ok := a.crtEffect(); ok {
+		if ok {
 			pic.Effect(fx)
 		}
-		// The glass of the tube over its own picture: a hairline of light along
-		// the top edge and a soft dark rim, drawn in the same page as the game.
-		ui.Box(c).Absolute().Fill().Radius(2).Border(1, ui.Hex("#ffffff26"))
-		ui.Box(c).Absolute().Fill().Radius(2).Border(3, ui.Hex("#00000012"))
 	})
 }
 

@@ -398,3 +398,37 @@ RetroArch 本身不是 simUI 的一部分。
 - 界面配色在 `buildTheme()`：近黑底、暖橙 accent，改主题只改这一处。
 
 
+
+## 控制器面板（`internal/app/pad.go` + `padview.go`）
+
+播放页右上角两颗胶囊：`控制器`（跟着当前游戏，显示机种/基板名）和 `滤镜`。面板是**图形化手柄**，
+点模型上的某一个按键就进入抓键态，按键盘键或手柄键即写入绑定；**每个平台一份**（`数据/controls.json`），
+该平台所有游戏通用，不按单个游戏存。
+
+- 平台名就是货架里的**基板名规范化后的 id**：`CPS1/CPS2/CPS3→cps1/cps2/cps3`（CPS3 面板显示 `CPSIII`）、
+  `MVS→mvs`、`ST-V→st-v`、`NAOMI GD→naomi-gd`；认不出的基板名回落 `arcade`。
+  `layoutID()` 把小写、空格换 `-`，`library.BoardKnown()` 判断这名字到底是不是一块基板。
+- 按钮数由基板决定：CPS1 三键、MVS 四键（`A+B`/`C+D` 组合）、其余街机六键（`ABC`/`DEF` 组合）。
+  组合键是一个 spot 按多个 RetroPad id（`padSpot.Drives`），不是额外的物理按键。
+- 主机：FC/SFC/GB/GBA/NGP/MD（六键）/SS（六键，L/R 走 L2/R2）/PS1/PSP/3DO。
+  SEGA 文件夹按路径分辨：`/ss/`→SS，`/model 2|3/`、`/stv/`、DC→`arcade`，其余→MD。
+- 六键不是按 RetroPad 的“直觉”叠的，要看核心：MD 的 A 读 Y、C 读 A、X/Y/Z 读 L/X/R；
+  SS 的 A 读 B、B 读 A、C 读 R、Z 读 L。改动这些前先核对 `genesis_plus_gx` / `mednafen_saturn`。
+- 输入：`pushPad()` 每帧把掩码交给 `core.Session.SetPad`（`DeviceJoypad` 分支），keyboard 老路子不动；
+  面板自己读键用 `GetAsyncKeyState`、读手柄用 `XInputGetState`（`xinput1_4` → `9_1_0`/`1_3` 回退）。
+- 面板不自己切平台：顶部只显示当前机种名（居中），没有切换条；Esc 关面板。
+
+### 本轮补充（2026-11-20）
+
+- 主机补齐：DC、XBOX、XBOX 360、PS2、PS3、PSV、3DS。SEGA 的 DC 不再回落到街机（`padLayoutOf` 返回 `dc`）；
+  `ps` 平台按核心再分 `pcsx2/pcsx_rearmed→ps2`、`rpcs3→ps3`；任天堂按 `citra`/`.cia`→`3ds`；微软按 `xenia_launcher`→`xbox360`，其余 `xbox`。
+- **PS 系按钮按位置对**：核心读 `△→X(上)`、`□→Y(左)`、`○→A(右)`、`×→B(下)`（Beetle PSX / pcsx2 的 SET_INPUT_DESCRIPTORS），
+  以前写反的 `△→Y/□→X/○→B/×→A` 已改；PSV/PS2/PS3/PSP 共用 `psFaces()`。
+- 十字键：一条竖臂 + 一条横臂拼的实心十字（同一不透明色 `#2b303c`，避免叠加处出现亮方块），
+  四臂各一个三角 `▲▼◀▶`；**没有中心方块、没有下面的圆**；三角下面只在玩家另外绑了键时才写绑定字。
+- 摇杆：有摇杆的机种（PS2/PS3/PSP/PSV/DC/XBOX/XBOX360/3DS）在十字键右侧画一个圆形摇杆井，
+  四向三角单独成 spot，id 为 `lsup/lsdown/lsleft/lsright`，默认读 XInput 左摇杆的索引 16..19（`padNames` 追加「摇杆↑↓←→」），
+  与十字键的 0..3 分开存，**两套方向互不影响**；不给 WASD 默认键（那是第二套方向键，属多余）。
+- **长按是摇杆井中心的一颗独立键 `lshold`**（显示「长按」），不是面板开关：
+  按住它时若摇杆正偏向某方向，就锁住该方向（松手后继续按着）；空白时按它则解除锁定。
+  它本身不进游戏（`padRetroIds["lshold"]=padNothing = -1`，`maskOf` 跳过负数 id）。

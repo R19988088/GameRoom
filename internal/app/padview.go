@@ -129,13 +129,25 @@ func (a *App) padModel(c *ui.Context, t *ui.Theme, l *padLayout) {
 			Border(1, ui.Hex("#ffffff12"))
 		ui.Box(c).Absolute().Left(6).Top(6).Right(6).Bottom(6).Radius(16).
 			Background(ui.Hex("#1b1f29f2")).Border(1, ui.Hex("#ffffff22"))
-		// The cross of the d-pad is two bars; the four arms sit on top of them.
-		ui.Box(c).Absolute().Left(dpadX-39).Top(dpadY-15).Width(84).Height(30).Radius(8).
-			Background(ui.Hex("#ffffff17")).Border(1, ui.Hex("#ffffff26"))
-		ui.Box(c).Absolute().Left(dpadX-15).Top(dpadY-45).Width(30).Height(90).Radius(8).
-			Background(ui.Hex("#ffffff17")).Border(1, ui.Hex("#ffffff26"))
-		ui.Box(c).Absolute().Left(dpadX - 15).Top(dpadY - 15).Width(30).Height(30).
-			Background(ui.Hex("#ffffff0a"))
+		// The cross of the d-pad: two arms in one flat tone, so the middle is a
+		// join and not a square where two bars pile up, with a triangle on each
+		// arm.
+		ui.Box(c).Absolute().Left(dpadX - 15).Top(dpadY - 45).Width(30).Height(90).Radius(6).
+			Background(ui.Hex("#2b303c"))
+		ui.Box(c).Absolute().Left(dpadX - 39).Top(dpadY - 15).Width(78).Height(30).Radius(6).
+			Background(ui.Hex("#2b303c"))
+		// A machine with a stick gets its well beside the cross: the stick's four
+		// directions are read apart from the cross's, so they get a well of their
+		// own rather than sitting on the same arms.
+		for _, s := range l.Spots {
+			if s.Kind == "stick" {
+				ui.Box(c).Absolute().Left(stickX-42).Top(stickY-42).Width(84).Height(84).
+					Radius(42).Background(ui.Hex("#00000030")).Border(1, ui.Hex("#ffffff22"))
+				ui.Box(c).Absolute().Left(stickX - 34).Top(stickY - 34).Width(68).Height(68).
+					Radius(34).Background(ui.Hex("#ffffff0f"))
+				break
+			}
+		}
 		for _, s := range l.Spots {
 			a.padSpot(c, t, l, s)
 		}
@@ -153,6 +165,8 @@ func (a *App) padSpot(c *ui.Context, t *ui.Theme, l *padLayout, s padSpot) {
 	b := ui.ButtonBase(c).Absolute().Left(s.X).Top(s.Y).Width(s.W).Height(s.H)
 	switch s.Kind {
 	case "dir":
+		// An arm of the cross: the triangle says which way. A key the player gave
+		// it reads under it; the arrow it already carries is not written twice.
 		b.Radius(6).Center()
 		if waiting {
 			b.Background(ui.Hex("#e8763a3b")).Border(1, ui.Hex("#e8763aa6"))
@@ -160,8 +174,50 @@ func (a *App) padSpot(c *ui.Context, t *ui.Theme, l *padLayout, s padSpot) {
 			b.Background(ui.Hex("#ffffff1f"))
 		}
 		b.Children(func() {
-			ui.Text(c, faceText(face, waiting)).FontSize(11).FontWeight(700).
-				TextColor(textColorFor(t, waiting)).SingleLine()
+			ui.Column(c).Center().Gap(0).Children(func() {
+				ui.Text(c, s.Label).FontSize(10).TextColor(t.Text.Alpha(0.8)).SingleLine()
+				if !isDefaultFace(p, s.ID) {
+					ui.Text(c, faceText(face, waiting)).FontSize(7).
+						FontWeight(700).TextColor(textColorFor(t, waiting)).SingleLine()
+				}
+			})
+		})
+	case "stick":
+		// A direction of the stick: the same triangle, in the well, with the
+		// stick's own binding under it.
+		b.Radius(5).Center()
+		if waiting {
+			b.Background(ui.Hex("#e8763a3b")).Border(1, ui.Hex("#e8763aa6"))
+		} else if b.Hovered() {
+			b.Background(ui.Hex("#ffffff1f"))
+		}
+		b.Children(func() {
+			ui.Column(c).Center().Gap(0).Children(func() {
+				ui.Text(c, s.Label).FontSize(9).TextColor(t.Text.Alpha(0.72)).SingleLine()
+				if !isDefaultFace(p, s.ID) {
+					ui.Text(c, faceText(face, waiting)).FontSize(6.5).
+						FontWeight(700).TextColor(textColorFor(t, waiting)).SingleLine()
+				}
+			})
+		})
+	case "hold":
+		// The stick's hold key, in the middle of the well: a key like the others,
+		// and it reads orange while it is keeping a direction on.
+		b.Radius(5).Center()
+		switch {
+		case waiting:
+			b.Background(ui.Hex("#e8763a3b")).Border(1, ui.Hex("#e8763aa6"))
+		case a.holdOn != "":
+			b.Background(ui.Hex("#e8763a2e")).Border(1, ui.Hex("#e8763aa6"))
+		case b.Hovered():
+			b.Background(ui.Hex("#ffffff1f")).Border(1, ui.Hex("#ffffff40"))
+		}
+		b.Children(func() {
+			ui.Column(c).Center().Gap(0).Children(func() {
+				ui.Text(c, s.Label).FontSize(7.5).TextColor(t.Text.Alpha(0.7)).SingleLine()
+				ui.Text(c, faceText(face, waiting)).FontSize(6.5).
+					FontWeight(700).TextColor(textColorFor(t, waiting)).SingleLine()
+			})
 		})
 	case "pill":
 		b.Radius(s.H / 2).AlignItems(ui.Center).PaddingX(8)
@@ -219,6 +275,25 @@ func faceText(face string, waiting bool) string {
 	return face
 }
 
+// isDefaultFace says whether a button only reads what it already draws: an arm
+// of the cross that presses the arrow it carries, or a stick direction that
+// presses the gamepad's own stick. Such a face is not written a second time.
+func isDefaultFace(b padBind, id string) bool {
+	if b.Key != "" {
+		return isDirectionFace(b.Key)
+	}
+	return b.Pad != 0 && b.Pad == defaultPads[id]
+}
+
+// isDirectionFace is a source whose name is just a direction.
+func isDirectionFace(name string) bool {
+	switch name {
+	case "↑", "↓", "←", "→", "摇杆↑", "摇杆↓", "摇杆←", "摇杆→":
+		return true
+	}
+	return false
+}
+
 func textColorFor(t *ui.Theme, waiting bool) ui.Color {
 	if waiting {
 		return t.Text
@@ -238,6 +313,7 @@ func (a *App) padFooter(c *ui.Context, t *ui.Theme) {
 		})
 		if reset.Clicked() {
 			a.resetPads(a.padLive)
+			a.holdOn, a.holdDown = "", false
 			a.cap = ""
 		}
 	})

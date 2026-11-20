@@ -170,6 +170,11 @@ type App struct {
 	capVK    map[int]bool
 	capPad   map[int]bool
 	escDown  bool
+	// The stick's hold key: holdOn is the direction it is keeping on ("" for
+	// none), and holdDown whether the key itself is down, so only the press
+	// counts and not the repeat.
+	holdOn   string
+	holdDown bool
 }
 
 // Run starts the launcher, one instance at a time.
@@ -969,10 +974,11 @@ func (a *App) launchGame(g library.Game) {
 	a.gameFrames = 0
 	a.gameAspect = sess.Aspect()
 	a.playerGame = g
+	a.padsOpen = false
 	a.padLive = a.padLayoutOf(g)
 	a.filtersOpen = false
-	a.padsOpen = false
 	a.cap = ""
+	a.holdOn, a.holdDown = "", false
 	// The core's sound plays through the machine's own wave output, queued a
 	// few frames ahead: the game is the only thing making noise.
 	sess.StartSound()

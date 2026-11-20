@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/R19988088/GameRoom/internal/library"
@@ -29,8 +30,11 @@ func TestPadLayoutOfMachines(t *testing.T) {
 		{library.Game{PlatformKey: "3DO"}, "3do"},
 		{library.Game{PlatformKey: "SEGA", RomPath: "SEGA/MD/foo.zip"}, "md"},
 		{library.Game{PlatformKey: "SEGA", RomPath: "SEGA/SS/Shinobi X.cue"}, "ss"},
-		{library.Game{PlatformKey: "SEGA", RomPath: "SEGA/DC/foo.gdi"}, "arcade"},
+		{library.Game{PlatformKey: "SEGA", RomPath: "SEGA/DC/foo.gdi"}, "dc"},
 		{library.Game{PlatformKey: "SEGA", RomPath: "SEGA/Model 2/foo.zip"}, "arcade"},
+		{library.Game{PlatformKey: "任天堂", RomPath: "任天堂/3DS/foo.cia"}, "3ds"},
+		{library.Game{PlatformKey: "微软", RomPath: "微软/XBOX/foo.iso"}, "xbox"},
+		{library.Game{PlatformKey: "微软", RomPath: "微软/360/foo.iso"}, "xbox360"},
 		{library.Game{PlatformKey: "dos", RomPath: "dos/foo.zip"}, ""},
 		{library.Game{PlatformKey: "pc98", RomPath: "pc98/foo/x.hdi"}, ""},
 	}
@@ -287,12 +291,131 @@ func TestBoardNamesAreNormalised(t *testing.T) {
 	}
 }
 
-// TestModelsFitTheCanvasAndLineUp: every machine is drawn on the same canvas,
+// TestPlayStationButtonsFollowTheCore: the core reads the Sony diamond by its
+// position — X up (△), Y left (□), A right (○), B down (×) — so the model has to
+// press the same ids, or the shapes would lie about which button is which.
+func TestPlayStationButtonsFollowTheCore(t *testing.T) {
+	cases := []struct {
+		layout, label, want string
+		id                  int
+	}{
+		{"ps", "△", "x", padX}, {"ps", "□", "y", padY},
+		{"ps", "○", "a", padA}, {"ps", "×", "b", padB},
+		{"ps2", "×", "b", padB}, {"ps3", "○", "a", padA},
+		{"psp", "□", "y", padY}, {"psv", "△", "x", padX},
+	}
+	for _, c := range cases {
+		l := padLayoutFor(c.layout)
+		if l == nil {
+			t.Fatalf("%s has no panel", c.layout)
+		}
+		for _, s := range l.Spots {
+			if s.Label != c.label {
+				continue
+			}
+			if s.ID != c.want {
+				t.Errorf("%s %s reads %q, want %q", c.layout, c.label, s.ID, c.want)
+			}
+			a := &App{root: t.TempDir(), pads: map[string]map[string]padBind{}}
+			a.bindPad(c.layout, s.ID, "key", 0x50, 0)
+			held := maskOf(l, a.padProfile(c.layout), map[int]bool{0x50: true}, nil)
+			if !held[c.id] {
+				t.Errorf("%s %s does not press the core's id %d", c.layout, c.label, c.id)
+			}
+			goto next
+		}
+		t.Errorf("%s has no %s button", c.layout, c.label)
+	next:
+	}
+}
+
+// TestStickHasItsOwnDirections: a machine with a small stick draws it beside the
+// cross, files its four directions under ids of their own, and reads them from
+// the gamepad's stick rather than from the cross — two sets of bindings, so the
+// player can bind them apart.
+func TestStickHasItsOwnDirections(t *testing.T) {
+	for _, id := range []string{"ps2", "ps3", "psp", "psv", "dc", "xbox", "xbox360", "3ds"} {
+		l := padLayoutFor(id)
+		if l == nil {
+			t.Fatalf("%s has no panel", id)
+		}
+		sticks := 0
+		for _, s := range l.Spots {
+			if s.Kind == "stick" {
+				sticks++
+				switch s.ID {
+				case "lsup", "lsdown", "lsleft", "lsright":
+				default:
+					t.Errorf("%s stick %s is filed under %q", id, s.Label, s.ID)
+				}
+			}
+			if strings.Contains(strings.ToLower(s.ID), "lshold") && s.Kind != "hold" {
+				t.Errorf("%s draws %s as %q, want the hold key", id, s.Label, s.Kind)
+			}
+		}
+		if sticks != 4 {
+			t.Errorf("%s draws %d stick directions, want 4", id, sticks)
+		}
+		hasHold := false
+		for _, s := range l.Spots {
+			if s.Kind == "hold" {
+				hasHold = true
+			}
+		}
+		if !hasHold {
+			t.Errorf("%s has no stick hold key", id)
+		}
+		for _, want := range []string{"lsup", "lsdown", "lsleft", "lsright", "lshold"} {
+			if _, ok := padRetroIds[want]; !ok {
+				t.Errorf("%s is not an id a binding can be filed under", want)
+			}
+		}
+	}
+	// The stick's own defaults sit on XInput's indices 16..19, apart from the
+	// cross's 0..3, and take no keys: WASD would only be a second set of arrows.
+	if defaultPads["lsup"] != 17 || defaultPads["lsright"] != 20 {
+		t.Errorf("the stick's defaults are %v", defaultPads)
+	}
+	if _, ok := defaultKeys["lsup"]; ok {
+		t.Errorf("the stick's directions have keys of their own: %v", defaultKeys)
+	}
+	if len(padNames) != 20 {
+		t.Errorf("%d gamepad names, want 20", len(padNames))
+	}
+}
+
+// TestStickHoldKeyKeepsADirection: the hold is a key of its own — pressed while
+// the stick is tilted it keeps that direction on, pressed with nothing tilted it
+// lets it go. It is not a switch on the panel, and it presses nothing itself.
+func TestStickHoldKeyKeepsADirection(t *testing.T) {
+	a := &App{root: t.TempDir(), pads: map[string]map[string]padBind{}, padLive: "ps2"}
+	a.bindPad("ps2", "lshold", "key", 0x54, 0) // T
+	a.bindPad("ps2", "lsup", "key", 0x57, 0)   // W
+	prof := a.padProfile("ps2")
+
+	tilt := map[int]bool{prof["lsup"].VK: true}
+	if held := a.padMask(map[int]bool{prof["lshold"].VK: true}, nil); len(held) != 0 {
+		t.Fatalf("the hold key alone pressed %v, want nothing", held)
+	}
+
+	// Tilt the stick, then press the hold key: up stays on after the stick is let go.
+	a.padMask(tilt, nil)
+	a.padMask(map[int]bool{prof["lsup"].VK: true, prof["lshold"].VK: true}, nil)
+	if held := a.padMask(nil, nil); !held[padUp] {
+		t.Fatalf("the held direction was dropped: %v", held)
+	}
+	// Press the hold key again with nothing tilted: it lets go.
+	a.padMask(map[int]bool{prof["lshold"].VK: true}, nil)
+	if held := a.padMask(nil, nil); held[padUp] {
+		t.Fatalf("the hold key did not let the direction go")
+	}
+}
+
 // so every button has to be inside it, no button twice, the four arms of the
 // d-pad always there, and the face buttons sitting on shared columns instead of
 // wherever they happen to land.
 func TestModelsFitTheCanvasAndLineUp(t *testing.T) {
-	if len(padLayouts) < 11 {
+	if len(padLayouts) < 19 {
 		t.Fatalf("only %d models", len(padLayouts))
 	}
 	for _, l := range padLayouts {
@@ -317,6 +440,15 @@ func TestModelsFitTheCanvasAndLineUp(t *testing.T) {
 		}
 		if arms != 4 {
 			t.Errorf("%s has %d d-pad arms, want 4", l.ID, arms)
+		}
+		// Two buttons on the same spot would fight for the click: the cross, the
+		// stick's directions and its hold key each have their own patch.
+		for i, a1 := range l.Spots {
+			for _, b1 := range l.Spots[i+1:] {
+				if a1.X < b1.X+b1.W && b1.X < a1.X+a1.W && a1.Y < b1.Y+b1.H && b1.Y < a1.Y+a1.H {
+					t.Errorf("%s draws %s over %s", l.ID, a1.Label, b1.Label)
+				}
+			}
 		}
 	}
 }

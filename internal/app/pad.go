@@ -33,6 +33,9 @@ const (
 	padR2     = 13
 	padL3     = 14
 	padR3     = 15
+	// padNothing is a key that presses no button of the machine: the stick's hold
+	// key keeps a direction on, it does not send one into the game.
+	padNothing = -1
 )
 
 // padRetroIds names each of them, which is how a binding is filed.
@@ -41,6 +44,12 @@ var padRetroIds = map[string]int{
 	"up": padUp, "down": padDown, "left": padLeft, "right": padRight,
 	"a": padA, "x": padX, "l": padL, "r": padR,
 	"l2": padL2, "r2": padR2, "l3": padL3, "r3": padR3,
+	// The stick's four directions are filed under ids of their own, so a machine
+	// that has a stick keeps two sets of direction bindings: the cross's and the
+	// stick's. lshold is the stick's hold key: it presses nothing itself, it
+	// keeps the direction being held.
+	"lsup": padUp, "lsdown": padDown, "lsleft": padLeft, "lsright": padRight,
+	"lshold": padNothing,
 }
 
 // padBind is where one button of a machine's pad is read from: a key of the
@@ -112,15 +121,37 @@ const (
 	macroX1, macroX2       = 244, 334
 	diamondCY              = 102
 	diamondR               = 38
+
+	// The small stick sits between the cross and the buttons, with its own four
+	// directions: a machine that has one reads them apart from the d-pad, so a
+	// player can bind them apart too.
+	stickX, stickY = 200, 104
+	stickArm       = 20
 )
 
-// dirSpots are the four arms of the d-pad, at the same place on every model.
+// dirSpots are the four arms of the d-pad, at the same place on every model: a
+// triangle on each arm, as the cross of a real pad has.
 func dirSpots() []padSpot {
 	return []padSpot{
-		{"up", "↑", dpadX - 15, dpadY - 45, armSize, armSize, "dir", nil},
-		{"down", "↓", dpadX - 15, dpadY + 15, armSize, armSize, "dir", nil},
-		{"left", "←", dpadX - 39, dpadY - 15, armSize, armSize, "dir", nil},
-		{"right", "→", dpadX + 15, dpadY - 15, armSize, armSize, "dir", nil},
+		{"up", "▲", dpadX - 15, dpadY - 45, armSize, armSize, "dir", nil},
+		{"down", "▼", dpadX - 15, dpadY + 15, armSize, armSize, "dir", nil},
+		{"left", "◀", dpadX - 39, dpadY - 15, armSize, armSize, "dir", nil},
+		{"right", "▶", dpadX + 15, dpadY - 15, armSize, armSize, "dir", nil},
+	}
+}
+
+// stickSpots are the four directions of the small stick, and the key that keeps
+// one of them on. They are filed under ids of their own — lsup, lsdown, lsleft,
+// lsright — so the stick is its own set of direction bindings, while still
+// pressing the directions the core knows. The hold key sits in the middle of the
+// well: it is a button of its own, bound like any other, not a switch.
+func stickSpots() []padSpot {
+	return []padSpot{
+		{"lsup", "▲", stickX - 10, stickY - 32, stickArm, stickArm, "stick", []string{"up"}},
+		{"lsdown", "▼", stickX - 10, stickY + 12, stickArm, stickArm, "stick", []string{"down"}},
+		{"lsleft", "◀", stickX - 32, stickY - 10, stickArm, stickArm, "stick", []string{"left"}},
+		{"lsright", "▶", stickX + 12, stickY - 10, stickArm, stickArm, "stick", []string{"right"}},
+		{"lshold", "长按", stickX - 11, stickY - 11, 22, 22, "hold", nil},
 	}
 }
 
@@ -181,6 +212,26 @@ func padModel(parts ...[]padSpot) []padSpot {
 // faces is the shorthand every console uses: its buttons, each where it sits.
 func faces(list ...padSpot) []padSpot { return list }
 
+// psFaces is the PlayStation diamond.
+func psFaces() []padSpot {
+	return faces(
+		faceAt("x", "△", col2, diamondCY-diamondR),
+		faceAt("y", "□", col1, diamondCY),
+		faceAt("a", "○", col3, diamondCY),
+		faceAt("b", "×", col2, diamondCY+diamondR),
+	)
+}
+
+// xboxFaces is the diamond both Xbox pads wear: A down, B right, X left, Y up.
+func xboxFaces() []padSpot {
+	return faces(
+		faceAt("y", "Y", col2, diamondCY-diamondR),
+		faceAt("x", "X", col1, diamondCY),
+		faceAt("b", "B", col3, diamondCY),
+		faceAt("a", "A", col2, diamondCY+diamondR),
+	)
+}
+
 // padLayouts is every machine the panel draws. The ids are what a profile is
 // filed under — one profile per machine, shared by every game of it.
 var padLayouts = []padLayout{
@@ -228,17 +279,62 @@ var padLayouts = []padLayout{
 	), shoulders2("L", "R"), []padSpot{
 		barAt("start", "Start", lbarX, barY, lbarW, barH),
 	})},
-	{"ps", "PS1", padModel(dirSpots(), faces(
-		faceAt("y", "△", col2, diamondCY-diamondR),
-		faceAt("x", "□", col1, diamondCY),
-		faceAt("b", "○", col3, diamondCY),
-		faceAt("a", "×", col2, diamondCY+diamondR),
-	), shoulders("L1", "R1"), padBars("Select", "Start"))},
-	{"psp", "PSP", padModel(dirSpots(), faces(
-		faceAt("y", "△", col2, diamondCY-diamondR),
-		faceAt("x", "□", col1, diamondCY),
-		faceAt("b", "○", col3, diamondCY),
-		faceAt("a", "×", col2, diamondCY+diamondR),
+	// The PlayStation diamond, read the way the cores read it: the pad's X is up
+	// (△), its Y is left (□), its A is right (○), its B is down (×). Every Sony
+	// machine — PS1, PS2, PS3, PSP, Vita — reads its buttons that way.
+	{"ps", "PS1", padModel(dirSpots(), psFaces(), shoulders("L1", "R1"), padBars("Select", "Start"))},
+	{"ps2", "PS2", padModel(dirSpots(), stickSpots(), psFaces(), shoulders("L1", "R1"),
+		[]padSpot{
+			barAt("select", "Select", lbarX, barY, lbarW, barH),
+			barAt("start", "Start", rbarX, barY, lbarW, barH),
+			barAt("l2", "L2", macroX1, barY, lbarW, barH),
+			barAt("r2", "R2", macroX2, barY, lbarW, barH),
+		})},
+	{"ps3", "PS3", padModel(dirSpots(), stickSpots(), psFaces(), shoulders("L1", "R1"),
+		[]padSpot{
+			barAt("select", "Select", lbarX, barY, lbarW, barH),
+			barAt("start", "Start", rbarX, barY, lbarW, barH),
+			barAt("l2", "L2", macroX1, barY, lbarW, barH),
+			barAt("r2", "R2", macroX2, barY, lbarW, barH),
+		})},
+	{"psp", "PSP", padModel(dirSpots(), stickSpots(), psFaces(), shoulders("L", "R"),
+		padBars("Select", "Start"))},
+	{"psv", "PSV", padModel(dirSpots(), stickSpots(), psFaces(), shoulders("L", "R"),
+		padBars("Select", "Start"))},
+	// A Dreamcast pad: A down, B right, X left, Y up, and its triggers on L2/R2.
+	{"dc", "DC", padModel(dirSpots(), stickSpots(), faces(
+		faceAt("b", "A", col2, diamondCY+diamondR),
+		faceAt("a", "B", col3, diamondCY),
+		faceAt("y", "X", col1, diamondCY),
+		faceAt("x", "Y", col2, diamondCY-diamondR),
+	), []padSpot{
+		barAt("start", "Start", lbarX, barY, lbarW, barH),
+		barAt("l2", "LT", rbarX, barY, lbarW, barH),
+		barAt("r2", "RT", macroX1, barY, lbarW, barH),
+	})},
+	// The two Xbox pads: A down, B right, X left, Y up, the bumpers on L and R,
+	// the triggers on L2 and R2.
+	{"xbox", "XBOX", padModel(dirSpots(), stickSpots(), xboxFaces(), shoulders("LB", "RB"),
+		[]padSpot{
+			barAt("select", "Back", lbarX, barY, lbarW, barH),
+			barAt("start", "Start", rbarX, barY, lbarW, barH),
+			barAt("l2", "LT", macroX1, barY, lbarW, barH),
+			barAt("r2", "RT", macroX2, barY, lbarW, barH),
+		})},
+	{"xbox360", "XBOX 360", padModel(dirSpots(), stickSpots(), xboxFaces(), shoulders("LB", "RB"),
+		[]padSpot{
+			barAt("select", "Back", lbarX, barY, lbarW, barH),
+			barAt("start", "Start", rbarX, barY, lbarW, barH),
+			barAt("l2", "LT", macroX1, barY, lbarW, barH),
+			barAt("r2", "RT", macroX2, barY, lbarW, barH),
+		})},
+	// A 3DS: A right, B down, X up, Y left, L and R over the screen, and the
+	// circle pad beside the cross.
+	{"3ds", "3DS", padModel(dirSpots(), stickSpots(), faces(
+		faceAt("a", "A", col3, diamondCY),
+		faceAt("b", "B", col2, diamondCY+diamondR),
+		faceAt("x", "X", col2, diamondCY-diamondR),
+		faceAt("y", "Y", col1, diamondCY),
 	), shoulders("L", "R"), padBars("Select", "Start"))},
 	{"3do", "3DO", padModel(dirSpots(), faces(
 		faceAt("b", "A", col1+12, row2),
@@ -345,6 +441,15 @@ func padLayoutFor(id string) *padLayout {
 	return boardLayout(id)
 }
 
+// coreOf is the core a game runs on, or "" when there is no shelf to ask —
+// a panel test has no library behind it.
+func (a *App) coreOf(g library.Game) string {
+	if a.lib == nil {
+		return ""
+	}
+	return a.lib.CoreOf(g)
+}
+
 // padLayoutOf is the model a game's pad is: the board of an arcade romset
 // (CPS2, CPS3, MVS…), or the machine a console folder actually holds — SEGA
 // keeps a Mega Drive, a Saturn and a Dreamcast side by side. The panel follows
@@ -358,6 +463,13 @@ func (a *App) padLayoutOf(g library.Game) string {
 	case "sfc":
 		return "sfc"
 	case "ps":
+		// The folder holds a PS1, a PS2 or a PS3 side by side; the core says which.
+		switch a.coreOf(g) {
+		case "pcsx2", "pcsx_rearmed":
+			return "ps2"
+		case "rpcs3":
+			return "ps3"
+		}
 		return "ps"
 	case "3DO":
 		return "3do"
@@ -371,15 +483,17 @@ func (a *App) padLayoutOf(g library.Game) string {
 			return "arcade"
 		case strings.Contains(rom, "/dc/"), strings.HasSuffix(rom, ".gdi"),
 			strings.HasSuffix(rom, ".cdi"):
-			return "arcade"
+			return "dc"
 		case strings.Contains(rom, "/ss/"):
 			return "ss"
 		}
 		return "md"
 	case "掌机":
-		switch a.lib.CoreOf(g) {
+		switch a.coreOf(g) {
 		case "ppsspp":
 			return "psp"
+		case "vita3k":
+			return "psv"
 		case "mednafen_ngp":
 			return "ngp"
 		case "gearboy":
@@ -391,8 +505,18 @@ func (a *App) padLayoutOf(g library.Game) string {
 			return "gba"
 		}
 		return "gba"
-	case "任天堂", "微软":
+	case "任天堂":
+		if a.coreOf(g) == "citra" || strings.Contains(rom, "/3ds/") ||
+			strings.HasSuffix(rom, ".cia") || strings.HasSuffix(rom, ".cci") {
+			return "3ds"
+		}
 		return "arcade"
+	case "微软":
+		// The folder holds an Xbox and an Xbox 360; the 360's core is the launcher.
+		if a.coreOf(g) == "xenia_launcher" || strings.Contains(rom, "/360/") {
+			return "xbox360"
+		}
+		return "xbox"
 	case "arc", "majiang":
 		// The board names its own panel, and its own profile: CPS1 reads three
 		// buttons, CPS2 and CPS3 six, the MVS four. A romset filed under a name
@@ -413,6 +537,8 @@ var defaultKeys = map[string]int{
 	"a": 0x4A, "b": 0x4B, "x": 0x49, "y": 0x55,
 	"l": 0x51, "r": 0x45, "start": 0x0D, "select": 0x09,
 	"up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
+	// The stick has no keys of its own until the player gives it some: the gamepad
+	// stick is its default, and WASD would only be a second set of arrows.
 }
 
 var defaultPads = map[string]int{
@@ -420,6 +546,8 @@ var defaultPads = map[string]int{
 	"l": 9, "r": 10, "start": 5, "select": 6,
 	"up": 1, "down": 2, "left": 3, "right": 4,
 	"l2": 15, "r2": 16, "l3": 7, "r3": 8,
+	// XInput indices 16..19 are the left stick's four directions.
+	"lsup": 17, "lsdown": 18, "lsleft": 19, "lsright": 20,
 }
 
 // defaultPadBinds is a profile with nothing changed in it: every button the
@@ -567,6 +695,7 @@ func vkName(vk int) string {
 var padNames = []string{
 	"↑", "↓", "←", "→", "Start", "Back", "L3", "R3",
 	"LB", "RB", "A", "B", "X", "Y", "LT", "RT",
+	"摇杆↑", "摇杆↓", "摇杆←", "摇杆→",
 }
 
 // padFace is what a binding shows on the model: the key it reads, or the
@@ -662,17 +791,20 @@ func heldPads() map[int]bool {
 		if st.RT > 40 {
 			held[15] = true
 		}
+		// The stick is read as itself, not as the cross: a machine that has one
+		// files its stick directions under ids of their own, so the two can be
+		// bound apart, and a stick held in a direction keeps pressing it.
 		if st.LY > 18000 {
-			held[0] = true
+			held[16] = true
 		}
 		if st.LY < -18000 {
-			held[1] = true
+			held[17] = true
 		}
 		if st.LX < -18000 {
-			held[2] = true
+			held[18] = true
 		}
 		if st.LX > 18000 {
-			held[3] = true
+			held[19] = true
 		}
 		return held
 	}
@@ -691,7 +823,7 @@ func maskOf(l *padLayout, prof map[string]padBind, keys, pads map[int]bool) map[
 		b := prof[s.ID]
 		if (b.VK != 0 && keys[b.VK]) || (b.Pad > 0 && pads[b.Pad-1]) {
 			for _, t := range targetsOf(s) {
-				if id, ok := padRetroIds[t]; ok {
+				if id, ok := padRetroIds[t]; ok && id >= 0 {
 					held[id] = true
 				}
 			}
@@ -706,7 +838,49 @@ func (a *App) pushPad() {
 	if a.core == nil {
 		return
 	}
-	a.core.SetPad(maskOf(padLayoutFor(a.padLive), a.padProfile(a.padLive), heldVKs(), heldPads()))
+	a.core.SetPad(a.padMask(heldVKs(), heldPads()))
+}
+
+// padMask is the RetroPad the core reads this frame: the model's buttons, plus
+// the direction the stick's hold key is keeping on.
+func (a *App) padMask(keys, pads map[int]bool) map[int]bool {
+	l := padLayoutFor(a.padLive)
+	if l == nil {
+		return nil
+	}
+	prof := a.padProfile(a.padLive)
+	held := maskOf(l, prof, keys, pads)
+	// The hold key is a button of its own: pressed while the stick is tilted it
+	// keeps that direction on; pressed with nothing tilted it lets it go.
+	hb := prof["lshold"]
+	down := (hb.VK != 0 && keys[hb.VK]) || (hb.Pad > 0 && pads[hb.Pad-1])
+	if down && !a.holdDown {
+		a.holdDown = true
+		a.holdOn = ""
+		tilted := ""
+		for _, s := range l.Spots {
+			if s.Kind != "stick" {
+				continue
+			}
+			b := prof[s.ID]
+			if (b.VK != 0 && keys[b.VK]) || (b.Pad > 0 && pads[b.Pad-1]) {
+				tilted = targetsOf(s)[0]
+				break
+			}
+		}
+		if tilted != "" {
+			a.holdOn = tilted
+		}
+	}
+	if !down {
+		a.holdDown = false
+	}
+	if a.holdOn != "" {
+		if id, ok := padRetroIds[a.holdOn]; ok && id >= 0 {
+			held[id] = true
+		}
+	}
+	return held
 }
 
 // --- opening the panel, and taking a button ---

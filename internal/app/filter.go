@@ -13,13 +13,12 @@ import (
 	"github.com/egoist/mygo/ui/shader"
 )
 
-// The picture is 脑浆油条's PhosphorLine chain (shaders/202603.slangp): the
-// front end runs its passes as one GPU shader over the framebuffer the core
-// drew, with the preset's own parameters as uniforms, so every number the
-// preset exposes can be moved from the filter panel while the game runs:
-// CA-sharpen's sharpening, chroma and levels, PhosphorLine's beam blending,
-// scanline profile, curve and integer scale, and PP-reflex's aperture mask,
-// diffusion, rounded glass and border reflection.
+// The picture is 脑浆油条's PhosphorLine chain (shaders/202603.slangp), run as
+// one GPU shader over the framebuffer the core drew: CA-sharpen's edge and
+// levels, PhosphorLine's beam blending, scanline profile and curve, diffusion's
+// glow, PP-reflex's aperture mask and border reflection. Every parameter the
+// preset exposes is a uniform of that shader, so all of them move from the
+// filter panel while the game keeps running.
 
 // crtParams are every number the preset sets, by the name it sets it under.
 type crtParams map[string]float32
@@ -35,7 +34,7 @@ func (p crtParams) get(name string, def float32) float32 {
 func defaultCRT() crtParams {
 	return crtParams{
 		"SAT": 0.99, "SOFTEN": 0.15, "SHARPEN": 0.05, "NTSCintensity": 0.65,
-		"CORNER": 0.2, "CPOY": -0.5, "PPOY": 0, "BLK": 0, "EXPOSURE": 1, "CT": 0,
+		"CORNER": 0.2, "PPOY": 0, "BLK": 0, "EXPOSURE": 1, "CT": 0,
 		"LINEAR": 0.2, "CURVE_X": 0.07, "CURVE_Y": 0.07,
 		"MASK_INTENSITY": 0.9, "MASK_TYPE": 0, "ss": 0.5,
 		"DIFFUSION": 0.05, "DIFF_OVEREXP": 0, "REFLECTION": 0.25,
@@ -78,9 +77,8 @@ func loadCRT(root, name string) crtParams {
 	return p
 }
 
-// bent is the preset with the strength the player picked: only the numbers
-// that make the tube read harder or softer are scaled, in the directions the
-// preset itself offers.
+// bent is the preset with the strength the player picked: only the numbers that
+// make the tube read harder or softer are scaled.
 func (p crtParams) bent(level string) crtParams {
 	q := crtParams{}
 	for k, v := range p {
@@ -110,51 +108,53 @@ func min32(a, b float32) float32 {
 	return b
 }
 
-// knobs are every parameter the preset exposes, in the order the panel lists
-// them: its name in the preset, what the preset calls it, the range its slider
-// moves in.
+// knob is one parameter of the panel: the name in the preset, what its author
+// calls it, the range it moves in, and how the control reads it. kind 0 is the
+// bar, kind 1 a switch; mul scales what the control shows against the number the
+// shader runs with, so PIC_SIZE reads as a percentage.
 type knob struct {
-	key   string // the name in the preset
-	label string // what its author calls it
+	key   string
+	label string
 	lo    float64
 	hi    float64
+	kind  int
+	mul   float64
 }
 
 var knobs = []knob{
-	{"GAMMA", "模拟伽马", 1, 4},
-	{"CURVE_X", "CRT曲率 X", 0, 1},
-	{"CURVE_Y", "CRT曲率 Y", 0, 1},
-	{"MASK_INTENSITY", "阴影蒙版强度", 0, 0.95},
-	{"MASK_TYPE", "蒙版类型", 0, 1},
-	{"ss", "蒙版尺寸", 0, 10},
-	{"LINE_THICKNESS", "扫描线粗细", 0.1, 2},
-	{"LINE_OPACITY", "扫描线不透明度", 0, 0.95},
-	{"LINE_PITCH_COEF", "扫描线间距", 0.1, 10},
-	{"LINEAR", "水平延伸", 0, 1},
-	{"SOFTEN", "柔化", 0, 1},
-	{"SHARPEN", "S-Video 锐化", 0, 2},
-	{"NTSCintensity", "NTSC 色彩强度", 0, 2},
-	{"SAT", "饱和度", 0, 1.5},
-	{"BLK", "黑电平 (%)", -17.5, 7.5},
-	{"EXPOSURE", "曝光", 0.1, 2},
-	{"CT", "色温", -2.8, 2.8},
-	{"CORNER", "圆角", 0, 1},
-	{"CPOY", "圆角位置 Y", -50, 0},
-	{"PPOY", "图像位置 Y", -50, 50},
-	{"PIC_SIZE", "图像尺寸 (%)", 0.5, 1},
-	{"BORDER_SIZE", "边框尺寸", 0, 0.5},
-	{"INT_TOL", "允许过扫描", 0, 0.1},
-	{"INT_SCALE", "强制整数缩放", 0, 1},
-	{"DIFFUSION", "光晕扩散", 0, 1},
-	{"DIFF_OVEREXP", "允许扩散过曝", 0, 1},
-	{"REFLECTION", "边框反射强度", 0, 1},
-	{"E_OFFSET", "边框反射偏移", 0, 2},
-	{"B_CORNER", "边框圆角大小", 0, 1},
-	{"FILLET_D", "边框圆角曲率", -0.5, 0.5},
+	{"GAMMA", "模拟伽马", 1, 4, 0, 1},
+	{"CURVE_X", "CRT曲率 X", 0, 1, 0, 1},
+	{"CURVE_Y", "CRT曲率 Y", 0, 1, 0, 1},
+	{"PIC_SIZE", "图像尺寸 (%)", 5, 10, 0, 10},
+	{"MASK_INTENSITY", "阴影蒙版强度", 0, 0.95, 0, 1},
+	{"MASK_TYPE", "蒙版类型", 0, 1, 0, 1},
+	{"ss", "蒙版尺寸", 0, 10, 0, 1},
+	{"LINE_THICKNESS", "扫描线粗细", 0.1, 2, 0, 1},
+	{"LINE_OPACITY", "扫描线不透明度", 0, 0.95, 0, 1},
+	{"LINE_PITCH_COEF", "扫描线间距", 0.1, 10, 0, 1},
+	{"LINEAR", "水平延伸", 0, 1, 0, 1},
+	{"SOFTEN", "柔化", 0, 1, 0, 1},
+	{"SHARPEN", "S-Video 锐化", 0, 2, 0, 1},
+	{"NTSCintensity", "NTSC 色彩强度", 0, 2, 0, 1},
+	{"SAT", "饱和度", 0, 1.5, 0, 1},
+	{"BLK", "黑电平 (%)", -17.5, 7.5, 0, 1},
+	{"EXPOSURE", "曝光", 0.1, 2, 0, 1},
+	{"CT", "色温", -2.8, 2.8, 0, 1},
+	{"CORNER", "圆角", 0, 1, 0, 1},
+	{"BORDER_SIZE", "边框尺寸", 0, 0.5, 0, 1},
+	{"INT_TOL", "允许过扫描", 0, 0.1, 0, 1},
+	{"INT_SCALE", "强制整数缩放", 0, 1, 1, 1},
+	{"DIFFUSION", "光晕扩散", 0, 1, 0, 1},
+	{"DIFF_OVEREXP", "允许扩散过曝", 0, 1, 0, 1},
+	{"REFLECTION", "边框反射强度", 0, 1, 0, 1},
+	{"E_OFFSET", "边框反射偏移", 0, 2, 0, 1},
+	{"B_CORNER", "边框圆角大小", 0, 1, 0, 1},
+	{"FILLET_D", "边框圆角曲率", -0.5, 0.5, 0, 1},
+	{"PPOY", "图像位置 Y", -50, 50, 0, 1},
 }
 
-// value is the number the shader runs with: what the player set for it, or
-// the preset's own (bent by the strength picked).
+// value is the number the shader runs with: what the player set, or the preset's
+// own (bent by the preset picked).
 func (a *App) value(key string) float32 {
 	if v, ok := a.cfg.CRTTune[key]; ok {
 		return v
@@ -162,9 +162,8 @@ func (a *App) value(key string) float32 {
 	return a.crt.bent(a.cfg.FilterLevel).get(key, 0)
 }
 
-// crtEffect builds the shader's uniforms for this frame and hands the effect
-// to the picture. The shader itself is compiled once and kept: the parameters
-// are uniforms, so dragging one costs a value and no recompile.
+// crtEffect builds the shader's uniforms for this frame. The shader is compiled
+// once: parameters are uniforms, so moving one costs a value, not a recompile.
 func (a *App) crtEffect() (shader.Effect, bool) {
 	if a.cfg.FilterLevel == "off" {
 		return shader.Effect{}, false
@@ -182,15 +181,14 @@ func (a *App) crtEffect() (shader.Effect, bool) {
 		u[uniformName(k.key)] = float64(a.value(k.key))
 	}
 	return a.fxShader.Effect(shader.Options{
-		Uniforms: u,
-		Images:   [4]*ui.Bitmap{a.gameBmp},
-		// The chain reads a hair beyond the box, as the bezel's reflection does.
+		Uniforms:        u,
+		Images:          [4]*ui.Bitmap{a.gameBmp},
 		MaxSampleOffset: ui.Point{X: 1, Y: 1},
 	}), true
 }
 
 // uniformName is the preset's key as the name of a uniform: Kage's uniforms are
-// exported Go variables, so a name that is not one is folded.
+// exported Go variables.
 func uniformName(key string) string {
 	switch key {
 	case "ss":
@@ -199,9 +197,9 @@ func uniformName(key string) string {
 	return key
 }
 
-// crtShaderSrc is the PhosphorLine chain as one effect: image0 is the frame
-// the core drew, at its own pixels, and the tube's picture is drawn over the
-// element's box at the window's pixels.
+// crtShaderSrc is PhosphorLine's chain as one effect over the frame the core
+// drew (image0), in the order its passes run: colour, beam, scanlines, glow,
+// mask, glass.
 const crtShaderSrc = `package main
 
 var GAMMA float
@@ -220,8 +218,8 @@ var NTSCintensity float
 var SAT float
 var BLK float
 var EXPOSURE float
+var CT float
 var CORNER float
-var CPOY float
 var PPOY float
 var PIC_SIZE float
 var BORDER_SIZE float
@@ -233,11 +231,9 @@ var REFLECTION float
 var E_OFFSET float
 var B_CORNER float
 var FILLET_D float
-var CT float
 
-// warp is the tube's glass: the curve the preset's CURVE_X and CURVE_Y make,
-// taken on coordinates centred on the middle of the picture, so the picture
-// bends around its own centre and stays centred.
+// warp is the tube's glass, taken on coordinates centred on the picture, so the
+// picture bends around its own middle and stays centred.
 func warp(c vec2) vec2 {
 	if CURVE_X < 0.005 && CURVE_Y < 0.005 {
 		return c
@@ -271,9 +267,8 @@ func warp(c vec2) vec2 {
 	return vec2(lx*0.5+0.00001, ly*0.5+0.00001)
 }
 
-// beam is PhosphorLine's d(): the colour between the core's texels, mixed as
-// the pass mixes a pair of lines and a pair of columns, so a scanline crosses
-// a texel's light rather than a hard grid of pixels.
+// beam is PhosphorLine's d(): the colour between the core's texels, mixed as the
+// pass mixes a pair of lines and a pair of columns.
 func beam(np vec2, ex float) vec3 {
 	fp := np - vec2(0.5, 0.5)
 	gx := fp.x - floor(fp.x)
@@ -301,7 +296,7 @@ func beam(np vec2, ex float) vec3 {
 }
 
 // prof is PhosphorLine's o(): the tube's own light, a bezier of the colour the
-// scanline carries, which rounds a pixel's brightness into the beam.
+// scanline carries.
 func prof(t vec3, d float) vec3 {
 	c := clamp(t, vec3(0.0), vec3(1.0))
 	u := vec3(1.0) - c
@@ -312,8 +307,7 @@ func prof(t vec3, d float) vec3 {
 	return clamp(y, vec3(0.0), vec3(1.0))
 }
 
-// deltaOf is the preset's profile weight for a scanline pitch, its table read
-// by index.
+// deltaOf is the preset's profile weight for a scanline pitch.
 func deltaOf(i int) float {
 	if i <= 0 {
 		return 0.21
@@ -330,60 +324,52 @@ func deltaOf(i int) float {
 	return 0.1
 }
 
-// roundSDF is how far p is outside a rounded rectangle of half size h and
-// corner radius r, negative inside: the glass's corners, from the preset's
-// CORNER.
+// roundSDF is how far p is outside a rounded rectangle of half size h and corner
+// radius r.
 func roundSDF(p vec2, h vec2, r float) float {
 	q := abs(p) - h + vec2(r, r)
 	return length(max(q, vec2(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r
 }
 
-func LayerEffect(pos vec2) vec4 {
-	size := rectSize()
-	ps := pixelScale()
-	uv := pos / size
-	c := uv - vec2(0.5, 0.5)
-	c = warp(c)
+// tap is one sample of diffusion's glow, in linear light.
+func tap(np vec2, o vec2, k float) vec3 {
+	d2 := dot(o, o)
+	wt := exp(-d2 * 0.35)
+	return pow(clamp(image0At(np+o*k).xyz, vec3(0.0), vec3(1.0)), vec3(GAMMA)) * wt
+}
 
-	isz := image0Size()
-	// The picture's own area inside the element: the preset's PIC_SIZE and
-	// BORDER_SIZE leave the glass around it.
-	half := 0.5 * PIC_SIZE * (1.0 - BORDER_SIZE)
-	if half < 0.05 {
-		half = 0.05
-	}
-	bezel := 0.0
-	mx := c.x
-	my := c.y
-	off := 1.0 + E_OFFSET*0.01
-	if abs(mx) > half {
-		mx = (half - (abs(mx)-half)*off) * mx / abs(mx)
-		bezel = 1.0
-	}
-	if abs(my) > half {
-		my = (half - (abs(my)-half)*off) * my / abs(my)
-		bezel = 1.0
-	}
-	suv := vec2(mx, my) / (2.0 * half)
-	suv = suv + vec2(0.5, 0.5)
-	np := suv * isz
-	np.y = np.y + PPOY*0.01*isz.y
-	np = clamp(np, vec2(0.0, 0.0), isz-vec2(1.0, 1.0))
+// glow is diffusion-h and diffusion-v as one: the picture blurred in linear
+// light with a gaussian, which PP-reflex adds to the scanlines as the tube's glow.
+func glow(np vec2, k float) vec3 {
+	s := tap(np, vec2(0.0, 0.0), k)
+	s = s + tap(np, vec2(1.0, 0.0), k) + tap(np, vec2(-1.0, 0.0), k)
+	s = s + tap(np, vec2(0.0, 1.0), k) + tap(np, vec2(0.0, -1.0), k)
+	s = s + tap(np, vec2(1.0, 1.0), k) + tap(np, vec2(-1.0, 1.0), k)
+	s = s + tap(np, vec2(1.0, -1.0), k) + tap(np, vec2(-1.0, -1.0), k)
+	s = s + tap(np, vec2(2.0, 0.0), k) + tap(np, vec2(-2.0, 0.0), k)
+	s = s + tap(np, vec2(0.0, 2.0), k) + tap(np, vec2(0.0, -2.0), k)
+	s = s + tap(np, vec2(2.0, 1.0), k) + tap(np, vec2(-2.0, 1.0), k)
+	s = s + tap(np, vec2(2.0, -1.0), k) + tap(np, vec2(-2.0, -1.0), k)
+	s = s + tap(np, vec2(1.0, 2.0), k) + tap(np, vec2(-1.0, 2.0), k)
+	s = s + tap(np, vec2(1.0, -2.0), k) + tap(np, vec2(-1.0, -2.0), k)
+	return s / 8.19
+}
 
-	col := beam(np, LINEAR)
-
-	// CA-sharpen: the S-video edge, on the red channel as that pass does it,
-	// then its NTSC chroma and its levels.
+// sampled is the picture at a point of its own pixels, with CA-sharpen's edge,
+// chroma and levels run on it.
+func sampled(np vec2, isz vec2) vec3 {
+	n := clamp(np, vec2(0.0, 0.0), isz-vec2(1.0, 1.0))
+	col := beam(n, LINEAR)
 	if SHARPEN > 0.001 {
-		l := image0At(np - vec2(1.0, 0.0)).xyz
-		r := image0At(np + vec2(1.0, 0.0)).xyz
+		l := image0At(n - vec2(1.0, 0.0)).xyz
+		r := image0At(n + vec2(1.0, 0.0)).xyz
 		col.x = col.x*(SHARPEN*2.0+1.0) - (l.x+r.x)*SHARPEN
 	}
 	if NTSCintensity > 0.01 {
-		nm := image0At(np+vec2(1.0, 0.0)).xyz
-		nm = nm + image0At(np-vec2(1.0, 0.0)).xyz
-		nm = nm + image0At(np+vec2(0.0, 1.0)).xyz
-		nm = nm + image0At(np-vec2(0.0, 1.0)).xyz
+		nm := image0At(n+vec2(1.0, 0.0)).xyz
+		nm = nm + image0At(n-vec2(1.0, 0.0)).xyz
+		nm = nm + image0At(n+vec2(0.0, 1.0)).xyz
+		nm = nm + image0At(n-vec2(0.0, 1.0)).xyz
 		nm = nm * 0.25
 		col = mix(col, nm, vec3(NTSCintensity*0.25))
 	}
@@ -400,19 +386,56 @@ func LayerEffect(pos vec2) vec4 {
 		y := dot(col, vec3(0.299, 0.587, 0.114))
 		col = vec3(y, y, y) + (col-vec3(y, y, y))*SAT
 	}
-	col = clamp(col, vec3(0.0), vec3(1.0))
+	return clamp(col, vec3(0.0), vec3(1.0))
+}
 
-	// The glow the phosphor leaves around a bright spot: the picture blurred
-	// over a few of its texels, as the preset's diffusion.
-	bl := image0At(np + vec2(2.0, 0.0)).xyz
-	bl = bl + image0At(np - vec2(2.0, 0.0)).xyz
-	bl = bl + image0At(np + vec2(0.0, 2.0)).xyz
-	bl = bl + image0At(np - vec2(0.0, 2.0)).xyz
-	bl = bl + image0At(np + vec2(2.0, 2.0)).xyz
-	bl = bl + image0At(np - vec2(2.0, 2.0)).xyz
-	bl = bl + image0At(np + vec2(2.0, -2.0)).xyz
-	bl = bl + image0At(np - vec2(2.0, -2.0)).xyz
-	bl = bl * 0.125
+func LayerEffect(pos vec2) vec4 {
+	size := rectSize()
+	ps := pixelScale()
+	uv := pos / size
+	c := uv - vec2(0.5, 0.5)
+	c = warp(c)
+
+	isz := image0Size()
+	// The picture inside the glass: PIC_SIZE and BORDER_SIZE leave the bezel.
+	half := 0.5 * PIC_SIZE * (1.0 - BORDER_SIZE)
+	if half < 0.02 {
+		half = 0.02
+	}
+	rad := CORNER * 0.08 * (0.3 + 0.7*B_CORNER)
+	rad = rad * (1.0 + FILLET_D*0.2)
+	if rad < 0.0 {
+		rad = 0.0
+	}
+	// Outside the glass is dark; its corners are the rounding.
+	if roundSDF(c, vec2(0.5, 0.5), rad) > 0.0 {
+		return vec4(0.0, 0.0, 0.0, 1.0)
+	}
+
+	// The bezel: the picture mirrored into the border, dimmed as PP-reflex dims
+	// it, so the glass around the picture carries its reflection.
+	if abs(c.x) > half || abs(c.y) > half {
+		bx := c.x
+		by := c.y
+		if abs(bx) > half {
+			bx = (2.0*half - abs(bx)) * bx / abs(bx)
+		}
+		if abs(by) > half {
+			by = (2.0*half - abs(by)) * by / abs(by)
+		}
+		bx = bx * (1.0 + E_OFFSET*0.5)
+		np := (vec2(bx, by)/(2.0*half) + vec2(0.5, 0.5)) * isz
+		col := clamp(image0At(np).xyz, vec3(0.0), vec3(1.0))
+		dist := max(abs(c.x)-half, abs(c.y)-half) / (0.5 - half + 0.0001)
+		dim := REFLECTION * REFLECTION * 0.9
+		col = col*col*dim*(1.0-dist*0.8)
+		return vec4(pow(clamp(col, vec3(0.0), vec3(1.0)), vec3(1.0/GAMMA)), 1.0)
+	}
+
+	suv := vec2(c.x, c.y)/(2.0*half) + vec2(0.5, 0.5)
+	np := suv * isz
+	np.y = np.y + PPOY*0.01*isz.y
+	col := sampled(np, isz)
 
 	// The scanlines: the core's own lines taken to the output's rows by an
 	// integer scale, so the mask lands on the rows the game drew.
@@ -422,7 +445,7 @@ func LayerEffect(pos vec2) vec4 {
 	if sc < 1.0 {
 		sc = 1.0
 	}
-	if INT_SCALE > 0.75 {
+	if INT_SCALE > 0.5 {
 		sc = floor(sc + 0.5)
 	}
 	pitch := floor(sc*LINE_PITCH_COEF + 0.5)
@@ -441,10 +464,17 @@ func LayerEffect(pos vec2) vec4 {
 	dd := clamp(aa-cc+vec3(0.5), vec3(0.0), vec3(1.0))
 	dd = dd * z / (z*0.7 + vec3(0.3))
 	dd = sqrt(dd)
-	col = mix(g, dd, vec3(LINE_OPACITY))
+	pl := mix(g, dd, vec3(LINE_OPACITY))
 
-	// The aperture mask between the phosphor columns: the preset's mask
-	// strength over a period of the output's own pixels.
+	// The glow: diffusion's blurred picture, squared back into linear light, added
+	// as PP-reflex adds it and normalised by the same amount.
+	k := 1.6 + isz.y/240.0
+	bl := glow(np, k)
+	rr := DIFFUSION * DIFFUSION * LINE_THICKNESS
+	pp := pl*pl + bl*rr
+	pp = pp / (1.0 + rr*(1.0-DIFF_OVEREXP))
+
+	// PP-reflex's aperture mask between the phosphor columns.
 	period := floor(sc*0.6*SS + 0.5)
 	if period < 2.0 {
 		period = 2.0
@@ -457,32 +487,11 @@ func LayerEffect(pos vec2) vec4 {
 	vx := abs((mod(tx, period)-period*0.5)*2.0 - 0.5)
 	vy := abs((mod(tx+ww, period)-period*0.5)*2.0 - 0.5)
 	vv := vec3(vx, vy, vx)
-	yy := (col*MASK_INTENSITY + vec3(1.0-MASK_INTENSITY)) * period
+	yy := (pp*MASK_INTENSITY + vec3(1.0-MASK_INTENSITY)) * period
 	zz := clamp(yy-vv+vec3(0.5), vec3(0.0), vec3(1.0))
-	zz = zz * col / (col*MASK_INTENSITY + vec3(1.0-MASK_INTENSITY))
+	zz = zz * pp / (pp*MASK_INTENSITY + vec3(1.0-MASK_INTENSITY))
 
-	// The glow over the lines.
-	zz = zz + bl*bl*vec3(DIFFUSION*DIFFUSION*8.0)
-	zz = zz / (1.0 + DIFFUSION*DIFFUSION*8.0*(1.0-DIFF_OVEREXP))
-
-	// The glass's rounded corners, and the light the bezel throws back: the
-	// edge of the picture mirrored into the border, dimmed as the preset dims
-	// it. With BORDER_SIZE at 0 the whole box is picture.
-	rad := CORNER * 0.08 * (0.3 + 0.7*B_CORNER)
-	rad = rad * (1.0 + FILLET_D*0.2)
-	if rad < 0.0 {
-		rad = 0.0
-	}
-	edge := roundSDF(vec2(c.x, c.y*(1.0+CPOY*0.01)), vec2(half*0.95, half*0.95), rad)
-	if edge > 0.0 {
-		return vec4(0.0, 0.0, 0.0, 1.0)
-	}
-	if bezel > 0.5 && REFLECTION > 0.01 {
-		f := clamp(REFLECTION*REFLECTION*REFLECTION*0.5, 0.0, 1.0)
-		zz = zz * f
-	}
-
-	// The chain a display: gamma out, in display space.
+	// The chain ends in display space, as PP-reflex's does.
 	return vec4(pow(clamp(zz, vec3(0.0), vec3(1.0)), vec3(1.0/GAMMA)), 1.0)
 }
 `
@@ -543,13 +552,12 @@ var filterOptions = []struct {
 	{"off", "关闭"},
 }
 
-// filterPanel is the panel itself: the preset's own parameters, each on a
-// glass stepper, over the game it belongs to. Two columns keep the whole list
-// on one page, so nothing scrolls while a control is dragged.
+// filterPanel is the panel itself: the preset's own parameters, each on a glass
+// control, over the game it belongs to. Two columns keep the whole list on one
+// page, so nothing scrolls while a control is dragged.
 func (a *App) filterPanel(c *ui.Context, t *ui.Theme) {
-	ui.Box(c).Absolute().Left(0).Right(0).Top(0).Bottom(0).
-		Background(ui.Hex("#05060a59")).Children(func() {
-		col := ui.Column(c).Absolute().Right(edgeInset).Top(edgeInset).Width(468).
+	ui.Box(c).Absolute().Left(0).Right(0).Top(0).Bottom(0).Children(func() {
+		col := ui.Column(c).Absolute().Right(edgeInset).Top(edgeInset).Width(472).
 			Padding(12).Radius(18).Gap(8).
 			Material(glass.Glass{Clarity: 0.62, Tint: ui.Hex("#14161ee6")}).
 			Border(1, ui.Hex("#ffffff1f")).
@@ -598,14 +606,12 @@ func (a *App) filterPanel(c *ui.Context, t *ui.Theme) {
 					a.saveTune()
 				}
 			})
-			// Two columns: the list fits the panel, and no control is inside a
-			// scroll view, so dragging one never moves the page.
 			half := (len(knobs) + 1) / 2
 			ui.Row(c).Gap(14).AlignItems(ui.Start).Children(func() {
-				for _, col := range [][]knob{knobs[:half], knobs[half:]} {
-					col := col
+				for _, list := range [][]knob{knobs[:half], knobs[half:]} {
+					list := list
 					ui.Column(c).Grow(1).Gap(4).Children(func() {
-						for _, k := range col {
+						for _, k := range list {
 							k := k
 							a.knobRow(c, t, k)
 						}
@@ -616,20 +622,49 @@ func (a *App) filterPanel(c *ui.Context, t *ui.Theme) {
 	})
 }
 
-// knobRow is one parameter: its name, and its glass stepper.
+// knobRow is one parameter: its name and its control.
 func (a *App) knobRow(c *ui.Context, t *ui.Theme, k knob) {
 	ui.Row(c).Height(26).AlignItems(ui.Center).Gap(8).Children(func() {
 		ui.Text(c, k.label).Grow(1).MinWidth(0).FontSize(10).
 			TextColor(t.TextMuted).SingleLine()
+		if k.kind == 1 {
+			a.knobSwitch(c, t, k)
+			return
+		}
 		a.knobStepper(c, t, k)
 	})
 }
 
-// knobStepper is the glass control of a parameter: the arrows at its ends take
-// a tenth of a step, and dragging its middle moves it faster. The value it
-// shows is what the shader runs with, a tenth of a unit at a time.
+// knobSwitch is a parameter that is on or off, in the same glass as the bars.
+func (a *App) knobSwitch(c *ui.Context, t *ui.Theme, k knob) {
+	on := a.value(k.key) > 0.5
+	// The switch of a phone's settings: a short track, a knob that sits at the
+	// end it is not, green once it is on.
+	track := ui.Box(c).Width(44).Height(26)
+	track.Draw(func(p *ui.Painter, r ui.Rect) {
+		trackColor := ui.Hex("#ffffff2b")
+		knobX := r.X + 2
+		if on {
+			trackColor = ui.Hex("#34c759")
+			knobX = r.X + 24
+		}
+		p.Fill(ui.Rect{X: r.X, Y: r.Y + 2, W: 44, H: 22}, trackColor, 11)
+		p.Fill(ui.Rect{X: knobX, Y: r.Y + 4, W: 18, H: 18}, ui.Hex("#f7f8fa"), 9)
+	})
+	if track.Clicked() {
+		if on {
+			a.setKnob(k, 0)
+		} else {
+			a.setKnob(k, 1)
+		}
+	}
+}
+
+// knobStepper is the glass control of a parameter: the arrows at its ends take a
+// tenth of a step, dragging its middle moves it faster. It shows one decimal of
+// the number the shader runs with, scaled by k.mul.
 func (a *App) knobStepper(c *ui.Context, t *ui.Theme, k knob) {
-	v := a.value(k.key)
+	v := float64(a.value(k.key)) * k.mul
 	pill := ui.Row(c).Width(120).Height(22).Radius(11).AlignItems(ui.Center).
 		Material(glass.Glass{Clarity: 0.78, Tint: ui.Hex("#ffffff10")}).
 		Border(1, ui.Hex("#ffffff24"))
@@ -643,7 +678,7 @@ func (a *App) knobStepper(c *ui.Context, t *ui.Theme, k knob) {
 		}
 		mid := ui.Box(c).Grow(1).Height(22).Center()
 		mid.Children(func() {
-			ui.Text(c, fmt1(v)).FontSize(10.5).TextColor(t.Text.Alpha(0.9))
+			ui.Text(c, fmt1(float32(v))).FontSize(10.5).TextColor(t.Text.Alpha(0.9))
 		})
 		dx, _, held := mid.Dragged()
 		if held {
@@ -661,22 +696,22 @@ func (a *App) knobStepper(c *ui.Context, t *ui.Theme, k knob) {
 	})
 }
 
-// nudge moves a parameter by a tenth, within its range.
+// nudge moves a parameter by a tenth of what its control shows.
 func (a *App) nudge(k knob, delta float64) {
-	a.setKnob(k, round1(float64(a.value(k.key))+delta))
+	cur := float64(a.value(k.key)) * k.mul
+	a.setKnob(k, round1(cur+delta)/float32(k.mul))
 }
 
-// dragKnob moves a parameter with the drag of its middle: the first frame
-// starts from what it holds, then every pixel of the drag is a part of the
-// range, so the control follows the pointer rather than jumping to it.
+// dragKnob moves a parameter with the drag of its middle: the first frame starts
+// from what it holds, then every pixel of the drag is part of the range.
 func (a *App) dragKnob(k knob, dx float64) {
 	if a.dragKey != k.key {
 		a.dragKey = k.key
 		a.dragVal = float64(a.value(k.key))
 	}
-	a.dragVal += dx * (k.hi - k.lo) / 220
+	a.dragVal += dx * (k.hi - k.lo) / k.mul / 220
 	a.dragVal = math.Max(k.lo, math.Min(k.hi, a.dragVal))
-	a.setKnob(k, round1(a.dragVal))
+	a.setKnob(k, round1(a.dragVal/k.mul))
 }
 
 // setKnob records a parameter as the player moved it.

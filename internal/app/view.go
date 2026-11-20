@@ -2,6 +2,8 @@ package app
 
 import (
 	"fmt"
+	"image"
+	"image/draw"
 	"sort"
 	"strings"
 	"time"
@@ -24,6 +26,13 @@ func (a *App) view(c *ui.Context) {
 	t := &a.theme
 	c.Root().Background(t.Background)
 
+	// A game on screen owns the window: its picture and the two controls are
+	// drawn here, in this page, with nothing of the library left showing.
+	if a.core != nil || a.player != nil {
+		a.playerView(c, t)
+		return
+	}
+
 	ui.Box(c).Fill().Children(func() {
 		if a.lib == nil {
 			a.message(c, t, "没有数据", a.status)
@@ -36,6 +45,129 @@ func (a *App) view(c *ui.Context) {
 		// see them behind.
 		a.toolbar(c, t)
 	})
+}
+
+// playerView draws the window over a running game: the game's picture fills it,
+// and a way out and the filter picker float in its corners. Nothing else is
+// drawn — no strip above the picture and no title inside it, because the window
+// is the game's window and the title bar already carries its name.
+func (a *App) playerView(c *ui.Context, t *ui.Theme) {
+	a.pumpCore()
+	a.pumpMouse()
+	w, h := c.Size()
+	ui.Box(c).Fill().Background(ui.Hex("#000000")).Children(func() {
+		a.gamePicture(c, w, h)
+		a.floatControls(c, t)
+		if a.filtersOpen {
+			a.filterPanel(c, t)
+		}
+	})
+}
+
+// pumpCore hands the newest picture the core drew to the bitmap the page shows,
+// with the look chosen in the player painted onto it first. The bitmap is made
+// once and updated in place, so a frame costs a copy rather than a texture.
+func (a *App) pumpCore() {
+	if a.core == nil {
+		return
+	}
+	f := a.core.Frame()
+	if f == nil {
+		return
+	}
+	n := a.core.Frames()
+	if n == a.gameFrames && a.gameBmp != nil {
+		return
+	}
+	b := f.Bounds()
+	if a.gameImg == nil || a.gameImg.Bounds().Size() != b.Size() {
+		a.gameImg = image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	}
+	draw.Draw(a.gameImg, a.gameImg.Bounds(), f, b.Min, draw.Src)
+	a.crt.forLevel(a.cfg.FilterLevel).apply(a.gameImg)
+	if a.gameBmp == nil {
+		a.gameBmp = ui.NewBitmap(a.gameImg).Pixelated()
+	} else {
+		a.gameBmp.Update(a.gameImg)
+	}
+	a.gameFrames = n
+	a.frameW, a.frameH = b.Dx(), b.Dy()
+}
+
+// gamePicture draws the game at the largest size that keeps its own aspect, in
+// the middle of the window, with black left around it: the picture's shape, not
+// the window's, decides how it fills the screen. A DOS picture of 320×200 is
+// drawn on a 4:3 glass, as it was made to be, rather than stretched to its
+// pixels' shape.
+func (a *App) gamePicture(c *ui.Context, w, h float32) {
+	if a.gameBmp == nil {
+		return
+	}
+	bw, bh := ui.ImageSize(a.gameBmp)
+	if bw <= 0 || bh <= 0 {
+		return
+	}
+	ratio := bw / bh
+	if a.gameAspect > 0.4 && a.gameAspect < 5 {
+		ratio = a.gameAspect
+	}
+	pw, ph := w, w/ratio
+	if ph > h {
+		ph, pw = h, h*ratio
+	}
+	ui.Box(c).Absolute().Left((w - pw) / 2).Top((h - ph) / 2).Width(pw).Height(ph).Children(func() {
+		ui.Image(c, a.gameBmp).Fill()
+		// The glass of the tube over its own picture: a hairline of light along
+		// the top edge and a soft dark rim, drawn in the same page as the game.
+		ui.Box(c).Absolute().Fill().Radius(2).Border(1, ui.Hex("#ffffff26"))
+		ui.Box(c).Absolute().Fill().Radius(2).Border(3, ui.Hex("#00000012"))
+	})
+}
+
+// floatControls are the two buttons that hover over the game's corners, in the
+// strip the player's overlay window covers.
+func (a *App) floatControls(c *ui.Context, t *ui.Theme) {
+	ui.Row(c).Absolute().Left(edgeInset).Right(edgeInset).Top(edgeInset).Height(backButtonSize).Children(func() {
+		a.backButton(c, t)
+		ui.Box(c).Grow(1)
+		a.filterButton(c, t)
+	})
+}
+
+// The player's controls: a round way out, a pill for the look, and the strip
+// their window is, tall enough for both and for the glass to breathe.
+const (
+	backButtonSize      = 34
+	filterButtonWidth   = 104
+	playerButtonsHeight = 12 + backButtonSize + 12
+)
+
+// playAreaTop is the first DIP of the screen. The game owns the whole client
+// area now, so nothing is kept clear above it.
+const playAreaTop = 0
+
+// edgeInset was the margin the player used to leave between the game and the
+// window's sides; the game fills the window now, so the margin only remains for
+// the controls that float over it.
+const edgeInset = 16
+
+// backButton leaves the game: the round arrow in the corner, glassy until the
+// pointer touches it. It lives in the player's own overlay window, so its click
+// is handed to the app's window before anything is touched.
+func (a *App) backButton(c *ui.Context, t *ui.Theme) {
+	b := ui.ButtonBase(c).Width(backButtonSize).Height(backButtonSize).Radius(backButtonSize/2).Center().
+		Material(glass.Glass{Clarity: 0.5, Tint: ui.Hex("#0d0f168f")}).
+		Border(1, ui.Hex("#ffffff1f"))
+	if b.Hovered() {
+		b.Background(ui.Hex("#ffffff1f")).Border(1, ui.Hex("#ffffff4d"))
+	}
+	b.Children(func() {
+		ui.Text(c, "←").FontSize(15).FontWeight(600).TextColor(t.Text.Alpha(0.9))
+	})
+	if b.Clicked() {
+		a.win.Update(func() { a.stopPlayer() })
+	}
+	b.Shortcut(0, ui.KeyEscape) // leaving from the keyboard, when the game has the focus it does not
 }
 
 // toolbar is the top row: one shelf picker, the shelf's chips, and the

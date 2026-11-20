@@ -59,7 +59,7 @@ func Resolve(root string, sim library.Sim, romAbs string) (Target, error) {
 		if _, err := os.Stat(core); err != nil {
 			return Target{}, fmt.Errorf("找不到核心 %s：%s", sim.Core, core)
 		}
-		args = append([]string{"-L", core}, args...)
+		args = append([]string{"-L", coreArg(filepath.Dir(exe), core)}, args...)
 	}
 	if len(args) == 0 && IsRetroArch(exe) {
 		args = []string{romAbs}
@@ -71,12 +71,23 @@ func Resolve(root string, sim library.Sim, romAbs string) (Target, error) {
 //
 // RetroArch 1.17 ignores video_shader passed on the command line, but it does
 // load the per-content "global" preset in config/, so that is where the copy
-// goes. A preset names its passes relative to the shaders folder, so those
-// names gain the "../shaders/" prefix that the config folder needs. A missing
-// preset is not an error: the game starts in RetroArch's own look.
+// goes. A missing preset is not an error: the game starts in RetroArch's own
+// look.
 func InstallShader(t Target, shader string) error {
+	text, ok, err := presetText(t, shader)
+	if err != nil || !ok {
+		return err
+	}
+	return writeFile(filepath.Join(t.Work, "config", "global.slangp"), text)
+}
+
+// presetText reads the preset named by shader and returns its text as it must
+// sit in the config folder: a preset names its passes relative to the shaders
+// folder, so those names gain the "../shaders/" prefix that folder needs. The
+// second result says whether the preset was found at all.
+func presetText(t Target, shader string) (string, bool, error) {
 	if shader == "" || !IsRetroArch(t.Exe) {
-		return nil
+		return "", false, nil
 	}
 	exeDir := t.Work
 	preset := ""
@@ -88,11 +99,11 @@ func InstallShader(t Target, shader string) error {
 		}
 	}
 	if preset == "" {
-		return nil
+		return "", false, nil
 	}
 	data, err := os.ReadFile(preset)
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	var out strings.Builder
 	for _, line := range strings.Split(string(data), "\n") {
@@ -102,11 +113,120 @@ func InstallShader(t Target, shader string) error {
 		out.WriteString(line)
 		out.WriteString("\n")
 	}
-	target := filepath.Join(exeDir, "config", "global.slangp")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	return out.String(), true, nil
+}
+
+// writeFile makes the file and its folder, since the config folder may not
+// exist on a first run.
+func writeFile(path, text string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(target, []byte(out.String()), 0o644)
+	return os.WriteFile(path, []byte(text), 0o644)
+}
+
+// InstallShaderLevel puts the preset in place and then bends its parameters to
+// the look the player picked: "soft" and "strong" scale the scanline mask and
+// the tube curvature of the PhosphorLine preset, "normal" leaves the preset as
+// its author tuned it, and "off" removes the shader altogether so the game
+// runs unfiltered.
+func InstallShaderLevel(t Target, shader, level string) error {
+	if !IsRetroArch(t.Exe) {
+		return nil
+	}
+	target := filepath.Join(t.Work, "config", "global.slangp")
+	if level == "off" || shader == "" {
+		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	text, ok, err := presetText(t, shader)
+	if err != nil || !ok {
+		return err
+	}
+	if params := levelParams(level); len(params) > 0 {
+		text = bendLines(text, params)
+	}
+	return writeFile(target, text)
+}
+
+// LivePresetPath is the preset a look has of its own, so switching one does not
+// have to touch the global preset a game started with.
+func LivePresetPath(t Target, level string) string {
+	name := level
+	if name == "" || name == "normal" {
+		name = "standard"
+	}
+	return filepath.Join(t.Work, "config", "look-"+name+".slangp")
+}
+
+// WriteLivePreset writes the preset for a look and returns its path, so a
+// running RetroArch can be pointed at it with one command. "off" has no preset
+// of its own: RetroArch crashes on a pipeline with no passes, so turning the
+// filter off is a toggle, not a load.
+func WriteLivePreset(t Target, shader, level string) (string, error) {
+	if !IsRetroArch(t.Exe) {
+		return "", fmt.Errorf("不是 RetroArch，没有预置可换")
+	}
+	if level == "off" {
+		return "", fmt.Errorf("关闭滤镜不靠换预置")
+	}
+	path := LivePresetPath(t, level)
+	text, ok, err := presetText(t, shader)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("找不到着色器 %s", shader)
+	}
+	if params := levelParams(level); len(params) > 0 {
+		text = bendLines(text, params)
+	}
+	return path, writeFile(path, text)
+}
+
+// levelParams is the parameter set each look asks for. The preset's own
+// numbers stay untouched for "normal": they are the author's tuning, and the
+// point of the other two is only to be noticeably lighter or heavier.
+func levelParams(level string) map[string]string {
+	switch level {
+	case "soft":
+		return map[string]string{
+			"NTSCintensity":  "0.350000",
+			"MASK_INTENSITY": "0.450000",
+			"CORNER":         "0.080000",
+			"SHARPEN":        "0.020000",
+			"DIFFUSION":      "0.030000",
+		}
+	case "strong":
+		return map[string]string{
+			"NTSCintensity":  "0.950000",
+			"MASK_INTENSITY": "1.000000",
+			"CORNER":         "0.320000",
+			"SHARPEN":        "0.100000",
+			"DIFFUSION":      "0.080000",
+		}
+	}
+	return nil
+}
+
+// bendLines rewrites the "KEY = "value"" lines of a preset's text. A key the
+// preset does not define is left alone: the passes that read it would still
+// take the value, but adding a line to someone else's preset is noise.
+func bendLines(text string, params map[string]string) string {
+	out := make([]string, 0, 256)
+	for _, line := range strings.Split(text, "\n") {
+		eq := strings.Index(line, " = ")
+		if eq > 0 {
+			key := strings.TrimSpace(line[:eq])
+			if v, ok := params[key]; ok {
+				line = key + ` = "` + v + `"`
+			}
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }
 
 // shaderPass returns the path from a "shaderN = "path"" line.
@@ -170,6 +290,18 @@ func coreFile(exeDir, core string) string {
 		ext = ".dylib"
 	}
 	return filepath.Join(exeDir, "cores", core+"_libretro"+ext)
+}
+
+// coreArg is the core as the frontend's command line should name it: relative
+// to the folder it runs in, because a frontend started beside a folder whose
+// name is not plain ASCII reads its own arguments through the system's legacy
+// code page and loses the path, while a relative one is only ASCII.
+func coreArg(exeDir, core string) string {
+	rel, err := filepath.Rel(exeDir, core)
+	if err != nil || strings.Contains(rel, "..") {
+		return core
+	}
+	return rel
 }
 
 // Expand fills the placeholders the old frontend's command lines use.

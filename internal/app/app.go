@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,7 +20,10 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/audio"
 	"github.com/egoist/mygo/ui"
+
+	"github.com/R19988088/GameRoom/internal/core"
 
 	"github.com/R19988088/GameRoom/internal/launch"
 	"github.com/R19988088/GameRoom/internal/library"
@@ -33,6 +37,10 @@ type config struct {
 	// CRTShader is the shader preset RetroArch runs with, relative to
 	// 模拟器/RetroArch/shaders. Empty runs the game unfiltered.
 	CRTShader string `json:"crtShader"`
+	// FilterLevel bends that preset: "" or "normal" is the preset as its
+	// author tuned it, "soft" and "strong" are the lighter and heavier looks
+	// the player can try, and "off" runs the game unfiltered.
+	FilterLevel string `json:"filterLevel"`
 }
 
 // defaultShader is 脑浆油条's PhosphorLine: a CRT look that keeps arcade
@@ -118,6 +126,27 @@ type App struct {
 	fetching bool
 	fetched  int
 	fetchAll int
+
+	// The play area: while a game runs this window shows the game's own picture,
+	// drawn by the core this process loaded, with the two controls over it. The
+	// bitmap is the picture an element of the page; filtersOpen shows the filter
+	// picker, which needs the play area for itself.
+	core         *core.Session
+	gameBmp      *ui.Bitmap
+	gameImg      *image.RGBA
+	gameFrames   int
+	crt          crtParams
+	gameSound    *audio.Player
+	frameW       int
+	frameH       int
+	gameAspect   float32
+	mouseX       float64
+	mouseY       float64
+	mouseSeen    bool
+	player       *launch.Player
+	playerTarget launch.Target
+	playerGame   library.Game
+	filtersOpen  bool
 }
 
 // Run starts the launcher, one instance at a time.
@@ -130,6 +159,34 @@ func Run() error {
 	return mygo.App.Run()
 }
 
+// autoPlay is a game to start as soon as the window is up, named by -play.
+// It exists so that "does the game really run inside the window" can be
+// checked without a person clicking a card.
+var autoPlay string
+
+// AutoPlay names the game -play should start.
+func AutoPlay(match string) { autoPlay = match }
+
+// autoplay opens the first game matching autoPlay, after the window has drawn.
+func (a *App) autoplay() {
+	if autoPlay == "" || a.lib == nil {
+		return
+	}
+	m := strings.ToLower(autoPlay)
+	for _, g := range a.lib.Games {
+		if !strings.Contains(strings.ToLower(g.Title), m) &&
+			!strings.Contains(strings.ToLower(g.RomPath), m) {
+			continue
+		}
+		game := g
+		time.AfterFunc(2*time.Second, func() {
+			a.win.Update(func() { a.launchGame(game) })
+		})
+		return
+	}
+	a.status = "找不到要自动运行的游戏：" + autoPlay
+}
+
 func boot() {
 	a := &App{
 		root:    findRoot(),
@@ -139,6 +196,9 @@ func boot() {
 		pending: map[string]bool{},
 	}
 	a.loadConfig()
+	// The look is the CRT preset's own, read from the file the settings name,
+	// so the picture is the one the library has always shown.
+	a.crt = loadCRT(a.root, a.cfg.CRTShader)
 	a.theme = buildTheme()
 
 	if err := a.open(); err != nil {
@@ -169,6 +229,7 @@ func boot() {
 		MinHeight: 660,
 		Content:   ui.View(a.view),
 	})
+	a.autoplay()
 }
 
 // findRoot is the folder the launcher runs from: the one holding 模拟器,
@@ -831,9 +892,11 @@ func (a *App) scopeName() string {
 	return name + " · " + value
 }
 
-// launchGame starts the chosen game, when its emulator is RetroArch.
+// launchGame starts the chosen game. The emulation happens in this process:
+// the core that RetroArch ships as a library is loaded here, the app steps it,
+// and the picture is drawn into this window's page. There is no second window.
 func (a *App) launchGame(g library.Game) {
-	if a.lib == nil {
+	if a.lib == nil || a.core != nil {
 		return
 	}
 	sim := a.lib.SimFor(g)
@@ -853,42 +916,153 @@ func (a *App) launchGame(g library.Game) {
 	}
 
 	rom := filepath.Join(a.root, "rom", filepath.FromSlash(g.RomPath))
-	t, err := launch.Resolve(a.root, *sim, rom)
-	if err != nil {
-		a.status = err.Error()
+	exe := sim.Exe
+	if !filepath.IsAbs(exe) {
+		exe = filepath.Join(a.root, filepath.FromSlash(exe))
+	}
+	dir := filepath.Dir(exe) // the core and the system directory sit beside the emulator
+	corePath := core.CorePath(dir, sim.Core)
+	if corePath == "" {
+		a.status = fmt.Sprintf("%s：找不到核心 %s", g.Title, sim.Core)
 		return
 	}
-	// The CRT preset goes in as RetroArch's global shader; a missing one
-	// must not stop the game.
-	_ = launch.InstallShader(t, a.cfg.CRTShader)
-	cmd, err := launch.Start(t)
+	info, err := os.Stat(rom)
 	if err != nil {
 		a.status = "启动失败：" + err.Error()
 		return
 	}
-
-	name := g.Title
-	a.status = "已启动：" + name
-	if !launch.IsRetroArch(sim.Exe) {
-		a.status = "已启动：" + name + "（交给 Magpie 套 CRT）"
-		go launch.TakeOver(cmd.Process.Pid, filepath.Base(t.Exe), launch.MagpieFilter{Exe: a.magpieExe()})
-	} else {
-		// RetroArch draws its own CRT through the preset, so it needs no Magpie
-		// — but it does need the front and the keyboard. Left alone it opens
-		// behind the library, and a game whose keys never arrive is a game the
-		// player reports as broken.
-		go launch.TakeOver(cmd.Process.Pid, filepath.Base(t.Exe), launch.MagpieFilter{})
+	if info.IsDir() {
+		a.status = "启动失败：rom 不是文件"
+		return
 	}
-	go func() {
-		err := cmd.Wait()
-		a.win.Update(func() {
-			if err != nil {
-				a.status = name + " 退出：" + err.Error()
-			} else {
-				a.status = name + " 已退出"
+	sess, err := core.Start(corePath, rom, filepath.Join(dir, "system"))
+	if err != nil {
+		a.status = "启动失败：" + err.Error()
+		return
+	}
+	a.core = sess
+	a.gameBmp = nil
+	a.gameFrames = 0
+	a.gameAspect = sess.Aspect()
+	a.playerGame = g
+	a.filtersOpen = false
+	// The core's sound plays through the machine's own wave output, queued a
+	// few frames ahead: the game is the only thing making noise.
+	sess.StartSound()
+	if os.Getenv("GAMEROOM_DEBUG") != "" {
+		pipe := sess.Audio()
+		go func() {
+			for i := 0; i < 5; i++ {
+				time.Sleep(2 * time.Second)
+				fmt.Fprintf(os.Stderr, "sound: pushed=%d reads=%d loudest=%.3f rate=%d\n", pipe.Pushed(), pipe.Reads(), pipe.Loudest(), pipe.SampleRate())
 			}
+		}()
+	}
+	// The window is the game's window now: its caption carries the game, and the
+	// page carries only the picture and the two controls over it.
+	launch.SetWindowTitle(a.win.NativeHandle(), g.Title)
+	a.status = g.Title
+	sess.OnFrame(func() { a.win.Update(func() {}) })
+	go func() {
+		sess.Run()
+		a.win.Update(func() {
+			if a.core != sess {
+				return // a newer game, or the user, already took the window back
+			}
+			a.releaseGame()
+			launch.SetWindowTitle(a.win.NativeHandle(), "GameRoom")
+			a.status = g.Title + " 已退出"
 		})
 	}()
+}
+
+// stopPlayer ends the game on screen and gives the library its window back.
+func (a *App) stopPlayer() {
+	if a.core != nil {
+		s := a.core
+		a.core = nil
+		s.Close()
+		a.releaseGame()
+		launch.SetWindowTitle(a.win.NativeHandle(), "GameRoom")
+		a.status = ""
+		return
+	}
+	if a.player == nil {
+		return
+	}
+	a.player.Kill()
+}
+
+// releaseGame forgets the game that was on screen: its picture, its sound and
+// the title that named it. The session itself is closed by the caller.
+func (a *App) releaseGame() {
+	a.gameBmp = nil
+	a.gameFrames = 0
+	a.frameW, a.frameH = 0, 0
+	a.gameAspect = 0
+	a.mouseSeen = false
+	a.playerGame = library.Game{}
+	a.filtersOpen = false
+}
+
+// setFilter records a look and applies it to the running game. RetroArch reads
+// a preset when it loads one, so the app writes the preset for the look and
+// hands it to the running instance over its network interface — the game keeps
+// playing, its state and its place on screen untouched. Only a RetroArch that
+// does not answer has to be restarted to take the new look.
+func (a *App) setFilter(level string) {
+	if level == a.cfg.FilterLevel {
+		a.filtersOpen = false
+		if a.player != nil {
+			a.player.Show()
+		}
+		return
+	}
+	prev := a.cfg.FilterLevel
+	a.cfg.FilterLevel = level
+	a.saveConfig()
+	a.filtersOpen = false
+	if a.core != nil {
+		// The look is the app's own now, drawn by this process over the picture;
+		// it is kept for the next game rather than bent into a running core.
+		a.status = a.playerGame.Title + " · " + filterName(level)
+		return
+	}
+	if a.player == nil {
+		return // nothing running: the next game starts with it
+	}
+	a.player.Show()
+	var err error
+	if level == "off" {
+		// A preset with no passes takes the whole pipeline down, so the filter
+		// is switched off rather than replaced — the game keeps its frame.
+		if prev != "off" {
+			err = launch.SendCommand(launch.CommandPort, "SHADER_TOGGLE")
+		}
+	} else {
+		var path string
+		path, err = launch.WriteLivePreset(a.playerTarget, a.cfg.CRTShader, level)
+		if err == nil {
+			err = launch.SetShaderLive(launch.CommandPort, path)
+		}
+	}
+	if err == nil {
+		a.status = launch.EmbedStatus(a.playerGame.Title) + " · " + filterName(level)
+		return
+	}
+	// The interface is off or unanswered: this instance can only change look by
+	// coming up again.
+	g := a.playerGame
+	a.status = "滤镜像已保存，重启游戏生效"
+	a.player.Kill()
+	time.AfterFunc(700*time.Millisecond, func() {
+		a.win.Update(func() {
+			if a.player != nil {
+				return // the old game is still going; its exit starts nothing
+			}
+			a.launchGame(g)
+		})
+	})
 }
 
 // magpieExe is where the CRT filter for external programs lives; empty means

@@ -1,0 +1,164 @@
+diff --git a/Makefile b/Makefile
+index 1c9b12e..2d8d1da 100644
+--- a/Makefile
++++ b/Makefile
+@@ -109,6 +109,10 @@ endif
+ 
+ ifneq ($(findstring Win32,$(OS)),)
+    LDFLAGS += -mwindows
++   # Argv as UTF-8: paths under a Chinese folder name used to be mangled by
++   # the narrow CRT entry point, which made a core or config unreadable.
++   LDFLAGS += -municode
++   DEF_FLAGS += -DGAMEROOM_UNICODE_ARGV
+ endif
+ 
+ ifneq ($(CXX_BUILD), 1)
+diff --git a/gfx/common/win32_common.c b/gfx/common/win32_common.c
+index ecf9b9a..5a3de0d 100644
+--- a/gfx/common/win32_common.c
++++ b/gfx/common/win32_common.c
+@@ -316,6 +316,31 @@ static win32_common_state_t win32_st =
+    0,                   /* monitor_count */
+ };
+ 
++/* GameRoom host-window support.
++ *
++ * When the frontend asks us to render into an existing client area it
++ * sets GAMEROOM_PARENT_HWND to that window handle. In that case the
++ * video window is created directly as a hidden child of the host, so
++ * RetroArch never owns a visible top-level window: nothing can flash on
++ * the desktop, nothing can pop up fullscreen and then shrink back, and
++ * the host alone decides size and visibility.
++ */
++static HWND gameroom_parent_hwnd(void)
++{
++   static int  cached = 0;
++   static HWND parent = NULL;
++   if (!cached)
++   {
++      const char *env = getenv("GAMEROOM_PARENT_HWND");
++      cached          = 1;
++      if (env && *env)
++         parent       = (HWND)(uintptr_t)strtoull(env, NULL, 0);
++      if (parent && !IsWindow(parent))
++         parent       = NULL;
++   }
++   return parent;
++}
++
+ uint8_t win32_get_flags(void)
+ {
+    return g_win32_flags;
+@@ -1784,9 +1809,23 @@ bool win32_window_create(void *data, unsigned style,
+       user_height                = g_win32->pos_height;
+    }
+ #ifdef LEGACY_WIN32
++   if (gameroom_parent_hwnd())
++      main_window.hwnd           = CreateWindowEx(0,
++            "RetroArch", title_local,
++            WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
++            0, 0, user_width, user_height,
++            gameroom_parent_hwnd(), NULL, NULL, data);
++   else
+    main_window.hwnd              = CreateWindowEx(0,
+          "RetroArch", title_local,
+ #else
++   if (gameroom_parent_hwnd())
++      main_window.hwnd           = CreateWindowExW(0,
++            L"RetroArch", title_local,
++            WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
++            0, 0, user_width, user_height,
++            gameroom_parent_hwnd(), NULL, NULL, data);
++   else
+    main_window.hwnd              = CreateWindowExW(0,
+          L"RetroArch", title_local,
+ #endif
+@@ -2339,6 +2378,14 @@ void win32_set_style(MONITORINFOEX *current_mon, HMONITOR *hm_to_use,
+ {
+    settings_t *settings             = config_get_ptr();
+ 
++   /* Hosted by the frontend: never take over the display, never touch
++    * the desktop mode - the window is just a child area we draw into. */
++   if (gameroom_parent_hwnd())
++   {
++      fullscreen    = false;
++      windowed_full = false;
++   }
++
+    if (fullscreen)
+    {
+       /* Windows only reports the refresh rates for modelines as
+@@ -2437,7 +2484,7 @@ void win32_set_window(unsigned *width, unsigned *height,
+ #ifdef HAVE_MENU
+       bool ui_menubar_enable    = settings->bools.ui_menubar_enable;
+ 
+-      if (!fullscreen && ui_menubar_enable)
++      if (!fullscreen && ui_menubar_enable && !gameroom_parent_hwnd())
+       {
+          HMENU menuItem;
+          RECT rc_temp;
+@@ -2456,12 +2503,17 @@ void win32_set_window(unsigned *width, unsigned *height,
+       }
+ #endif
+ 
+-      ShowWindow(main_window.hwnd, SW_RESTORE);
+-      UpdateWindow(main_window.hwnd);
+-      SetForegroundWindow(main_window.hwnd);
++      /* Hosted by the frontend: it shows the child at the final size
++       * itself, so we must not restore, activate or foreground anything. */
++      if (!gameroom_parent_hwnd())
++      {
++         ShowWindow(main_window.hwnd, SW_RESTORE);
++         UpdateWindow(main_window.hwnd);
++         SetForegroundWindow(main_window.hwnd);
+ 
+-      if (window)
+-         window->set_focused(&main_window);
++         if (window)
++            window->set_focused(&main_window);
++      }
+    }
+ 
+    win32_show_cursor(NULL, !fullscreen);
+diff --git a/retroarch.c b/retroarch.c
+index a15e248..9b3dd56 100644
+--- a/retroarch.c
++++ b/retroarch.c
+@@ -5909,6 +5909,29 @@ void emscripten_mainloop(void)
+ #endif
+ 
+ #ifndef HAVE_MAIN
++#if defined(GAMEROOM_UNICODE_ARGV)
++/* The wide entry point: every argument is converted to UTF-8 before the rest
++ * of the frontend sees it, so a path under a Chinese folder name stays readable.
++ */
++#ifdef __cplusplus
++extern "C"
++#endif
++int wmain(int argc, wchar_t *argv_utf16[])
++{
++   int i;
++   int ret;
++   char **argv = (char**)calloc((size_t)(argc + 1), sizeof(char*));
++   if (!argv)
++      return -1;
++   for (i = 0; i < argc; i++)
++      argv[i] = utf16_to_utf8_string_alloc(argv_utf16[i]);
++   ret = rarch_main(argc, argv, NULL);
++   for (i = 0; i < argc; i++)
++      free(argv[i]);
++   free(argv);
++   return ret;
++}
++#else
+ #ifdef __cplusplus
+ extern "C"
+ #endif
+@@ -5917,6 +5940,7 @@ int main(int argc, char *argv[])
+    return rarch_main(argc, argv, NULL);
+ }
+ #endif
++#endif
+ 
+ /* DYNAMIC LIBRETRO CORE  */
+ 

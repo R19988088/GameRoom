@@ -85,14 +85,21 @@ func TakeOver(pid int, exeName string, f MagpieFilter) {
 	scaleHotkey()
 }
 
-// waitWindow polls until the program owns a visible, restored window.
+// waitWindow polls until the program owns a visible, restored window. It polls
+// fast for the first seconds — the window it finds is adopted at once, and every
+// millisecond it stays visible before that is a frame of it flashing on screen.
 func waitWindow(pid int, exeName string, d time.Duration) syscall.Handle {
-	deadline := time.Now().Add(d)
+	start := time.Now()
+	deadline := start.Add(d)
 	for time.Now().Before(deadline) {
 		if h := windowOf(pid, exeName); h != 0 {
 			return h
 		}
-		time.Sleep(250 * time.Millisecond)
+		if time.Since(start) < 6*time.Second {
+			time.Sleep(8 * time.Millisecond)
+			continue
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	return 0
 }

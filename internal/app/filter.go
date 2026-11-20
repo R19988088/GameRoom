@@ -37,7 +37,7 @@ func defaultCRT() crtParams {
 		"CORNER": 0.2, "PPOY": 0, "BLK": 0, "EXPOSURE": 1, "CT": 0,
 		"LINEAR": 0.2, "CURVE_X": 0.07, "CURVE_Y": 0.07,
 		"MASK_INTENSITY": 0.9, "MASK_TYPE": 0, "ss": 0.5,
-		"DIFFUSION": 0.05, "DIFF_OVEREXP": 0, "REFLECTION": 0.25,
+		"DIFFUSION": 0.05, "DIFF_OVEREXP": 0, "REFLECTION": 0.25, "REFLECTION_SWITCH": 1,
 		"E_OFFSET": 1.8, "REFLECT_GAP": 0.02, "FILLET_D": -0.5, "B_CORNER": 0.8, "BORDER_SIZE": 0,
 		"LINE_PITCH_COEF": 1, "LINE_THICKNESS": 0.95, "LINE_OPACITY": 0.95,
 		"PIC_SIZE": 0.5, "INT_TOL": 0.05, "INT_SCALE": 0, "GAMMA": 2.2,
@@ -149,6 +149,7 @@ var knobs = []knob{
 	{"DIFF_OVEREXP", "允许扩散过曝", 0, 1, 0, 1, 0.1},
 	{"REFLECTION", "边框反射强度", 0, 1, 0, 1, 0.1},
 	{"E_OFFSET", "边框反射偏移", 0, 2, 0, 1, 0.1},
+	{"REFLECTION_SWITCH", "边框反射开关", 0, 1, 1, 1, 0.1},
 	{"REFLECT_GAP", "反射间距 (%)", 0, 0.24, 0, 100, 1},
 	{"B_CORNER", "边框圆角大小", 0, 1, 0, 1, 0.1},
 	{"FILLET_D", "边框圆角曲率", -0.5, 0.5, 0, 1, 0.1},
@@ -158,10 +159,23 @@ var knobs = []knob{
 // value is the number the shader runs with: what the player set, or the preset's
 // own (bent by the preset picked).
 func (a *App) value(key string) float32 {
-	if v, ok := a.cfg.CRTTune[key]; ok {
-		return v
+	v, ok := a.cfg.CRTTune[key]
+	if !ok {
+		return a.crt.bent(a.cfg.FilterLevel).get(key, 0)
 	}
-	return a.crt.bent(a.cfg.FilterLevel).get(key, 0)
+	for _, k := range knobs {
+		if k.key != key {
+			continue
+		}
+		if float64(v) < k.lo {
+			v = float32(k.lo)
+		}
+		if float64(v) > k.hi {
+			v = float32(k.hi)
+		}
+		break
+	}
+	return v
 }
 
 // crtEffect builds the shader's uniforms for this frame. The shader is compiled
@@ -243,6 +257,7 @@ var DIFF_OVEREXP float
 var REFLECTION float
 var E_OFFSET float
 var REFLECT_GAP float
+var REFLECTION_SWITCH float
 var GAME_ASPECT float
 var B_CORNER float
 var FILLET_D float
@@ -454,16 +469,24 @@ func mirrorBlur(p vec2, isz vec2, r float) vec3 {
 	// reflection reads as haze instead of a handful of copies of the frame.
 	lo := vec2(0.0, 0.0)
 	hi := isz - vec2(1.0, 1.0)
-	s := image0Sample(clamp(p, lo, hi)).xyz * 4.0
-	s = s + blurRing(p, lo, hi, r*0.35, 0.0) * 2.0
-	s = s + blurRing(p, lo, hi, r*0.75, 0.3) * 1.5
-	s = s + blurRing(p, lo, hi, r*1.25, 0.7) * 1.0
-	s = s + blurRing(p, lo, hi, r*2.0, 1.1) * 0.6
-	return s / 44.8
+	// A gaussian read as six rings of eight bilinear taps: dense enough that the
+	// glass reads as haze, and each ring turned differently so the taps never line
+	// up into a lattice over the reflection.
+	s := image0Sample(clamp(p, lo, hi)).xyz * 2.0
+	s = s + blurRing(p, lo, hi, r*0.28, 0.35) * 1.90
+	s = s + blurRing(p, lo, hi, r*0.50, 0.05) * 1.60
+	s = s + blurRing(p, lo, hi, r*0.72, 0.55) * 1.30
+	s = s + blurRing(p, lo, hi, r*0.95, 0.20) * 1.00
+	s = s + blurRing(p, lo, hi, r*1.25, 0.85) * 0.70
+	s = s + blurRing(p, lo, hi, r*1.60, 0.50) * 0.45
+	return s / 57.6
 }
 
 // blurRing is a ring of eight bilinear taps around p at radius r, turned by a.
 func blurRing(p vec2, lo vec2, hi vec2, r float, a float) vec3 {
+	// The ring's angle is nudged by where the fragment sits, so neighbouring
+	// fragments read the glass at different angles and no lattice shows up.
+	a = a + (p.x*0.717 + p.y*1.237)
 	s := image0Sample(clamp(p+vec2(r*cos(a), r*sin(a)), lo, hi)).xyz
 	s = s + image0Sample(clamp(p+vec2(r*cos(a+0.785), r*sin(a+0.785)), lo, hi)).xyz
 	s = s + image0Sample(clamp(p+vec2(r*cos(a+1.571), r*sin(a+1.571)), lo, hi)).xyz
@@ -522,72 +545,91 @@ func LayerEffect(pos vec2) vec4 {
 	qy := ay * size.y * ps
 	ex := pw * 0.5
 	ey := ph * 0.5
-	// The glass sits outside the picture's own rounded frame: the frame's corners
-	// are cut by an arc tangent to both of its edges, so the black band and the
-	// mirror follow that one outline and meet each other without a seam.
+	// PP-reflex, in the same numbers it uses: fff is the picture's half seen from
+	// its middle, kkk the corner the picture is cut with, lll the centre of that
+	// arc, mmm its radius, ggg the rim the mirror starts on. One unit is the
+	// picture's own height, so both axes read alike.
 	gp := REFLECT_GAP * ph
-	rad := CORNER * 0.1 * ph * (0.5 + B_CORNER)
-	if rad < 1.0 {
-		rad = 1.0
+	off := E_OFFSET * 0.01 * ph
+	kkk := CORNER * 0.2 * ph
+	if kkk < 0.5 {
+		kkk = 0.5
 	}
-	ccx := ex - rad
-	ccy := ey - rad
-	if ccx < 0.0 {
-		ccx = 0.0
+	if kkk > ex {
+		kkk = ex
 	}
-	if ccy < 0.0 {
-		ccy = 0.0
+	if kkk > ey {
+		kkk = ey
 	}
+	ccx := ex - kkk
+	ccy := ey - kkk
+	rimx := ex + gp + off
+	rimy := ey + gp + off
+	mmm := kkk + gp + off
 
-	// How far outside the rounded frame this fragment sits, in pixels, and which
-	// part of the frame it faces.
+	// eee is the fragment seen from the middle with its sign thrown away, and d
+	// how far outside the picture's cut frame it lies.
+	eee := vec2(qx, qy)
 	d := max(qx-ex, qy-ey)
-	nx := 0.0
-	ny := 0.0
-	nc := 1.0
-	arc := false
+	corner := false
 	if qx > ccx && qy > ccy {
-		nx = (qx-ccx) / rad
-		ny = (qy-ccy) / rad
-		nc = sqrt(nx*nx+ny*ny)
-		if nc < 0.0001 {
-			nc = 0.0001
-		}
-		d = (nc - 1.0) * rad
-		arc = true
+		corner = true
+		d = sqrt((qx-ccx)*(qx-ccx)+(qy-ccy)*(qy-ccy)) - kkk
 	}
 
-	// The mirror is a plain one: what sits d outside the frame is read from d
-	// inside it, so the glass shows the picture at its own size, turned over. The
-	// glass fades out over half the picture's height, well before the window ends,
-	// so it never has to repeat or smear.
 	if d > 0.0 {
-		if d < gp {
-			// The black band the glass keeps between itself and the frame.
+		rn := -1.0
+		if corner {
+			rn = sqrt((qx-ccx)*(qx-ccx)+(qy-ccy)*(qy-ccy)) - mmm
+		}
+		if qx <= rimx && qy <= rimy && rn <= 0.0 {
+			// The black the tube keeps between its picture and the glass.
 			return vec4(0.0, 0.0, 0.0, 1.0)
 		}
 		mx := qx
 		my := qy
 		wc := 1.0
-		if arc {
-			// Round the corner: read along the radius the fragment meets the frame's
-			// arc at, so the picture bends round the tube and joins the flat mirror
-			// exactly where the arc becomes tangent to the frame's edges.
-			du := nx / nc
-			dv := ny / nc
-			e := (2.0 - nc) * rad
-			if e < -rad {
-				e = -rad
+		if rn > 0.0 {
+			// PP-reflex's corner: a ray is cast from the fragment at a start point
+			// turned by FILLET_D, the point where it crosses the arc is found, and
+			// the fragment is mirrored through it by ttt, the arc's own factor.
+			o := mmm * 5.0 * (1.0 - B_CORNER)
+			th := FILLET_D * 1.5707963
+			cvx := ccx - (o*cos(th) - o*sin(th))
+			cvy := ccy - (o*sin(th) + o*cos(th))
+			q := arcHit(eee, vec2(cvx, cvy), vec2(ccx, ccy), mmm)
+			if q.x > 0.0001 || q.y > 0.0001 {
+				rx := (q.x-ccx) / mmm
+				ry := (q.y-ccy) / mmm
+				sx := q.x - cvx
+				sy := q.y - cvy
+				tx := (rx-0.5) * -2.0
+				ty := (ry-0.5) * -2.0
+				l1 := sqrt(sx*sx+sy*sy)
+				l2 := sqrt((sx*tx)*(sx*tx)+(sy*ty)*(sy*ty))
+				if l2 > 0.000001 {
+					tx = tx * (l1/l2)
+					ty = ty * (l1/l2)
+				}
+				tx = tx * (1.0 + rx*0.5)
+				ty = ty * (1.0 + ry*0.5)
+				mx = (qx-q.x)*tx + q.x
+				my = (qy-q.y)*ty + q.y
+				wc = 1.0 + (rx*ry)*(rx*ry)
 			}
-			mx = ccx + du*e
-			my = ccy + dv*e
-			wc = 1.0 + (du*dv)*(du*dv)
+			if mx > rimx {
+				mx = (mx-rimx)*(-1.5) + rimx
+				}
+			if my > rimy {
+				my = (my-rimy)*(-1.5) + rimy
+			}
 		} else {
-			if qx > ex {
-				mx = ex - (qx-ex)
+			// The flat sides: mirrored through the rim with the same 1.5 overshoot.
+			if qx > rimx {
+				mx = (qx-rimx)*(-1.5) + rimx
 			}
-			if qy > ey {
-				my = ey - (qy-ey)
+			if qy > rimy {
+				my = (qy-rimy)*(-1.5) + rimy
 			}
 		}
 		// PP-reflex pulls the sample 5% toward the middle before it reads it.
@@ -599,18 +641,17 @@ func LayerEffect(pos vec2) vec4 {
 		if c.y < 0.0 {
 			uy = 1.0 - uy
 		}
-		// The haze thickens the further the glass runs from the frame.
-		db := d / ph
-		mr := 1.2 + min(db*isz.y*0.35, 16.0)
-		rcol := mirrorBlur(vec2(ux, uy)*isz, isz, mr)
-		// Fade to black over half the picture's height: the glass reads as a haze
-		// round the frame, not as a second copy across the whole window.
-		fade := 1.0 - db/(0.5+REFLECTION*0.4)
-		if fade < 0.0 {
-			fade = 0.0
+		// The haze thickens the further the glass runs from the frame: the kernel
+		// grows with the distance, so the glass never reads as a second picture.
+		dk := d/ph
+		if dk > 1.0 {
+			dk = 1.0
 		}
-		fade = fade * fade
-		ii := (REFLECTION*1.7)*(REFLECTION*1.7)*wc*fade
+		mr := 0.8 + dk*isz.y*0.30
+		rcol := mirrorBlur(vec2(ux, uy)*isz, isz, mr)
+		// PP-reflex fades nothing: the glass keeps its mirror all the way out, and
+		// only the kernel grows with the distance.
+		ii := (REFLECTION*1.7)*(REFLECTION*1.7)*wc*REFLECTION_SWITCH
 		if ii < 0.0 {
 			ii = 0.0
 		}
@@ -663,6 +704,11 @@ func LayerEffect(pos vec2) vec4 {
 	period := floor(sc*0.6*SS + 0.5)
 	if period < 2.0 {
 		period = 2.0
+	}
+	if period > sc {
+		// A mask cell wider than the game row turns the picture into flat bands of
+		// one channel, so it is held to the row's own width.
+		period = sc
 	}
 	tx := floor(dp.x) + 0.5
 	ty := floor(dp.y) + 0.5
@@ -869,7 +915,7 @@ func (a *App) knobStepper(c *ui.Context, t *ui.Theme, k knob) {
 			ui.Text(c, "‹").FontSize(11).TextColor(t.Text.Alpha(0.65))
 		})
 		if back.Clicked() {
-			a.nudge(k, -0.1)
+			a.nudge(k, -1.0)
 		}
 		mid := ui.ButtonBase(c).Grow(1).Height(22).Center().Radius(8).
 			Background(ui.Hex("#ffffff05"))
@@ -888,15 +934,24 @@ func (a *App) knobStepper(c *ui.Context, t *ui.Theme, k knob) {
 			ui.Text(c, "›").FontSize(11).TextColor(t.Text.Alpha(0.65))
 		})
 		if fwd.Clicked() {
-			a.nudge(k, 0.1)
+			a.nudge(k, 1.0)
 		}
 	})
 }
 
 // nudge moves a parameter by one step of what its control shows.
-func (a *App) nudge(k knob, delta float64) {
+func (a *App) nudge(k knob, sign float64) {
 	cur := float64(a.value(k.key)) * k.mul
-	a.setKnob(k, roundStep(cur+delta, k.step)/k.mul)
+	v := roundStep(cur+sign*k.step, k.step)
+	lo := k.lo * k.mul
+	hi := k.hi * k.mul
+	if v < lo {
+		v = lo
+	}
+	if v > hi {
+		v = hi
+	}
+	a.setKnob(k, v/k.mul)
 }
 
 // dragKnob moves a parameter with the drag of its middle: the first frame starts
@@ -906,8 +961,10 @@ func (a *App) dragKnob(k knob, dx float64) {
 		a.dragKey = k.key
 		a.dragVal = float64(a.value(k.key)) * k.mul
 	}
-	a.dragVal += dx * (k.hi - k.lo) / 220
-	a.dragVal = math.Max(k.lo, math.Min(k.hi, a.dragVal))
+	lo := k.lo * k.mul
+	hi := k.hi * k.mul
+	a.dragVal += dx * (hi - lo) / 220
+	a.dragVal = math.Max(lo, math.Min(hi, a.dragVal))
 	a.setKnob(k, roundStep(a.dragVal, k.step)/k.mul)
 }
 

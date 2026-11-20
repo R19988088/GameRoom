@@ -126,6 +126,21 @@ func BoardOf(source string) string {
 	return strings.ToUpper(strings.ReplaceAll(base, "_", " "))
 }
 
+// BoardKnown says whether the shelf names this board. A board nobody wrote down
+// is filed under the name of its source file, which is a name but not a board:
+// the caller should fall back to the cabinet every game can be played on.
+func BoardKnown(name string) bool {
+	if name == "" || name == "未标注基板" {
+		return false
+	}
+	for _, b := range boards {
+		if strings.EqualFold(b, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // makers renames what the old library filed under a folder name into the
 // manufacturer, so the 厂商 chips do not mix hardware (stv, naomi) with makers.
 var makers = map[string]string{

@@ -156,6 +156,20 @@ type App struct {
 	playerTarget launch.Target
 	playerGame   library.Game
 	filtersOpen  bool
+
+	// The pad panel: what a machine's buttons read from. pads is the profile
+	// saved per machine in 数据/controls.json, and padLive the machine the
+	// running game reads (set at launch) — the panel follows the game, so there
+	// is nothing to pick by hand. cap is the button waiting for a key, with what
+	// was already held when the wait began, so a key pressed before it does not
+	// count.
+	pads     map[string]map[string]padBind
+	padsOpen bool
+	padLive  string
+	cap      string
+	capVK    map[int]bool
+	capPad   map[int]bool
+	escDown  bool
 }
 
 // Run starts the launcher, one instance at a time.
@@ -205,6 +219,7 @@ func boot() {
 		pending: map[string]bool{},
 	}
 	a.loadConfig()
+	a.loadPads()
 	// The look is the CRT preset's own, read from the file the settings name,
 	// so the picture is the one the library has always shown.
 	a.crt = loadCRT(a.root, a.cfg.CRTShader)
@@ -954,7 +969,10 @@ func (a *App) launchGame(g library.Game) {
 	a.gameFrames = 0
 	a.gameAspect = sess.Aspect()
 	a.playerGame = g
+	a.padLive = a.padLayoutOf(g)
 	a.filtersOpen = false
+	a.padsOpen = false
+	a.cap = ""
 	// The core's sound plays through the machine's own wave output, queued a
 	// few frames ahead: the game is the only thing making noise.
 	sess.StartSound()
@@ -1012,6 +1030,9 @@ func (a *App) releaseGame() {
 	a.mouseSeen = false
 	a.playerGame = library.Game{}
 	a.filtersOpen = false
+	a.padsOpen = false
+	a.padLive = ""
+	a.cap = ""
 }
 
 // setFilter records a look and applies it to the running game. RetroArch reads

@@ -20,6 +20,9 @@ func (s *Session) Run() {}
 // SetKeys does nothing.
 func (s *Session) SetKeys(keys map[int]bool) {}
 
+// SetPad does nothing.
+func (s *Session) SetPad(pads map[int]bool) {}
+
 // Frame is never a picture.
 func (s *Session) Frame() any { return nil }
 

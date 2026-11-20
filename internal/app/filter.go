@@ -744,6 +744,8 @@ func (a *App) filterButton(c *ui.Context, t *ui.Theme) {
 // toggleFilters opens or closes the panel; closing keeps what was tuned.
 func (a *App) toggleFilters() {
 	a.filtersOpen = !a.filtersOpen
+	a.padsOpen = false
+	a.cap = ""
 	a.dragKey = ""
 	if !a.filtersOpen {
 		a.saveTune()

@@ -54,12 +54,17 @@ func (a *App) view(c *ui.Context) {
 func (a *App) playerView(c *ui.Context, t *ui.Theme) {
 	a.pumpCore()
 	a.pumpMouse()
+	a.pushPad()
+	a.padTick()
 	w, h := c.Size()
 	ui.Box(c).Fill().Background(ui.Hex("#000000")).Children(func() {
 		a.gamePicture(c, w, h)
 		a.floatControls(c, t)
 		if a.filtersOpen {
 			a.filterPanel(c, t)
+		}
+		if a.padsOpen {
+			a.padPanel(c, t)
 		}
 	})
 }
@@ -133,22 +138,25 @@ func (a *App) gamePicture(c *ui.Context, w, h float32) {
 	})
 }
 
-// floatControls are the two buttons that hover over the game's corners, in the
-// strip the player's overlay window covers.
+// floatControls are the pills that hover over the game's corners, in the strip
+// the player's overlay window covers.
 func (a *App) floatControls(c *ui.Context, t *ui.Theme) {
-	ui.Row(c).Absolute().Left(edgeInset).Right(edgeInset).Top(edgeInset).Height(backButtonSize).Children(func() {
+	ui.Row(c).Absolute().Left(edgeInset).Right(edgeInset).Top(edgeInset).Height(backButtonSize).Gap(8).Children(func() {
 		a.backButton(c, t)
 		ui.Box(c).Grow(1)
+		a.controllerButton(c, t)
 		a.filterButton(c, t)
 	})
 }
 
-// The player's controls: a round way out, a pill for the look, and the strip
-// their window is, tall enough for both and for the glass to breathe.
+// The player's controls: a round way out, a pill for the pad the game reads,
+// a pill for the look, and the strip their window is, tall enough for both and
+// for the glass to breathe.
 const (
-	backButtonSize      = 34
-	filterButtonWidth   = 104
-	playerButtonsHeight = 12 + backButtonSize + 12
+	backButtonSize        = 34
+	filterButtonWidth     = 104
+	controllerButtonWidth = 118
+	playerButtonsHeight   = 12 + backButtonSize + 12
 )
 
 // playAreaTop is the first DIP of the screen. The game owns the whole client
@@ -176,7 +184,11 @@ func (a *App) backButton(c *ui.Context, t *ui.Theme) {
 	if b.Clicked() {
 		a.win.Update(func() { a.stopPlayer() })
 	}
-	b.Shortcut(0, ui.KeyEscape) // leaving from the keyboard, when the game has the focus it does not
+	// Escape leaves the game from the keyboard — but while a panel is open it
+	// belongs to the panel, which closes on it, so the button stays quiet.
+	if !a.filtersOpen && !a.padsOpen {
+		b.Shortcut(0, ui.KeyEscape)
+	}
 }
 
 // toolbar is the top row: one shelf picker, the shelf's chips, and the

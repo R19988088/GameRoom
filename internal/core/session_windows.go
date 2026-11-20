@@ -41,6 +41,7 @@ type Session struct {
 	init, loadGame, run, unload, deinit, getAVInfo, getSystemInfo          uintptr
 
 	keys  atomic.Value // map[int]bool, RETROK codes held down
+	pads  atomic.Value // map[int]bool, RETRO_DEVICE_ID_JOYPAD ids held down
 	mouse atomic.Value // MouseState, the pointer as a core reads it
 
 	mu     sync.RWMutex
@@ -98,6 +99,7 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 	}
 	s := &Session{dll: h, quit: make(chan struct{}), done: make(chan struct{}), sndDone: make(chan struct{}), fps: 60}
 	s.keys.Store(map[int]bool{})
+	s.pads.Store(map[int]bool{})
 	s.mouse.Store(MouseState{})
 	s.onFrame.Store(func() {})
 
@@ -196,6 +198,11 @@ func (s *Session) Run() {
 
 // SetKeys takes the keyboard keys held down, as retrok codes.
 func (s *Session) SetKeys(keys map[int]bool) { s.keys.Store(keys) }
+
+// SetPad takes the gamepad's buttons held down, as RETRO_DEVICE_ID_JOYPAD ids:
+// which physical button drives which id is the frontend's business, the core
+// only reads the ids it expects.
+func (s *Session) SetPad(pads map[int]bool) { s.pads.Store(pads) }
 
 // Frame is the last picture the core drew, owned by the session.
 func (s *Session) Frame() *image.RGBA {
@@ -389,6 +396,12 @@ func inputCallback(port, device, index, id uintptr) uintptr {
 		return 0
 	}
 	switch int(device) {
+	case DeviceJoypad:
+		pads, _ := s.pads.Load().(map[int]bool)
+		if pads != nil && pads[int(id)] {
+			return 1
+		}
+		return 0
 	case DeviceMouse:
 		m, _ := s.mouse.Load().(MouseState)
 		switch int(id) {

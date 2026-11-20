@@ -403,28 +403,57 @@ func fold(raw float) float {
 	return abs(t - 1.0)
 }
 
-// tap is one sample of diffusion's glow, in linear light.
-func tap(np vec2, o vec2, k float) vec3 {
-	d2 := dot(o, o)
-	wt := exp(-d2 * 0.35)
-	return pow(clamp(image0Sample(np+o*k).xyz, vec3(0.0), vec3(1.0)), vec3(GAMMA)) * wt
+// lin is one bilinear tap of the picture in linear light, where a halo adds the
+// way light does.
+func lin(p vec2, lo vec2, hi vec2) vec3 {
+	return pow(clamp(image0Sample(clamp(p, lo, hi)).xyz, vec3(0.0), vec3(1.0)), vec3(GAMMA))
+}
+
+// gk is a gaussian blur of the picture in linear light, five taps per axis on a
+// grid of step pixels: the weights fall off from its centre, so a wide radius
+// reads as a haze and never as copies of what is under it, which a handful of
+// samples spread far apart would leave as ghosts.
+func gk(p vec2, isz vec2, sigma float, step float) vec3 {
+	lo := vec2(0.0, 0.0)
+	hi := isz - vec2(1.0, 1.0)
+	q := clamp(p, lo, hi)
+	if sigma < 0.35 {
+		sigma = 0.35
+	}
+	acc := vec3(0.0, 0.0, 0.0)
+	wsum := 0.0
+	for j := -2; j <= 2; j++ {
+		for i := -2; i <= 2; i++ {
+			d2 := float(i*i+j*j) * step * step
+			w := exp(-d2/(2.0*sigma*sigma))
+			acc = acc + lin(q+vec2(float(i), float(j))*step, lo, hi)*w
+			wsum = wsum + w
+		}
+	}
+	if wsum < 0.0001 {
+		wsum = 1.0
+	}
+	return acc / wsum
+}
+
+// tent is the small kernel the glow keeps close to the pixel: a [1 2 1] read as
+// nine bilinear taps, at one pixel and two, so the two together come out as a
+// gaussian of a couple of pixels and every edge is softened, not doubled.
+func tent(p vec2, s float, isz vec2) vec3 {
+	lo := vec2(0.0, 0.0)
+	hi := isz - vec2(1.0, 1.0)
+	q := clamp(p, lo, hi)
+	dx := vec2(s, 0.0)
+	dy := vec2(0.0, s)
+	e := lin(q+dx, lo, hi) + lin(q-dx, lo, hi) + lin(q+dy, lo, hi) + lin(q-dy, lo, hi)
+	c := lin(q+dx+dy, lo, hi) + lin(q+dx-dy, lo, hi) + lin(q-dx+dy, lo, hi) + lin(q-dx-dy, lo, hi)
+	return (lin(q, lo, hi)*4.0 + e*2.0 + c) / 16.0
 }
 
 // glow is diffusion-h and diffusion-v as one: the picture blurred in linear
-// light with a gaussian, which PP-reflex adds to the scanlines as the tube's glow.
-func glow(np vec2, k float) vec3 {
-	s := tap(np, vec2(0.0, 0.0), k)
-	s = s + tap(np, vec2(1.0, 0.0), k) + tap(np, vec2(-1.0, 0.0), k)
-	s = s + tap(np, vec2(0.0, 1.0), k) + tap(np, vec2(0.0, -1.0), k)
-	s = s + tap(np, vec2(1.0, 1.0), k) + tap(np, vec2(-1.0, 1.0), k)
-	s = s + tap(np, vec2(1.0, -1.0), k) + tap(np, vec2(-1.0, -1.0), k)
-	s = s + tap(np, vec2(2.0, 0.0), k) + tap(np, vec2(-2.0, 0.0), k)
-	s = s + tap(np, vec2(0.0, 2.0), k) + tap(np, vec2(0.0, -2.0), k)
-	s = s + tap(np, vec2(2.0, 1.0), k) + tap(np, vec2(-2.0, 1.0), k)
-	s = s + tap(np, vec2(2.0, -1.0), k) + tap(np, vec2(-2.0, -1.0), k)
-	s = s + tap(np, vec2(1.0, 2.0), k) + tap(np, vec2(-1.0, 2.0), k)
-	s = s + tap(np, vec2(1.0, -2.0), k) + tap(np, vec2(-1.0, -2.0), k)
-	return s / 8.19
+// light, which PP-reflex adds to the scanlines as the tube's own glow.
+func glow(np vec2, isz vec2) vec3 {
+	return tent(np, 1.0, isz)*0.62 + tent(np, 2.0, isz)*0.38
 }
 
 // sampled is the picture at a point of its own pixels, with CA-sharpen's edge,
@@ -461,41 +490,22 @@ func sampled(np vec2, isz vec2) vec3 {
 	return clamp(col, vec3(0.0), vec3(1.0))
 }
 
-// mirrorBlur is the glass of the bezel: the picture sampled around a point of
-// itself with a wide, soft kernel, so the reflection reads as haze on glass and
-// not as a second, crisp copy of the frame.
+// mirrorBlur is the glass of the bezel: the picture read around a point of
+// itself through a gaussian whose radius grows with the distance from the frame,
+// so the mirror goes soft the further out it is read and never shows a second,
+// crisp copy of the frame.
 func mirrorBlur(p vec2, isz vec2, r float) vec3 {
-	// Bilinear taps on three rings, so the kernel covers the glass evenly and the
-	// reflection reads as haze instead of a handful of copies of the frame.
-	lo := vec2(0.0, 0.0)
-	hi := isz - vec2(1.0, 1.0)
-	// A gaussian read as six rings of eight bilinear taps: dense enough that the
-	// glass reads as haze, and each ring turned differently so the taps never line
-	// up into a lattice over the reflection.
-	s := image0Sample(clamp(p, lo, hi)).xyz * 2.0
-	s = s + blurRing(p, lo, hi, r*0.28, 0.35) * 1.90
-	s = s + blurRing(p, lo, hi, r*0.50, 0.05) * 1.60
-	s = s + blurRing(p, lo, hi, r*0.72, 0.55) * 1.30
-	s = s + blurRing(p, lo, hi, r*0.95, 0.20) * 1.00
-	s = s + blurRing(p, lo, hi, r*1.25, 0.85) * 0.70
-	s = s + blurRing(p, lo, hi, r*1.60, 0.50) * 0.45
-	return s / 57.6
-}
-
-// blurRing is a ring of eight bilinear taps around p at radius r, turned by a.
-func blurRing(p vec2, lo vec2, hi vec2, r float, a float) vec3 {
-	// The ring's angle is nudged by where the fragment sits, so neighbouring
-	// fragments read the glass at different angles and no lattice shows up.
-	a = a + (p.x*0.717 + p.y*1.237)
-	s := image0Sample(clamp(p+vec2(r*cos(a), r*sin(a)), lo, hi)).xyz
-	s = s + image0Sample(clamp(p+vec2(r*cos(a+0.785), r*sin(a+0.785)), lo, hi)).xyz
-	s = s + image0Sample(clamp(p+vec2(r*cos(a+1.571), r*sin(a+1.571)), lo, hi)).xyz
-	s = s + image0Sample(clamp(p+vec2(r*cos(a+2.356), r*sin(a+2.356)), lo, hi)).xyz
-	s = s + image0Sample(clamp(p+vec2(r*cos(a+3.142), r*sin(a+3.142)), lo, hi)).xyz
-	s = s + image0Sample(clamp(p+vec2(r*cos(a+3.927), r*sin(a+3.927)), lo, hi)).xyz
-	s = s + image0Sample(clamp(p+vec2(r*cos(a+4.712), r*sin(a+4.712)), lo, hi)).xyz
-	s = s + image0Sample(clamp(p+vec2(r*cos(a+5.498), r*sin(a+5.498)), lo, hi)).xyz
-	return s
+	st := 1.0
+	if r > 2.6 {
+		st = 2.0
+	}
+	if r > 5.0 {
+		st = 3.0
+	}
+	if r > 9.0 {
+		st = 4.0
+	}
+	return gk(p, isz, r*0.85, st)
 }
 
 func LayerEffect(pos vec2) vec4 {
@@ -567,9 +577,7 @@ func LayerEffect(pos vec2) vec4 {
 	rimy := ey + gp + off
 	mmm := kkk + gp + off
 
-	// eee is the fragment seen from the middle with its sign thrown away, and d
-	// how far outside the picture's cut frame it lies.
-	eee := vec2(qx, qy)
+	// d is how far outside the picture's cut frame the fragment lies.
 	d := max(qx-ex, qy-ey)
 	corner := false
 	if qx > ccx && qy > ccy {
@@ -590,39 +598,18 @@ func LayerEffect(pos vec2) vec4 {
 		my := qy
 		wc := 1.0
 		if rn > 0.0 {
-			// PP-reflex's corner: a ray is cast from the fragment at a start point
-			// turned by FILLET_D, the point where it crosses the arc is found, and
-			// the fragment is mirrored through it by ttt, the arc's own factor.
-			o := mmm * 5.0 * (1.0 - B_CORNER)
-			th := FILLET_D * 1.5707963
-			cvx := ccx - (o*cos(th) - o*sin(th))
-			cvy := ccy - (o*sin(th) + o*cos(th))
-			q := arcHit(eee, vec2(cvx, cvy), vec2(ccx, ccy), mmm)
-			if q.x > 0.0001 || q.y > 0.0001 {
-				rx := (q.x-ccx) / mmm
-				ry := (q.y-ccy) / mmm
-				sx := q.x - cvx
-				sy := q.y - cvy
-				tx := (rx-0.5) * -2.0
-				ty := (ry-0.5) * -2.0
-				l1 := sqrt(sx*sx+sy*sy)
-				l2 := sqrt((sx*tx)*(sx*tx)+(sy*ty)*(sy*ty))
-				if l2 > 0.000001 {
-					tx = tx * (l1/l2)
-					ty = ty * (l1/l2)
-				}
-				tx = tx * (1.0 + rx*0.5)
-				ty = ty * (1.0 + ry*0.5)
-				mx = (qx-q.x)*tx + q.x
-				my = (qy-q.y)*ty + q.y
-				wc = 1.0 + (rx*ry)*(rx*ry)
+			// The corner: the fragment is mirrored across the picture's own arc rim in
+			// the round it sits in, at the same overshoot a flat side uses, so the
+			// glass reads one continuous sheet around the frame.
+			dx := qx - ccx
+			dy := qy - ccy
+			rr := sqrt(dx*dx+dy*dy)
+			if rr < 0.0001 {
+				rr = 0.0001
 			}
-			if mx > rimx {
-				mx = (mx-rimx)*(-1.5) + rimx
-				}
-			if my > rimy {
-				my = (my-rimy)*(-1.5) + rimy
-			}
+			mr2 := mmm + (mmm-rr)*1.5
+			mx = ccx + dx*(mr2/rr)
+			my = ccy + dy*(mr2/rr)
 		} else {
 			// The flat sides: mirrored through the rim with the same 1.5 overshoot.
 			if qx > rimx {
@@ -647,7 +634,7 @@ func LayerEffect(pos vec2) vec4 {
 		if dk > 1.0 {
 			dk = 1.0
 		}
-		mr := 0.8 + dk*isz.y*0.30
+		mr := 0.9 + dk*isz.y*0.055
 		rcol := mirrorBlur(vec2(ux, uy)*isz, isz, mr)
 		// PP-reflex fades nothing: the glass keeps its mirror all the way out, and
 		// only the kernel grows with the distance.
@@ -655,7 +642,7 @@ func LayerEffect(pos vec2) vec4 {
 		if ii < 0.0 {
 			ii = 0.0
 		}
-		return vec4(rcol*pow(ii, 1.0/GAMMA), 1.0)
+		return vec4(pow(clamp(rcol*ii, vec3(0.0), vec3(1.0)), vec3(1.0/GAMMA)), 1.0)
 	}
 
 	suv := vec2(c.x/(2.0*hx), c.y/(2.0*hy)) + vec2(0.5, 0.5)
@@ -694,36 +681,40 @@ func LayerEffect(pos vec2) vec4 {
 
 	// The glow: diffusion's blurred picture, squared back into linear light, added
 	// as PP-reflex adds it and normalised by the same amount.
-	k := 1.6 + isz.y/240.0
-	bl := glow(np, k)
+	bl := glow(np, isz)
 	rr := DIFFUSION * DIFFUSION * LINE_THICKNESS
 	pp := pl*pl + bl*rr
 	pp = pp / (1.0 + rr*(1.0-DIFF_OVEREXP))
 
-	// PP-reflex's aperture mask between the phosphor columns.
-	period := floor(sc*0.6*SS + 0.5)
-	if period < 2.0 {
-		period = 2.0
+	// The aperture mask, locked to the picture's own pixels: one triad of three
+	// colour cells per game pixel, which can never beat against the rows and never
+	// turns the picture into blocks, however large the image is drawn.
+	mcell := sc * 0.3333
+	mpx := floor(dp.x) + 0.5
+	mpy := floor(dp.y) + 0.5
+	if MASK_TYPE > 0.5 {
+		// A slot mask steps every other row of triads by half a cell.
+		mpx = mpx + mod(floor(mpy/sc), 2.0)*mcell*1.5
 	}
-	if period > sc {
-		// A mask cell wider than the game row turns the picture into flat bands of
-		// one channel, so it is held to the row's own width.
-		period = sc
+	mfx := mpx / (mcell*3.0)
+	mt := floor((mfx-floor(mfx))*3.0)
+	mstr := MASK_INTENSITY*(0.35+SS*0.65)
+	if mstr > 0.92 {
+		mstr = 0.92
 	}
-	tx := floor(dp.x) + 0.5
-	ty := floor(dp.y) + 0.5
-	uu := floor(period*0.5 + 0.1)
-	tx = tx + floor(ty/uu)*uu*MASK_TYPE
-	ww := floor(period*0.5 + 0.5)
-	vx := abs((mod(tx, period)-period*0.5)*2.0 - 0.5)
-	vy := abs((mod(tx+ww, period)-period*0.5)*2.0 - 0.5)
-	vv := vec3(vx, vy, vx)
-	yy := (pp*MASK_INTENSITY + vec3(1.0-MASK_INTENSITY)) * period
-	zz := clamp(yy-vv+vec3(0.5), vec3(0.0), vec3(1.0))
-	zz = zz * pp / (pp*MASK_INTENSITY + vec3(1.0-MASK_INTENSITY))
+	moff := 1.0 - mstr*0.55
+	mcw := vec3(moff, moff, moff)
+	if mt < 1.0 {
+		mcw = vec3(1.0, moff, moff)
+	} else if mt < 2.0 {
+		mcw = vec3(moff, 1.0, moff)
+	} else {
+		mcw = vec3(moff, moff, 1.0)
+	}
+	mfin := pp * mcw
 
 	// The chain ends in display space, as PP-reflex's does.
-	return vec4(pow(clamp(zz, vec3(0.0), vec3(1.0)), vec3(1.0/GAMMA)), 1.0)
+	return vec4(pow(clamp(mfin, vec3(0.0), vec3(1.0)), vec3(1.0/GAMMA)), 1.0)
 }
 `
 

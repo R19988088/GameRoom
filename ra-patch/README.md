@@ -31,3 +31,7 @@ git apply /path/to/retroarch-gameroom-window.patch
 ```
 
 然后按 `build.md` 在 MSYS2 里编译。
+
+## 源码归档
+
+source/retroarch-1.17.0-gameroom-src.7z 是打过补丁后的完整源码树（不含 .git 与编译中间产物，45 MB），7-Zip 解出即可编译。

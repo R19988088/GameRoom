@@ -2,7 +2,7 @@ package app
 
 import (
 	"bufio"
-	"image"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,36 +10,46 @@ import (
 
 	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/shader"
 )
 
-// The look of the picture is 脑浆油条's PhosphorLine preset, the CRT chain the
-// library has always run with (shaders/202603.slangp): its numbers are read
-// from that preset, not made up here. The preset is a GPU shader chain, so what
-// this app draws is the same idea worked on the pixels it already owns — the
-// mask between lines, the softness, the curve, the glass — with the preset's
-// own strengths.
+// The picture is 脑浆油条's PhosphorLine chain (shaders/202603.slangp): the
+// front end runs its passes as one GPU shader over the framebuffer the core
+// drew, with the preset's own parameters as uniforms, so every number the
+// preset exposes can be moved from the filter panel while the game runs:
+// CA-sharpen's sharpening, chroma and levels, PhosphorLine's beam blending,
+// scanline profile, curve and integer scale, and PP-reflex's aperture mask,
+// diffusion, rounded glass and border reflection.
 
-type crtParams struct {
-	mask       float32 // MASK_INTENSITY: how dark the mask is between lines
-	soften     float32 // SOFTEN: how much a pixel takes its neighbour
-	curve      float32 // CURVE_X/Y: how much the tube bends at the sides
-	corner     float32 // CORNER: how dark the corners are
-	reflection float32 // REFLECTION: the light the glass throws back
-	linear     float32 // LINEAR: how much scanlines merge
-	sat        float32 // SAT: how much colour is kept
+// crtParams are every number the preset sets, by the name it sets it under.
+type crtParams map[string]float32
+
+func (p crtParams) get(name string, def float32) float32 {
+	if v, ok := p[name]; ok {
+		return v
+	}
+	return def
 }
 
 // defaultCRT is the preset as it ships, used when the file cannot be read.
-var defaultCRT = crtParams{
-	mask: 0.9, soften: 0.15, curve: 0.07, corner: 0.2,
-	reflection: 0.25, linear: 0.2, sat: 0.99,
+func defaultCRT() crtParams {
+	return crtParams{
+		"SAT": 0.99, "SOFTEN": 0.15, "SHARPEN": 0.05, "NTSCintensity": 0.65,
+		"CORNER": 0.2, "CPOY": -0.5, "PPOY": 0, "BLK": 0, "EXPOSURE": 1, "CT": 0,
+		"LINEAR": 0.2, "CURVE_X": 0.07, "CURVE_Y": 0.07,
+		"MASK_INTENSITY": 0.9, "MASK_TYPE": 0, "ss": 0.5,
+		"DIFFUSION": 0.05, "DIFF_OVEREXP": 0, "REFLECTION": 0.25,
+		"E_OFFSET": 1.8, "FILLET_D": -0.5, "B_CORNER": 0.8, "BORDER_SIZE": 0,
+		"LINE_PITCH_COEF": 1, "LINE_THICKNESS": 0.95, "LINE_OPACITY": 0.95,
+		"PIC_SIZE": 1, "INT_TOL": 0.05, "INT_SCALE": 0, "GAMMA": 2.2,
+	}
 }
 
 // loadCRT reads the preset named in the settings, which sits beside the
 // emulator's other shaders. A missing or broken preset leaves the shipped
 // numbers in place.
 func loadCRT(root, name string) crtParams {
-	p := defaultCRT
+	p := defaultCRT()
 	if name == "" {
 		return p
 	}
@@ -49,7 +59,6 @@ func loadCRT(root, name string) crtParams {
 	}
 	defer f.Close()
 
-	values := map[string]float32{}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -63,161 +72,425 @@ func loadCRT(root, name string) crtParams {
 		k = strings.TrimSpace(k)
 		v = strings.Trim(strings.TrimSpace(v), `"`)
 		if n, err := strconv.ParseFloat(v, 32); err == nil {
-			values[k] = float32(n)
+			p[k] = float32(n)
 		}
-	}
-	set := func(dst *float32, key string) {
-		if n, ok := values[key]; ok {
-			*dst = n
-		}
-	}
-	set(&p.mask, "MASK_INTENSITY")
-	set(&p.soften, "SOFTEN")
-	set(&p.curve, "CURVE_X")
-	set(&p.corner, "CORNER")
-	set(&p.reflection, "REFLECTION")
-	set(&p.linear, "LINEAR")
-	set(&p.sat, "SAT")
-	if _, ok := values["CURVE_Y"]; ok {
-		p.curve = (p.curve + values["CURVE_Y"]) / 2
 	}
 	return p
 }
 
-// aLook is the preset bent to the strength chosen in the player: the numbers
-// are the preset's, and each choice scales the parts of it that make the tube
-// read stronger or softer. Off draws none of it.
-type aLook struct {
-	scan     float32 // how much darker every other line is
-	soft     float32 // how much a pixel takes on its neighbour
-	vignette float32 // how much darker the sides and corners are
-	glare    float32 // how much light the glass throws back on the top edge
-}
-
-func (p crtParams) forLevel(level string) aLook {
+// bent is the preset with the strength the player picked: only the numbers
+// that make the tube read harder or softer are scaled, in the directions the
+// preset itself offers.
+func (p crtParams) bent(level string) crtParams {
+	q := crtParams{}
+	for k, v := range p {
+		q[k] = v
+	}
 	switch level {
-	case "off":
-		return aLook{}
 	case "soft":
-		return aLook{
-			scan:     p.mask * 0.28, // half the mask, the lines read as haze
-			soft:     p.soften * 2.4,
-			vignette: p.corner * p.curve * 4,
-			glare:    p.reflection * 0.6,
-		}
+		q["MASK_INTENSITY"] = p.get("MASK_INTENSITY", 0.9) * 0.55
+		q["LINE_OPACITY"] = p.get("LINE_OPACITY", 0.95) * 0.6
+		q["CURVE_X"] = p.get("CURVE_X", 0.07) * 0.5
+		q["CURVE_Y"] = p.get("CURVE_Y", 0.07) * 0.5
+		q["LINE_THICKNESS"] = p.get("LINE_THICKNESS", 0.95) * 0.85
 	case "strong":
-		return aLook{
-			scan:     p.mask * 0.55,
-			soft:     p.soften * 0.8,
-			vignette: p.corner * p.curve * 9,
-			glare:    p.reflection * 1.2,
-		}
-	default: // 标准, the preset's own strengths
-		return aLook{
-			scan:     p.mask * 0.32,
-			soft:     p.soften,
-			vignette: p.corner * p.curve * 6,
-			glare:    p.reflection,
-		}
+		q["MASK_INTENSITY"] = min32(p.get("MASK_INTENSITY", 0.9)*1.05, 0.95)
+		q["LINE_OPACITY"] = 0.95
+		q["CURVE_X"] = p.get("CURVE_X", 0.07) * 1.6
+		q["CURVE_Y"] = p.get("CURVE_Y", 0.07) * 1.6
+		q["LINE_THICKNESS"] = min32(p.get("LINE_THICKNESS", 0.95)*1.1, 2)
 	}
+	return q
 }
 
-// apply paints the look onto the picture, in place.
-func (l aLook) apply(img *image.RGBA) {
-	b := img.Bounds()
-	w, h := b.Dx(), b.Dy()
-	if w == 0 || h == 0 {
-		return
+func min32(a, b float32) float32 {
+	if a < b {
+		return a
 	}
-	pix, stride := img.Pix, img.Stride
-
-	if l.soft > 0 {
-		// One pass along the rows, each pixel leaning towards the one before it:
-		// the softness a tube's spot has, which takes the hard edge off the
-		// pixels a game was drawn with.
-		for y := 0; y < h; y++ {
-			row := pix[y*stride : y*stride+w*4]
-			for x := 4; x < w*4; x += 4 {
-				for c := 0; c < 3; c++ {
-					v := float32(row[x+c])
-					p := float32(row[x-4+c])
-					row[x+c] = byte(v*(1-l.soft) + p*l.soft + 0.5)
-				}
-			}
-		}
-	}
-
-	if l.scan > 0 {
-		// Every other row is darker, which is what the shadow mask leaves
-		// behind between the lines the game drew.
-		k := 1 - l.scan
-		if k < 0.35 {
-			k = 0.35
-		}
-		for y := 1; y < h; y += 2 {
-			row := pix[y*stride : y*stride+w*4]
-			for x := 0; x < w*4; x += 4 {
-				row[x+0] = byte(float32(row[x+0]) * k)
-				row[x+1] = byte(float32(row[x+1]) * k)
-				row[x+2] = byte(float32(row[x+2]) * k)
-			}
-		}
-	}
-
-	if l.vignette > 0 {
-		// The corners of the tube lose their light: the falloff the preset
-		// curves its glass with, from the middle outwards.
-		if l.vignette > 0.45 {
-			l.vignette = 0.45
-		}
-		cx, cy := float32(w)/2, float32(h)/2
-		for y := 0; y < h; y++ {
-			row := pix[y*stride : y*stride+w*4]
-			dy := (float32(y) - cy) / cy
-			for x := 0; x < w; x++ {
-				dx := (float32(x) - cx) / cx
-				d := dx*dx + dy*dy
-				if d <= 0.55 {
-					continue
-				}
-				f := (d - 0.55) / 1.45
-				if f > 1 {
-					f = 1
-				}
-				k := 1 - l.vignette*f*f
-				row[x*4+0] = byte(float32(row[x*4+0]) * k)
-				row[x*4+1] = byte(float32(row[x*4+1]) * k)
-				row[x*4+2] = byte(float32(row[x*4+2]) * k)
-			}
-		}
-	}
-
-	if l.glare > 0 {
-		// The glass over the tube throws a little of its light back along the
-		// top rows, which is what makes the picture read as a screen, not a
-		// texture.
-		k := 1 + l.glare
-		rows := h / 12
-		for y := 0; y < rows; y++ {
-			f := 1 - float32(y)/float32(rows)
-			row := pix[y*stride : y*stride+w*4]
-			for x := 0; x < w*4; x += 4 {
-				for c := 0; c < 3; c++ {
-					v := float32(row[x+c]) * (1 + (k-1)*f*f)
-					if v > 255 {
-						v = 255
-					}
-					row[x+c] = byte(v)
-				}
-			}
-		}
-	}
+	return b
 }
+
+// knobs are every parameter the preset exposes, in the order the panel lists
+// them: its name in the preset, what the preset calls it, the range its slider
+// moves in.
+type knob struct {
+	key   string // the name in the preset
+	label string // what its author calls it
+	lo    float64
+	hi    float64
+}
+
+var knobs = []knob{
+	{"GAMMA", "模拟伽马", 1, 4},
+	{"CURVE_X", "CRT曲率 X", 0, 1},
+	{"CURVE_Y", "CRT曲率 Y", 0, 1},
+	{"MASK_INTENSITY", "阴影蒙版强度", 0, 0.95},
+	{"MASK_TYPE", "蒙版类型", 0, 1},
+	{"ss", "蒙版尺寸", 0, 10},
+	{"LINE_THICKNESS", "扫描线粗细", 0.1, 2},
+	{"LINE_OPACITY", "扫描线不透明度", 0, 0.95},
+	{"LINE_PITCH_COEF", "扫描线间距", 0.1, 10},
+	{"LINEAR", "水平延伸", 0, 1},
+	{"SOFTEN", "柔化", 0, 1},
+	{"SHARPEN", "S-Video 锐化", 0, 2},
+	{"NTSCintensity", "NTSC 色彩强度", 0, 2},
+	{"SAT", "饱和度", 0, 1.5},
+	{"BLK", "黑电平 (%)", -17.5, 7.5},
+	{"EXPOSURE", "曝光", 0.1, 2},
+	{"CT", "色温", -2.8, 2.8},
+	{"CORNER", "圆角", 0, 1},
+	{"CPOY", "圆角位置 Y", -50, 0},
+	{"PPOY", "图像位置 Y", -50, 50},
+	{"PIC_SIZE", "图像尺寸 (%)", 0.5, 1},
+	{"BORDER_SIZE", "边框尺寸", 0, 0.5},
+	{"INT_TOL", "允许过扫描", 0, 0.1},
+	{"INT_SCALE", "强制整数缩放", 0, 1},
+	{"DIFFUSION", "光晕扩散", 0, 1},
+	{"DIFF_OVEREXP", "允许扩散过曝", 0, 1},
+	{"REFLECTION", "边框反射强度", 0, 1},
+	{"E_OFFSET", "边框反射偏移", 0, 2},
+	{"B_CORNER", "边框圆角大小", 0, 1},
+	{"FILLET_D", "边框圆角曲率", -0.5, 0.5},
+}
+
+// value is the number the shader runs with: what the player set for it, or
+// the preset's own (bent by the strength picked).
+func (a *App) value(key string) float32 {
+	if v, ok := a.cfg.CRTTune[key]; ok {
+		return v
+	}
+	return a.crt.bent(a.cfg.FilterLevel).get(key, 0)
+}
+
+// crtEffect builds the shader's uniforms for this frame and hands the effect
+// to the picture. The shader itself is compiled once and kept: the parameters
+// are uniforms, so dragging one costs a value and no recompile.
+func (a *App) crtEffect() (shader.Effect, bool) {
+	if a.cfg.FilterLevel == "off" {
+		return shader.Effect{}, false
+	}
+	if a.fxShader == nil {
+		sh, err := shader.Compile(crtShaderSrc)
+		if err != nil {
+			a.status = "滤镜无法编译：" + err.Error()
+			return shader.Effect{}, false
+		}
+		a.fxShader = sh
+	}
+	u := map[string]any{}
+	for _, k := range knobs {
+		u[uniformName(k.key)] = float64(a.value(k.key))
+	}
+	return a.fxShader.Effect(shader.Options{
+		Uniforms: u,
+		Images:   [4]*ui.Bitmap{a.gameBmp},
+		// The chain reads a hair beyond the box, as the bezel's reflection does.
+		MaxSampleOffset: ui.Point{X: 1, Y: 1},
+	}), true
+}
+
+// uniformName is the preset's key as the name of a uniform: Kage's uniforms are
+// exported Go variables, so a name that is not one is folded.
+func uniformName(key string) string {
+	switch key {
+	case "ss":
+		return "SS"
+	}
+	return key
+}
+
+// crtShaderSrc is the PhosphorLine chain as one effect: image0 is the frame
+// the core drew, at its own pixels, and the tube's picture is drawn over the
+// element's box at the window's pixels.
+const crtShaderSrc = `package main
+
+var GAMMA float
+var CURVE_X float
+var CURVE_Y float
+var MASK_INTENSITY float
+var MASK_TYPE float
+var SS float
+var LINE_THICKNESS float
+var LINE_OPACITY float
+var LINE_PITCH_COEF float
+var LINEAR float
+var SOFTEN float
+var SHARPEN float
+var NTSCintensity float
+var SAT float
+var BLK float
+var EXPOSURE float
+var CORNER float
+var CPOY float
+var PPOY float
+var PIC_SIZE float
+var BORDER_SIZE float
+var INT_TOL float
+var INT_SCALE float
+var DIFFUSION float
+var DIFF_OVEREXP float
+var REFLECTION float
+var E_OFFSET float
+var B_CORNER float
+var FILLET_D float
+var CT float
+
+// warp is the tube's glass: the curve the preset's CURVE_X and CURVE_Y make,
+// taken on coordinates centred on the middle of the picture, so the picture
+// bends around its own centre and stays centred.
+func warp(c vec2) vec2 {
+	if CURVE_X < 0.005 && CURVE_Y < 0.005 {
+		return c
+	}
+	kx := CURVE_X * 2.0
+	ky := CURVE_Y
+	if kx < 0.01 {
+		kx = 0.01
+	}
+	if kx > 1.0 {
+		kx = 1.0
+	}
+	if ky < 0.01 {
+		ky = 0.01
+	}
+	if ky > 1.0 {
+		ky = 1.0
+	}
+	tx := (c.x - 0.00001) * 2.0
+	ty := (c.y - 0.00001) * 2.0
+	sx := sin(kx)
+	sy := sin(ky)
+	lx := sx * tx * tx / sin(tx*kx)
+	ly := sy * ty * ty / sin(ty*ky)
+	cx2 := (1.0 / kx) * (1.0 - cos(lx*kx))
+	cy2 := (1.0 / ky) * (1.0 - cos(ly*ky))
+	fx := 1.0 - cy2*0.3
+	fy := 1.0 - cx2*0.3
+	lx = lx / fx
+	ly = ly / fy
+	return vec2(lx*0.5+0.00001, ly*0.5+0.00001)
+}
+
+// beam is PhosphorLine's d(): the colour between the core's texels, mixed as
+// the pass mixes a pair of lines and a pair of columns, so a scanline crosses
+// a texel's light rather than a hard grid of pixels.
+func beam(np vec2, ex float) vec3 {
+	fp := np - vec2(0.5, 0.5)
+	gx := fp.x - floor(fp.x)
+	gy := fp.y - floor(fp.y)
+	gx = clamp((gx-0.5)/ex+0.5, 0.0, 1.0)
+	if SOFTEN > 0.001 {
+		gy = clamp((gy-0.5)/SOFTEN+0.5, 0.0, 1.0)
+	} else if gy >= 0.5 {
+		gy = 1.0
+	} else {
+		gy = 0.0
+	}
+	p00 := floor(fp) + vec2(0.5, 0.5)
+	c00 := image0At(p00).xyz
+	c10 := image0At(p00 + vec2(1.0, 0.0)).xyz
+	c01 := image0At(p00 + vec2(0.0, 1.0)).xyz
+	c11 := image0At(p00 + vec2(1.0, 1.0)).xyz
+	c00 = c00 * c00
+	c10 = c10 * c10
+	c01 = c01 * c01
+	c11 = c11 * c11
+	cx0 := mix(c00, c10, vec3(gx))
+	cx1 := mix(c01, c11, vec3(gx))
+	return sqrt(mix(cx0, cx1, vec3(gy)))
+}
+
+// prof is PhosphorLine's o(): the tube's own light, a bezier of the colour the
+// scanline carries, which rounds a pixel's brightness into the beam.
+func prof(t vec3, d float) vec3 {
+	c := clamp(t, vec3(0.0), vec3(1.0))
+	u := vec3(1.0) - c
+	tt := c * c
+	uu := u * u
+	ttt := tt * c
+	y := uu*vec3(3.0*(0.25+d))*c + u*tt*vec3(2.25) + ttt
+	return clamp(y, vec3(0.0), vec3(1.0))
+}
+
+// deltaOf is the preset's profile weight for a scanline pitch, its table read
+// by index.
+func deltaOf(i int) float {
+	if i <= 0 {
+		return 0.21
+	}
+	if i == 1 {
+		return 0.15
+	}
+	if i == 2 {
+		return 0.13
+	}
+	if i == 3 {
+		return 0.12
+	}
+	return 0.1
+}
+
+// roundSDF is how far p is outside a rounded rectangle of half size h and
+// corner radius r, negative inside: the glass's corners, from the preset's
+// CORNER.
+func roundSDF(p vec2, h vec2, r float) float {
+	q := abs(p) - h + vec2(r, r)
+	return length(max(q, vec2(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r
+}
+
+func LayerEffect(pos vec2) vec4 {
+	size := rectSize()
+	ps := pixelScale()
+	uv := pos / size
+	c := uv - vec2(0.5, 0.5)
+	c = warp(c)
+
+	isz := image0Size()
+	// The picture's own area inside the element: the preset's PIC_SIZE and
+	// BORDER_SIZE leave the glass around it.
+	half := 0.5 * PIC_SIZE * (1.0 - BORDER_SIZE)
+	if half < 0.05 {
+		half = 0.05
+	}
+	bezel := 0.0
+	mx := c.x
+	my := c.y
+	off := 1.0 + E_OFFSET*0.01
+	if abs(mx) > half {
+		mx = (half - (abs(mx)-half)*off) * mx / abs(mx)
+		bezel = 1.0
+	}
+	if abs(my) > half {
+		my = (half - (abs(my)-half)*off) * my / abs(my)
+		bezel = 1.0
+	}
+	suv := vec2(mx, my) / (2.0 * half)
+	suv = suv + vec2(0.5, 0.5)
+	np := suv * isz
+	np.y = np.y + PPOY*0.01*isz.y
+	np = clamp(np, vec2(0.0, 0.0), isz-vec2(1.0, 1.0))
+
+	col := beam(np, LINEAR)
+
+	// CA-sharpen: the S-video edge, on the red channel as that pass does it,
+	// then its NTSC chroma and its levels.
+	if SHARPEN > 0.001 {
+		l := image0At(np - vec2(1.0, 0.0)).xyz
+		r := image0At(np + vec2(1.0, 0.0)).xyz
+		col.x = col.x*(SHARPEN*2.0+1.0) - (l.x+r.x)*SHARPEN
+	}
+	if NTSCintensity > 0.01 {
+		nm := image0At(np+vec2(1.0, 0.0)).xyz
+		nm = nm + image0At(np-vec2(1.0, 0.0)).xyz
+		nm = nm + image0At(np+vec2(0.0, 1.0)).xyz
+		nm = nm + image0At(np-vec2(0.0, 1.0)).xyz
+		nm = nm * 0.25
+		col = mix(col, nm, vec3(NTSCintensity*0.25))
+	}
+	if abs(BLK) > 0.01 {
+		col = (col - vec3(BLK*0.01)) * (100.0 / (100.0 - BLK))
+	}
+	if abs(EXPOSURE-1.0) > 0.001 {
+		col = col * EXPOSURE
+	}
+	if abs(CT) > 0.01 {
+		col = col * vec3(1.0+CT*0.05, 1.0, 1.0-CT*0.05)
+	}
+	if SAT > 0.001 {
+		y := dot(col, vec3(0.299, 0.587, 0.114))
+		col = vec3(y, y, y) + (col-vec3(y, y, y))*SAT
+	}
+	col = clamp(col, vec3(0.0), vec3(1.0))
+
+	// The glow the phosphor leaves around a bright spot: the picture blurred
+	// over a few of its texels, as the preset's diffusion.
+	bl := image0At(np + vec2(2.0, 0.0)).xyz
+	bl = bl + image0At(np - vec2(2.0, 0.0)).xyz
+	bl = bl + image0At(np + vec2(0.0, 2.0)).xyz
+	bl = bl + image0At(np - vec2(0.0, 2.0)).xyz
+	bl = bl + image0At(np + vec2(2.0, 2.0)).xyz
+	bl = bl + image0At(np - vec2(2.0, 2.0)).xyz
+	bl = bl + image0At(np + vec2(2.0, -2.0)).xyz
+	bl = bl + image0At(np - vec2(2.0, -2.0)).xyz
+	bl = bl * 0.125
+
+	// The scanlines: the core's own lines taken to the output's rows by an
+	// integer scale, so the mask lands on the rows the game drew.
+	dp := pos * ps
+	rows := size.y * ps * PIC_SIZE * (1.0 - BORDER_SIZE)
+	sc := floor(rows/isz.y*(1.0+INT_TOL))
+	if sc < 1.0 {
+		sc = 1.0
+	}
+	if INT_SCALE > 0.75 {
+		sc = floor(sc + 0.5)
+	}
+	pitch := floor(sc*LINE_PITCH_COEF + 0.5)
+	if pitch < 3.0 {
+		pitch = 3.0
+	}
+	g := pow(col, vec3(GAMMA*0.5))
+	z := prof(g, deltaOf(int(min(pitch, 7.0))-3))
+	z = pow(z, vec3(GAMMA))
+	aa := (z*0.7 + vec3(0.3)) * pitch
+	aa = aa * LINE_THICKNESS
+	bb := mod(dp.y, pitch) - pitch*0.5
+	cr := abs(bb*2.0 - 0.5)
+	cg := abs(-bb*2.0 - 0.5)
+	cc := vec3(cr, cg, cr)
+	dd := clamp(aa-cc+vec3(0.5), vec3(0.0), vec3(1.0))
+	dd = dd * z / (z*0.7 + vec3(0.3))
+	dd = sqrt(dd)
+	col = mix(g, dd, vec3(LINE_OPACITY))
+
+	// The aperture mask between the phosphor columns: the preset's mask
+	// strength over a period of the output's own pixels.
+	period := floor(sc*0.6*SS + 0.5)
+	if period < 2.0 {
+		period = 2.0
+	}
+	tx := floor(dp.x) + 0.5
+	ty := floor(dp.y) + 0.5
+	uu := floor(period*0.5 + 0.1)
+	tx = tx + floor(ty/uu)*uu*MASK_TYPE
+	ww := floor(period*0.5 + 0.5)
+	vx := abs((mod(tx, period)-period*0.5)*2.0 - 0.5)
+	vy := abs((mod(tx+ww, period)-period*0.5)*2.0 - 0.5)
+	vv := vec3(vx, vy, vx)
+	yy := (col*MASK_INTENSITY + vec3(1.0-MASK_INTENSITY)) * period
+	zz := clamp(yy-vv+vec3(0.5), vec3(0.0), vec3(1.0))
+	zz = zz * col / (col*MASK_INTENSITY + vec3(1.0-MASK_INTENSITY))
+
+	// The glow over the lines.
+	zz = zz + bl*bl*vec3(DIFFUSION*DIFFUSION*8.0)
+	zz = zz / (1.0 + DIFFUSION*DIFFUSION*8.0*(1.0-DIFF_OVEREXP))
+
+	// The glass's rounded corners, and the light the bezel throws back: the
+	// edge of the picture mirrored into the border, dimmed as the preset dims
+	// it. With BORDER_SIZE at 0 the whole box is picture.
+	rad := CORNER * 0.08 * (0.3 + 0.7*B_CORNER)
+	rad = rad * (1.0 + FILLET_D*0.2)
+	if rad < 0.0 {
+		rad = 0.0
+	}
+	edge := roundSDF(vec2(c.x, c.y*(1.0+CPOY*0.01)), vec2(half*0.95, half*0.95), rad)
+	if edge > 0.0 {
+		return vec4(0.0, 0.0, 0.0, 1.0)
+	}
+	if bezel > 0.5 && REFLECTION > 0.01 {
+		f := clamp(REFLECTION*REFLECTION*REFLECTION*0.5, 0.0, 1.0)
+		zz = zz * f
+	}
+
+	// The chain a display: gamma out, in display space.
+	return vec4(pow(clamp(zz, vec3(0.0), vec3(1.0)), vec3(1.0/GAMMA)), 1.0)
+}
+`
 
 // --- the picker, in the player ---
 
 // filterButton is the pill at the right: what look the game is running with,
-// and the way into the picker.
+// and the way into the panel of its parameters.
 func (a *App) filterButton(c *ui.Context, t *ui.Theme) {
 	b := ui.ButtonBase(c).Width(filterButtonWidth).Height(backButtonSize).PaddingX(14).
 		Radius(backButtonSize/2).AlignItems(ui.Center).Gap(8).
@@ -237,16 +510,12 @@ func (a *App) filterButton(c *ui.Context, t *ui.Theme) {
 	}
 }
 
-// toggleFilters opens or closes the picker, taking the game aside for it: the
-// picker is drawn by the page, which the game's window covers.
+// toggleFilters opens or closes the panel; closing keeps what was tuned.
 func (a *App) toggleFilters() {
 	a.filtersOpen = !a.filtersOpen
-	if a.player != nil {
-		if a.filtersOpen {
-			a.player.Hide()
-		} else {
-			a.player.Show()
-		}
+	a.dragKey = ""
+	if !a.filtersOpen {
+		a.saveTune()
 	}
 }
 
@@ -263,54 +532,175 @@ func filterName(level string) string {
 	return "标准"
 }
 
-// filterOptions are the looks the picker offers, in the order it shows them.
+// filterOptions are the presets the panel offers at its top.
 var filterOptions = []struct {
 	Level string
 	Name  string
-	Note  string
 }{
-	{"", "标准", "脑浆油条原参数"},
-	{"soft", "柔和", "扫描线更淡、弧面更浅"},
-	{"strong", "强烈", "扫描线更重、弧面更弯"},
-	{"off", "关闭", "不做任何处理"},
+	{"", "标准"},
+	{"soft", "柔和"},
+	{"strong", "强烈"},
+	{"off", "关闭"},
 }
 
-// filterPanel is the picker itself: a plate of glass over the play area with
-// one row per look. Choosing one closes the picker and restarts the game with
-// the new preset, because RetroArch reads its shader only when it loads.
+// filterPanel is the panel itself: the preset's own parameters, each on a
+// glass stepper, over the game it belongs to. Two columns keep the whole list
+// on one page, so nothing scrolls while a control is dragged.
 func (a *App) filterPanel(c *ui.Context, t *ui.Theme) {
 	ui.Box(c).Absolute().Left(0).Right(0).Top(0).Bottom(0).
-		Background(ui.Hex("#05060ac9")).Center().Children(func() {
-		ui.Column(c).Width(420).Padding(10).Radius(18).Gap(4).
-			Background(ui.Hex("#17181ffa")).
+		Background(ui.Hex("#05060a59")).Children(func() {
+		col := ui.Column(c).Absolute().Right(edgeInset).Top(edgeInset).Width(468).
+			Padding(12).Radius(18).Gap(8).
+			Material(glass.Glass{Clarity: 0.62, Tint: ui.Hex("#14161ee6")}).
 			Border(1, ui.Hex("#ffffff1f")).
-			Shadow(0, 26, 60, 0, ui.Hex("#000000cc")).
-			Children(func() {
-				ui.Text(c, "试试别的滤镜").FontSize(11).FontWeight(700).
-					TextColor(t.TextMuted).PaddingX(8).PaddingY(4)
-				for _, opt := range filterOptions {
-					opt := opt
-					row := ui.ButtonBase(c).Height(48).PaddingX(10).Radius(12).
-						AlignItems(ui.Center).Gap(12)
-					if opt.Level == a.cfg.FilterLevel ||
-						(opt.Level == "" && (a.cfg.FilterLevel == "" || a.cfg.FilterLevel == "normal")) {
-						row.Background(ui.Hex("#e8763a1f"))
-					} else if row.Hovered() {
-						row.Background(ui.Hex("#ffffff12"))
-					}
-					row.Children(func() {
-						ui.Column(c).Gap(3).Grow(1).Children(func() {
-							ui.Text(c, opt.Name).FontSize(13).FontWeight(600).
-								TextColor(t.Text.Alpha(0.92)).SingleLine()
-							ui.Text(c, opt.Note).FontSize(10.5).
-								TextColor(t.TextMuted.Alpha(0.75)).SingleLine()
-						})
-						ui.Text(c, "↵").FontSize(11).TextColor(t.TextMuted.Alpha(0.4))
-					})
-					if row.Clicked() {
-						a.setFilter(opt.Level)
-					}
+			Shadow(0, 26, 60, 0, ui.Hex("#000000cc"))
+		col.Children(func() {
+			ui.Row(c).Height(28).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "脑浆油条 参数").FontSize(12).FontWeight(700).
+					TextColor(t.Text.Alpha(0.92)).Grow(1)
+				close := ui.ButtonBase(c).Width(26).Height(26).Radius(13).Center().
+					Background(ui.Hex("#ffffff14"))
+				close.Children(func() {
+					ui.Text(c, "✕").FontSize(12).TextColor(t.TextMuted)
+				})
+				if close.Clicked() {
+					a.win.Update(a.toggleFilters)
 				}
 			})
+			ui.Row(c).Height(28).Gap(6).AlignItems(ui.Center).Children(func() {
+				for _, opt := range filterOptions {
+					opt := opt
+					pill := ui.ButtonBase(c).Height(24).PaddingX(11).Radius(12).Center()
+					if opt.Level == a.cfg.FilterLevel ||
+						(opt.Level == "" && (a.cfg.FilterLevel == "" || a.cfg.FilterLevel == "normal")) {
+						pill.Material(glass.Glass{Clarity: 0.7, Tint: ui.Hex("#e8763a33")}).
+							Border(1, ui.Hex("#e8763a66"))
+					} else {
+						pill.Material(glass.Glass{Clarity: 0.7, Tint: ui.Hex("#ffffff14")}).
+							Border(1, ui.Hex("#ffffff1f"))
+					}
+					pill.Children(func() {
+						ui.Text(c, opt.Name).FontSize(11).TextColor(t.Text.Alpha(0.85))
+					})
+					if pill.Clicked() {
+						a.pickPreset(opt.Level)
+					}
+				}
+				ui.Box(c).Grow(1)
+				reset := ui.ButtonBase(c).Height(24).PaddingX(11).Radius(12).Center().
+					Material(glass.Glass{Clarity: 0.7, Tint: ui.Hex("#ffffff14")}).
+					Border(1, ui.Hex("#ffffff1f"))
+				reset.Children(func() {
+					ui.Text(c, "恢复原参数").FontSize(11).TextColor(t.Text.Alpha(0.85))
+				})
+				if reset.Clicked() {
+					a.cfg.CRTTune = map[string]float32{}
+					a.saveTune()
+				}
+			})
+			// Two columns: the list fits the panel, and no control is inside a
+			// scroll view, so dragging one never moves the page.
+			half := (len(knobs) + 1) / 2
+			ui.Row(c).Gap(14).AlignItems(ui.Start).Children(func() {
+				for _, col := range [][]knob{knobs[:half], knobs[half:]} {
+					col := col
+					ui.Column(c).Grow(1).Gap(4).Children(func() {
+						for _, k := range col {
+							k := k
+							a.knobRow(c, t, k)
+						}
+					})
+				}
+			})
+		})
 	})
 }
+
+// knobRow is one parameter: its name, and its glass stepper.
+func (a *App) knobRow(c *ui.Context, t *ui.Theme, k knob) {
+	ui.Row(c).Height(26).AlignItems(ui.Center).Gap(8).Children(func() {
+		ui.Text(c, k.label).Grow(1).MinWidth(0).FontSize(10).
+			TextColor(t.TextMuted).SingleLine()
+		a.knobStepper(c, t, k)
+	})
+}
+
+// knobStepper is the glass control of a parameter: the arrows at its ends take
+// a tenth of a step, and dragging its middle moves it faster. The value it
+// shows is what the shader runs with, a tenth of a unit at a time.
+func (a *App) knobStepper(c *ui.Context, t *ui.Theme, k knob) {
+	v := a.value(k.key)
+	pill := ui.Row(c).Width(120).Height(22).Radius(11).AlignItems(ui.Center).
+		Material(glass.Glass{Clarity: 0.78, Tint: ui.Hex("#ffffff10")}).
+		Border(1, ui.Hex("#ffffff24"))
+	pill.Children(func() {
+		back := ui.Box(c).Width(22).Height(22).Center()
+		back.Children(func() {
+			ui.Text(c, "‹").FontSize(11).TextColor(t.Text.Alpha(0.65))
+		})
+		if back.Clicked() {
+			a.nudge(k, -0.1)
+		}
+		mid := ui.Box(c).Grow(1).Height(22).Center()
+		mid.Children(func() {
+			ui.Text(c, fmt1(v)).FontSize(10.5).TextColor(t.Text.Alpha(0.9))
+		})
+		dx, _, held := mid.Dragged()
+		if held {
+			a.dragKnob(k, float64(dx))
+		} else if a.dragKey == k.key {
+			a.dragKey = ""
+		}
+		fwd := ui.Box(c).Width(22).Height(22).Center()
+		fwd.Children(func() {
+			ui.Text(c, "›").FontSize(11).TextColor(t.Text.Alpha(0.65))
+		})
+		if fwd.Clicked() {
+			a.nudge(k, 0.1)
+		}
+	})
+}
+
+// nudge moves a parameter by a tenth, within its range.
+func (a *App) nudge(k knob, delta float64) {
+	a.setKnob(k, round1(float64(a.value(k.key))+delta))
+}
+
+// dragKnob moves a parameter with the drag of its middle: the first frame
+// starts from what it holds, then every pixel of the drag is a part of the
+// range, so the control follows the pointer rather than jumping to it.
+func (a *App) dragKnob(k knob, dx float64) {
+	if a.dragKey != k.key {
+		a.dragKey = k.key
+		a.dragVal = float64(a.value(k.key))
+	}
+	a.dragVal += dx * (k.hi - k.lo) / 220
+	a.dragVal = math.Max(k.lo, math.Min(k.hi, a.dragVal))
+	a.setKnob(k, round1(a.dragVal))
+}
+
+// setKnob records a parameter as the player moved it.
+func (a *App) setKnob(k knob, v float32) {
+	if a.cfg.CRTTune == nil {
+		a.cfg.CRTTune = map[string]float32{}
+	}
+	a.cfg.CRTTune[k.key] = round1(float64(v))
+}
+
+// round1 keeps a parameter at a tenth of a unit.
+func round1(v float64) float32 {
+	return float32(math.Round(v*10) / 10)
+}
+
+// pickPreset sets a look and drops what was tuned on top of the last one.
+func (a *App) pickPreset(level string) {
+	a.cfg.FilterLevel = level
+	a.cfg.CRTTune = map[string]float32{}
+	a.dragKey = ""
+	a.saveTune()
+}
+
+// saveTune keeps the parameters as the player left them.
+func (a *App) saveTune() { a.saveConfig() }
+
+func fmt1(v float32) string { return strconv.FormatFloat(float64(v), 'f', 1, 32) }

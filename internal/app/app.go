@@ -22,6 +22,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/audio"
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/shader"
 
 	"github.com/R19988088/GameRoom/internal/core"
 
@@ -41,6 +42,10 @@ type config struct {
 	// author tuned it, "soft" and "strong" are the lighter and heavier looks
 	// the player can try, and "off" runs the game unfiltered.
 	FilterLevel string `json:"filterLevel"`
+	// CRTTune are the preset's parameters as the player moved them, by the
+	// name the preset sets them under; missing ones stay as the preset has
+	// them.
+	CRTTune map[string]float32 `json:"crtTune,omitempty"`
 }
 
 // defaultShader is 脑浆油条's PhosphorLine: a CRT look that keeps arcade
@@ -136,6 +141,10 @@ type App struct {
 	gameImg      *image.RGBA
 	gameFrames   int
 	crt          crtParams
+	fxShader     *shader.Shader
+	dragKey      string
+	dragVal      float64
+	tunePtrs     map[string]*float64
 	gameSound    *audio.Player
 	frameW       int
 	frameH       int

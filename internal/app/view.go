@@ -64,9 +64,9 @@ func (a *App) playerView(c *ui.Context, t *ui.Theme) {
 	})
 }
 
-// pumpCore hands the newest picture the core drew to the bitmap the page shows,
-// with the look chosen in the player painted onto it first. The bitmap is made
-// once and updated in place, so a frame costs a copy rather than a texture.
+// pumpCore hands the newest picture the core drew to the bitmap the page shows.
+// The frame is kept at its own size, the size the core drew it in: the tube's
+// look is the GPU's job (crtEffect), which reads that bitmap as it is.
 func (a *App) pumpCore() {
 	if a.core == nil {
 		return
@@ -84,7 +84,6 @@ func (a *App) pumpCore() {
 		a.gameImg = image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
 	}
 	draw.Draw(a.gameImg, a.gameImg.Bounds(), f, b.Min, draw.Src)
-	a.crt.forLevel(a.cfg.FilterLevel).apply(a.gameImg)
 	if a.gameBmp == nil {
 		a.gameBmp = ui.NewBitmap(a.gameImg).Pixelated()
 	} else {
@@ -116,7 +115,14 @@ func (a *App) gamePicture(c *ui.Context, w, h float32) {
 		ph, pw = h, h*ratio
 	}
 	ui.Box(c).Absolute().Left((w - pw) / 2).Top((h - ph) / 2).Width(pw).Height(ph).Children(func() {
-		ui.Image(c, a.gameBmp).Fill()
+		pic := ui.Box(c).Fill().Background(ui.Hex("#000000")).Children(func() {
+			ui.Image(c, a.gameBmp).Fill()
+		})
+		// The tube's own look: the preset's shader over the picture, in this page,
+		// in the same window as the game and the two controls over it.
+		if fx, ok := a.crtEffect(); ok {
+			pic.Effect(fx)
+		}
 		// The glass of the tube over its own picture: a hairline of light along
 		// the top edge and a soft dark rim, drawn in the same page as the game.
 		ui.Box(c).Absolute().Fill().Radius(2).Border(1, ui.Hex("#ffffff26"))

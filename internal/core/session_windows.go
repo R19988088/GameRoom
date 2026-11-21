@@ -107,6 +107,7 @@ var (
 
 // Start loads a core and its content and leaves it ready to be stepped.
 func Start(corePath, romPath, systemDir string) (*Session, error) {
+	installExceptionFilter()
 	workDir = systemDir
 	h, err := loadLibrary(corePath)
 	if err != nil {

@@ -126,8 +126,8 @@ func (a *App) gamePicture(c *ui.Context, w, h float32) {
 		px, py = (w-pw)/2, (h-ph)/2
 	}
 	ui.Box(c).Absolute().Left(px).Top(py).Width(pw).Height(ph).Children(func() {
-		pic := ui.Box(c).Fill().Background(ui.Hex("#000000")).Children(func() {
-			ui.Image(c, a.gameBmp).Fit(ui.FillBox).Fill()
+		pic := ui.Box(c).Absolute().Left(0).Top(0).Width(pw).Height(ph).Background(ui.Hex("#000000")).Children(func() {
+			ui.Image(c, a.gameBmp).Absolute().Left(0).Top(0).Width(pw).Height(ph).Fit(ui.FillBox)
 		})
 		if ok {
 			pic.Effect(fx)

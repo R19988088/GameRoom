@@ -997,17 +997,15 @@ func (a *App) scopeName() string {
 }
 
 // runsExternal reports whether a core has to run in RetroArch's own process
-// rather than being stepped here. There are two reasons: MAME refuses this
-// process's paths, and Geolith loads a rom but draws nothing when it is handed
-// frames by this frontend. The rest of the list are the cores that ask the
-// frontend for a hardware render context — Flycast (Dreamcast, NAOMI), Dolphin,
-// Citra, PPSSPP, DuckStation, PCSX2 — and this window has only a software
-// framebuffer to give them, so they refuse to load a game at all. Opera joins
-// them because it opens its disc through the frontend's VFS interface, which
-// only RetroArch provides.
+// rather than being stepped here. MAME refuses this process's paths, and Opera
+// reads its disc through the frontend's VFS — both are handed to RetroArch.
+// The rest of the list are the cores that ask the frontend for a hardware
+// render context — Flycast (Dreamcast, NAOMI), Dolphin, Citra, PPSSPP,
+// DuckStation, PCSX2 — and this window has only a software framebuffer to give
+// them, so they refuse to load a game at all.
 func runsExternal(core string) bool {
 	c := strings.ToLower(strings.TrimSpace(core))
-	if strings.HasPrefix(c, "mame") || c == "geolith" {
+	if strings.HasPrefix(c, "mame") {
 		return true
 	}
 	for _, name := range []string{

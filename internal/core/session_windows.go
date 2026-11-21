@@ -107,6 +107,12 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 	}
 	s := &Session{dll: h, quit: make(chan struct{}), done: make(chan struct{}), sndDone: make(chan struct{}), fps: 60}
 	coreName = strings.TrimSuffix(filepath.Base(corePath), "_libretro.dll")
+	// The options saved beside the core are what RetroArch would have answered;
+	// a core that reads them expects the same answers here, or it runs on values
+	// nobody chose — for Geolith that is a palette the game never asks for and a
+	// black screen. The config folder sits beside the cores folder, not in the
+	// system folder a caller may have swapped for an ASCII mirror.
+	loadCoreOptions(coreName, filepath.Dir(filepath.Dir(corePath)))
 	// Geolith boots from a BIOS zip it finds in the system folder. A home
 	// (AES) cartridge needs aes.zip; without one, every cartridge here runs
 	// on the MVS board the library ships.
@@ -185,6 +191,10 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 	}
 	if s.getSystemInfo != 0 {
 		s.call(s.getSystemInfo, uintptr(unsafe.Pointer(&si)))
+		if os.Getenv("GAMEROOM_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "core info name=%q exts=%q needFullPath=%v blockExtract=%v\n",
+				cString(si.name), cString(si.validExts), si.needFullPath, si.blockExtract)
+		}
 	}
 
 	// A zip is a container, not a rom: a core that reads its own archives
@@ -481,6 +491,25 @@ func envCallback(cmd, data uintptr) uintptr {
 			putStr(ptr(data), curCore)
 		}
 		return 1
+	case 45: // GET_VFS_INTERFACE (experimental, so 45|0x10000 on the wire)
+		// A core that reads its own files asks for a file system instead of
+		// opening them with fopen. Refusing leaves it with nothing to read: it
+		// either refuses the rom or boots to a black screen.
+		if data != 0 {
+			info := (*vfsInfo)(ptr(data))
+			asked := info.version
+			want := asked
+			if want == 0 || want > vfsVersion {
+				want = vfsVersion
+			}
+			info.version = want
+			info.iface = initVFS()
+			if os.Getenv("GAMEROOM_DEBUG") != "" {
+				fmt.Fprintf(os.Stderr, "vfs: offered version %d (core asked %d)\n", info.version, asked)
+			}
+			return 1
+		}
+		return 0
 	case 16, 35, 65: // SET_VARIABLES, SET_CONTROLLER_INFO, SET_CONTENT_INFO_OVERRIDE
 		// The core is describing what it offers, not asking for anything. Taking
 		// the offer is all it needs, and turning it down is what some cores crash
@@ -521,6 +550,37 @@ var coreVars = map[string]map[string]string{
 }
 
 var coreName string
+
+// loadCoreOptions reads the core's saved options — config\<Core>\<Core>.opt —
+// into coreVars, so the values a core asks for are the ones written in the
+// file rather than whatever default the core would have used.
+func loadCoreOptions(name, raDir string) {
+	if name == "" || raDir == "" {
+		return
+	}
+	path := filepath.Join(raDir, "config", name, name+".opt")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	vars := map[string]string{}
+	for _, line := range strings.Split(string(b), "\n") {
+		k, v, ok := strings.Cut(line, " = ")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.Trim(strings.TrimSpace(v), `"`)
+		if k != "" {
+			vars[k] = v
+		}
+	}
+	// The options the launcher decides itself stay on top of the file.
+	for k, v := range coreVars[name] {
+		vars[k] = v
+	}
+	coreVars[name] = vars
+}
 
 // isArcadeDisc reports whether the image in romPath is an American Laser Games
 // arcade CD: its header names the disc as CD-ROM and its file table as "duck".
@@ -582,14 +642,18 @@ func cString(p *byte) string {
 	return string(b)
 }
 
-// memoryBasicInformation is what VirtualQuery fills in.
+// memoryBasicInformation is what VirtualQuery fills in. The layout is Windows'
+// own, which has a two-byte partition id and the region size ahead of the
+// state: getting it wrong reads the protection of the wrong word.
 type memoryBasicInformation struct {
 	base       uintptr
 	allocation uintptr
 	protect    uint32
-	_          uint32
+	partition  uint16
+	_          uint16
+	regionSize uintptr
 	state      uint32
-	_          uint32
+	page       uint32
 	type_      uint32
 	_          uint32
 }
@@ -605,8 +669,15 @@ func readable(addr uintptr) bool {
 	if r == 0 || mbi.state != 0x1000 { // MEM_COMMIT
 		return false
 	}
-	const pageReadWrite, pageRead = 0x04, 0x02
-	return mbi.protect&(pageReadWrite|pageRead) != 0
+	const (
+		pageReadOnly    = 0x02
+		pageReadWrite   = 0x04
+		pageWriteCopy   = 0x08
+		pageExecuteRead = 0x20
+		pageExecuteRw   = 0x40
+		pageExecuteCopy = 0x80
+	)
+	return mbi.page&(pageReadOnly|pageReadWrite|pageWriteCopy|pageExecuteRead|pageExecuteRw|pageExecuteCopy) != 0
 }
 
 // coreLogText is the one-line log a core asked to write: its format with the
@@ -680,7 +751,17 @@ func logCallback() uintptr {
 			// the argument slots; a log line is never worth losing the app over.
 			defer func() { recover() }()
 			if os.Getenv("GAMEROOM_DEBUG") != "" && message != 0 {
-				fmt.Fprintf(os.Stderr, "core log level=%d %s\n", level, coreLogText(message, a1, a2, a3))
+				head := ""
+				if readable(message) {
+					for i := 0; i < 24; i++ {
+						if !readable(message + uintptr(i)) {
+							break
+						}
+						head += fmt.Sprintf("%02x ", *(*byte)(ptr(message + uintptr(i))))
+					}
+				}
+				fmt.Fprintf(os.Stderr, "core log level=%d msg=0x%x bytes=%s text=%q\n",
+					level, message, head, coreLogText(message, a1, a2, a3))
 			}
 			return 0
 		})
@@ -801,6 +882,13 @@ func videoCallback(data, w, h, pitch uintptr) uintptr {
 		s.w, s.h = width, height
 	}
 	s.frames++
+	if os.Getenv("GAMEROOM_DEBUG") != "" && s.frames%120 == 1 {
+		head := ""
+		for i := 0; i < 16; i++ {
+			head += fmt.Sprintf("%02x ", *(*byte)(unsafe.Add(ptr(data), i)))
+		}
+		fmt.Fprintf(os.Stderr, "video data=0x%x %dx%d pitch=%d fmt=%d head=%s\n", data, width, height, row, s.format, head)
+	}
 	dst := s.frame.Pix
 	stride := s.frame.Stride
 	s.mu.Unlock()

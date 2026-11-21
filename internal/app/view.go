@@ -98,11 +98,12 @@ func (a *App) pumpCore() {
 	a.frameW, a.frameH = b.Dx(), b.Dy()
 }
 
-// gamePicture draws the game at the largest size that keeps its own aspect, in
-// the middle of the window, with black left around it: the picture's shape, not
-// the window's, decides how it fills the screen. A DOS picture of 320×200 is
-// drawn on a 4:3 glass, as it was made to be, rather than stretched to its
-// pixels' shape.
+// gamePicture draws the game at the shape its platform's glass was: the picture
+// fills the largest box of that shape in the middle of the window, with black
+// left around it. A CPS 384×224 board is drawn on a 4:3 glass, as it was made
+// to be, rather than stretched to its pixels' shape — the pixels there are
+// wider than they are tall, so the image is stretched into the box (FillBox),
+// not kept at its own frame's shape.
 func (a *App) gamePicture(c *ui.Context, w, h float32) {
 	if a.gameBmp == nil {
 		return
@@ -110,17 +111,13 @@ func (a *App) gamePicture(c *ui.Context, w, h float32) {
 	// The glass owns the whole window: the picture sits inside it at PIC_SIZE and
 	// the bezel reflects the picture out to the window's own edges, in the same
 	// page as the game. Without the shader nothing carries that reflection, so the
-	// picture falls back to its own shape, centred.
+	// picture falls back to the shape of the platform's tube, centred.
 	fx, ok := a.crtEffect()
 	px, py, pw, ph := float32(0), float32(0), w, h
 	if !ok {
-		bw, bh := ui.ImageSize(a.gameBmp)
-		if bw <= 0 || bh <= 0 {
+		ratio := a.pictureRatio()
+		if ratio <= 0 {
 			return
-		}
-		ratio := bw / bh
-		if a.gameAspect > 0.4 && a.gameAspect < 5 {
-			ratio = a.gameAspect
 		}
 		pw, ph = w, w/ratio
 		if ph > h {
@@ -130,7 +127,7 @@ func (a *App) gamePicture(c *ui.Context, w, h float32) {
 	}
 	ui.Box(c).Absolute().Left(px).Top(py).Width(pw).Height(ph).Children(func() {
 		pic := ui.Box(c).Fill().Background(ui.Hex("#000000")).Children(func() {
-			ui.Image(c, a.gameBmp).Fill()
+			ui.Image(c, a.gameBmp).Fit(ui.FillBox).Fill()
 		})
 		if ok {
 			pic.Effect(fx)

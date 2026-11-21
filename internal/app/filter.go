@@ -196,14 +196,12 @@ func (a *App) crtEffect() (shader.Effect, bool) {
 	for _, k := range knobs {
 		u[uniformName(k.key)] = float64(a.value(k.key))
 	}
-	// The shape the core asks its picture to be drawn at, which the glass fits the
-	// frame into: a 320×200 DOS picture is 4:3, not its pixels' own shape.
-	aspect := a.gameAspect
-	if aspect < 0.4 || aspect > 5 {
-		if a.gameBmp != nil {
-			if bw, bh := ui.ImageSize(a.gameBmp); bw > 0 && bh > 0 {
-				aspect = bw / bh
-			}
+	// The shape the picture is drawn at, which the glass fits the frame into: a
+	// 384×224 CPS board is 4:3, not its pixels' own shape.
+	aspect := a.pictureRatio()
+	if aspect <= 0 && a.gameBmp != nil {
+		if bw, bh := ui.ImageSize(a.gameBmp); bw > 0 && bh > 0 {
+			aspect = bw / bh
 		}
 	}
 	u["GAME_ASPECT"] = float64(aspect)

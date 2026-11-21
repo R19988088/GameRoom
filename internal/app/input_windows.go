@@ -45,9 +45,9 @@ func (a *App) pumpMouse() {
 	if fw <= 0 || fh <= 0 {
 		return
 	}
-	ratio := fw / fh
-	if a.gameAspect > 0.4 && a.gameAspect < 5 {
-		ratio = float64(a.gameAspect)
+	ratio := float64(a.pictureRatio())
+	if ratio <= 0 {
+		ratio = fw / fh
 	}
 	// The picture keeps its own shape inside the window; where it sits, and
 	// how big it is, follows from the two shapes alone.

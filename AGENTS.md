@@ -432,3 +432,28 @@ RetroArch 本身不是 simUI 的一部分。
 - **长按是摇杆井中心的一颗独立键 `lshold`**（显示「长按」），不是面板开关：
   按住它时若摇杆正偏向某方向，就锁住该方向（松手后继续按着）；空白时按它则解除锁定。
   它本身不进游戏（`padRetroIds["lshold"]=padNothing = -1`，`maskOf` 跳过负数 id）。
+
+### 画面比例：按平台定玻璃，不信核心（2026-11-21）
+
+CPS2/CPS3 的 384×224 以前被画成 1.71 的宽画面，因为进程内跑核心时读的是
+`retro_get_system_av_info` 的 `geometry.aspect`，而这批核心**普遍报 0**（实测 `fbneo_plus`、`fbneo`、
+`fbalpha`、`opera`(3DO)、`snes9x`、`dosbox_pure`、`mame2010`），前端就落到帧自身的像素比——
+384/224=1.71、320×200=1.6、256×224=1.14、256×240=1.07，全都不是 4:3。
+
+规则写在 `internal/app/aspect.go`：
+
+- `tubeGlass` 里的平台（`arc`、`majiang`、`fc`、`sfc`、`SEGA`、`3DO`、`ps`、`dos`、`pc98`）一律按 **4:3**；
+  帧高大于帧宽的竖屏（纵向射击）按 **3:4**；像素比超出 1/3..3 的怪板（Darius 三屏）保留自身比例。
+- 不在表里的平台（`掌机`、`任天堂`）是真方像素：GBA 240×160=3:2、GB 160×144、PSP 480×272、3DS 400×240，
+  帧比例本来就对，不动。
+- 只有一个数 `pictureRatio()`：`gamePicture` 的黑边框、`crtEffect` 的 `GAME_ASPECT`、`input_windows.go`
+  的鼠标映射都读它，三处不会各算一套。
+
+**`ui.Image` 默认是 Contain**（保原始比例），所以不开滤镜那条路必须 `.Fit(ui.FillBox)` 才会把 1.71 的帧
+拉进 4:3 的框；只改外框尺寸会把画面缩一圈、比例还是错的（踩过）。开滤镜时画面由着色器的 `GAME_ASPECT`
+决定，同一条数。
+
+验收：`jojobajr1`（CPS3）关滤镜截图，画面框 2119×1589 = 1.334；改前同一局是 2119×1235 = 1.716。
+
+已知问题（未修）：`fc` 平台的 `mesen` 核心在 `retro_init` 里崩溃——env 回调走完 52/16/35/65 之后
+`0xc0000005`，是核心侧的问题，`snes9x`/`fbneo`/`dosbox_pure` 同一条路径都正常。查比例时 FC 没法实测。

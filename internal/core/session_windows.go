@@ -11,6 +11,7 @@ import (
 	"image"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -38,7 +39,10 @@ type Session struct {
 	dll uintptr
 
 	setEnv, setVideo, setAudio, setAudioBatch, setInputPoll, setInputState uintptr
-	init, loadGame, run, unload, deinit, getAVInfo, getSystemInfo          uintptr
+	init, loadGame, reset, run, unload, deinit, getAVInfo, getSystemInfo   uintptr
+	// setPort plugs a controller into a port: a core that reads the device
+	// type leaves its input uninitialised until one is announced.
+	setPort uintptr
 
 	keys  atomic.Value // map[int]bool, RETROK codes held down
 	pads  atomic.Value // map[int]bool, RETRO_DEVICE_ID_JOYPAD ids held down
@@ -56,6 +60,7 @@ type Session struct {
 
 	onFrame atomic.Value // func()
 	fps     float64
+	sample  float64 // the rate the core really plays at, as it reports it
 	aspect  float32
 	audio   *AudioPipe
 
@@ -67,6 +72,9 @@ type Session struct {
 // an old screen is not the shape of the frame: a 320×200 DOS picture belongs on
 // a 4:3 glass.
 func (s *Session) Aspect() float32 { return s.aspect }
+
+// FPS is the rate the core says it runs at, so the window can pace it.
+func (s *Session) FPS() float64 { return s.fps }
 
 // Audio is the sound the running core makes, for the app's audio output.
 func (s *Session) Audio() *AudioPipe { return s.audio }
@@ -98,6 +106,25 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 		return nil, err
 	}
 	s := &Session{dll: h, quit: make(chan struct{}), done: make(chan struct{}), sndDone: make(chan struct{}), fps: 60}
+	coreName = strings.TrimSuffix(filepath.Base(corePath), "_libretro.dll")
+	// Geolith boots from a BIOS zip it finds in the system folder. A home
+	// (AES) cartridge needs aes.zip; without one, every cartridge here runs
+	// on the MVS board the library ships.
+	if coreName == "geolith" {
+		for _, bios := range []string{"aes.zip", filepath.Join("geolith", "aes.zip")} {
+			if _, err := os.Stat(filepath.Join(systemDir, bios)); err == nil {
+				coreVars["geolith"] = map[string]string{"geolith_system_type": "aes"}
+				break
+			}
+		}
+	}
+	// A 3DO arcade disc (American Laser Games, the "duck" encrypted CD-ROMs)
+	// boots only on the arcade board, so the core has to be told which BIOS to
+	// use. Opera's own default picks a console BIOS and the disc then runs to a
+	// black screen.
+	if coreName == "opera" && isArcadeDisc(romPath, systemDir) {
+		coreVars["opera"] = map[string]string{"opera_bios": "3do_arcade_saot.bin"}
+	}
 	s.keys.Store(map[int]bool{})
 	s.pads.Store(map[int]bool{})
 	s.mouse.Store(MouseState{})
@@ -117,8 +144,10 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 	s.setAudioBatch = proc("retro_set_audio_sample_batch")
 	s.setInputPoll = proc("retro_set_input_poll")
 	s.setInputState = proc("retro_set_input_state")
+	s.setPort = proc("retro_set_controller_port_device")
 	s.init = proc("retro_init")
 	s.loadGame = proc("retro_load_game")
+	s.reset = proc("retro_reset")
 	s.run = proc("retro_run")
 	s.unload = proc("retro_unload_game")
 	s.deinit = proc("retro_deinit")
@@ -173,6 +202,13 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 		} else if b, ok := romBytesFromZip(romPath); ok {
 			romData = b
 		}
+	} else if !si.needFullPath {
+		// A core that does not ask for the path expects the frontend to hand it
+		// the rom's bytes, the way RetroArch does; one that only gets a path may
+		// come up with an empty board.
+		if b, err := os.ReadFile(romPath); err == nil && len(b) < 256<<20 {
+			romData = b
+		}
 	}
 
 	attempt := func(path string, data []byte) bool {
@@ -198,21 +234,46 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 	if !loaded {
 		return nil, fmt.Errorf("这个核心打不开这个游戏：%s", romPath)
 	}
+	// A core expects the frontend to reset it once the rom is in, the way
+	// RetroArch does; without it some cores sit on an uninitialised board.
+	if s.reset != 0 {
+		s.call(s.reset)
+	}
+	// RetroArch announces a joypad on both ports before it steps a core;
+	// without that some cores keep their input, and their front end, unset.
+	if s.setPort != 0 {
+		for port := uintptr(0); port < 2; port++ {
+			s.call(s.setPort, port, DeviceJoypad)
+		}
+	}
 
+	// retro_system_av_info is one retro_game_geometry — five words, the last of
+	// them the aspect ratio — followed by retro_system_timing, two doubles. The
+	// geometry must be laid out exactly that way: a struct of three floats is
+	// only 12 bytes, so the timing that follows lands on the wrong offsets and
+	// every core reads back as "60 fps, 44100 Hz" no matter what it really
+	// plays. That is what made arcade sound drift: a 48 kHz core was drained at
+	// 44.1 kHz, so a little more sound queued up every second.
 	var av struct {
-		geometry struct{ base, max, aspect float32 }
-		timing   struct{ fps, sample float64 }
+		geometry struct {
+			baseW, baseH, maxW, maxH uint32
+			aspect                   float32
+		}
+		timing struct{ fps, sample float64 }
 	}
 	if s.getAVInfo != 0 {
 		s.call(s.getAVInfo, uintptr(unsafe.Pointer(&av)))
 		if av.timing.fps > 1 && av.timing.fps < 240 {
 			s.fps = av.timing.fps
 		}
+		if av.timing.sample > 8000 && av.timing.sample < 192000 {
+			s.sample = av.timing.sample
+		}
 		if av.geometry.aspect > 0.4 && av.geometry.aspect < 5 {
 			s.aspect = av.geometry.aspect
 		}
 	}
-	s.audio = NewAudioPipe(int(av.timing.sample))
+	s.audio = NewAudioPipe(int(s.sample))
 	return s, nil
 }
 
@@ -265,6 +326,9 @@ func (s *Session) Frames() int {
 	defer s.mu.RUnlock()
 	return s.frames
 }
+
+// PixelFormat is the buffer format the core asked for, for diagnostics.
+func (s *Session) PixelFormat() int { return s.format }
 
 // OnFrame sets what runs after each stepped frame, on the core's own clock.
 func (s *Session) OnFrame(f func()) { s.onFrame.Store(f) }
@@ -389,7 +453,15 @@ func envCallback(cmd, data uintptr) uintptr {
 			putStr(ptr(data), workDir)
 		}
 		return 1
-	case 15: // GET_VARIABLE: no options are stored, so the core uses its own
+	case 15: // GET_VARIABLE: the few options a core must be told about
+		if data != 0 {
+			opt := (*retroVariable)(ptr(data))
+			v, ok := coreVar(opt.key)
+			if ok {
+				opt.value = &keepStrAdd(v)[0]
+				return 1
+			}
+		}
 		return 0
 	case 17: // GET_VARIABLE_UPDATE
 		// No options are offered, so there is never an update. The pointer some
@@ -430,6 +502,153 @@ func putStr(dst unsafe.Pointer, s string) {
 	*(*unsafe.Pointer)(dst) = unsafe.Pointer(&b[0])
 }
 
+// retroVariable is the question a core asks in GET_VARIABLE: which option, and
+// where to put its value.
+type retroVariable struct {
+	key   *byte
+	value *byte
+}
+
+// coreVars are the options a core must be told about, by core and key. A core
+// only asks for what it has a default for; answering the key we care about and
+// staying quiet about the rest is how the frontend gets to choose the machine
+// instead of the core's own guess.
+var coreVars = map[string]map[string]string{
+	// Geolith boots from the BIOS zip it finds: the library ships the MVS one
+	// (neogeo.zip) and has no AES zip, so every Neo Geo cartridge here is run
+	// as an MVS board. Without this the core asks for AES and refuses to load.
+	"geolith": {"geolith_system_type": "mvs"},
+}
+
+var coreName string
+
+// isArcadeDisc reports whether the image in romPath is an American Laser Games
+// arcade CD: its header names the disc as CD-ROM and its file table as "duck".
+// Those discs need the arcade BIOS, and one is only used when it is present.
+func isArcadeDisc(romPath, systemDir string) bool {
+	if _, err := os.Stat(filepath.Join(systemDir, "3do_arcade_saot.bin")); err != nil {
+		return false
+	}
+	f, err := os.Open(romPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 1024)
+	n, _ := f.Read(head)
+	return strings.Contains(string(head[:n]), "CD-ROM") && strings.Contains(string(head[:n]), "duck")
+}
+
+func coreVar(key *byte) (string, bool) {
+	if key == nil || coreName == "" {
+		return "", false
+	}
+	name := cString(key)
+	// Overrides from the environment make it possible to try a core option
+	// without rebuilding the launcher: "key=value;key=value".
+	if env := os.Getenv("GAMEROOM_CORE_VAR"); env != "" {
+		for _, pair := range strings.Split(env, ";") {
+			if k, v, ok := strings.Cut(pair, "="); ok && strings.EqualFold(strings.TrimSpace(k), name) {
+				return strings.TrimSpace(v), true
+			}
+		}
+	}
+	vars, ok := coreVars[coreName]
+	if !ok {
+		return "", false
+	}
+	v, ok := vars[name]
+	return v, ok
+}
+
+// cString reads a zero-ended C string, with a cap so a bad pointer cannot hang
+// the frame it was asked in, and a guard so a pointer the core never meant as a
+// string (a bare number in a log format) cannot take the whole app down.
+func cString(p *byte) string {
+	if p == nil || !readable(uintptr(unsafe.Pointer(p))) {
+		return ""
+	}
+	var b []byte
+	for i := 0; i < 256; i++ {
+		if !readable(uintptr(unsafe.Pointer(p)) + uintptr(i)) {
+			break
+		}
+		c := *(*byte)(unsafe.Add(unsafe.Pointer(p), i))
+		if c == 0 {
+			break
+		}
+		b = append(b, c)
+	}
+	return string(b)
+}
+
+// memoryBasicInformation is what VirtualQuery fills in.
+type memoryBasicInformation struct {
+	base       uintptr
+	allocation uintptr
+	protect    uint32
+	_          uint32
+	state      uint32
+	_          uint32
+	type_      uint32
+	_          uint32
+}
+
+var procVirtualQuery = syscall.NewLazyDLL("kernel32.dll").NewProc("VirtualQuery")
+
+// readable reports whether an address lies in memory this process may read. A
+// core that logs "%s" with something that is not a string would otherwise be
+// followed into unmapped memory.
+func readable(addr uintptr) bool {
+	var mbi memoryBasicInformation
+	r, _, _ := procVirtualQuery.Call(addr, uintptr(unsafe.Pointer(&mbi)), unsafe.Sizeof(mbi))
+	if r == 0 || mbi.state != 0x1000 { // MEM_COMMIT
+		return false
+	}
+	const pageReadWrite, pageRead = 0x04, 0x02
+	return mbi.protect&(pageReadWrite|pageRead) != 0
+}
+
+// coreLogText is the one-line log a core asked to write: its format with the
+// few arguments a message carries filled in, so a refusal says which path or
+// which file it could not open instead of only "failed".
+func coreLogText(msg uintptr, args ...uintptr) string {
+	s := cString((*byte)(ptr(msg)))
+	var out []byte
+	arg := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+1 < len(s) {
+			switch s[i+1] {
+			case '%':
+				out = append(out, '%')
+				i++
+				continue
+			case 's', 'd', 'u', 'x', 'X':
+				if arg < len(args) {
+					a := args[arg]
+					arg++
+					if s[i+1] == 's' {
+						out = append(out, cString((*byte)(ptr(a)))...)
+					} else {
+						out = append(out, fmt.Sprint(a)...)
+					}
+				}
+				i++
+				continue
+			}
+		}
+		out = append(out, s[i])
+	}
+	return string(out)
+}
+
+// keepStrAdd keeps a string alive for the core that was handed its pointer.
+func keepStrAdd(s string) []byte {
+	b := append([]byte(s), 0)
+	keepStr = append(keepStr, b)
+	return b
+}
+
 // ansiBytes is a path as the system's ANSI code page spells it, for the older
 // cores that still open with fopen: UTF-8 to UTF-16 to ACP.
 func ansiBytes(s string) []byte {
@@ -456,19 +675,12 @@ var logFn uintptr
 
 func logCallback() uintptr {
 	if logFn == 0 {
-		logFn = syscall.NewCallback(func(level, message uintptr) uintptr {
+		logFn = syscall.NewCallback(func(level, message, a1, a2, a3 uintptr) uintptr {
+			// A core logs from its own threads and may pass anything at all in
+			// the argument slots; a log line is never worth losing the app over.
+			defer func() { recover() }()
 			if os.Getenv("GAMEROOM_DEBUG") != "" && message != 0 {
-				// The message is a printf format with its arguments beside it, so
-				// only the text is shown: it is enough to read why a core said no.
-				b := (*[256]byte)(ptr(message))
-				var s []byte
-				for _, c := range b {
-					if c == 0 {
-						break
-					}
-					s = append(s, c)
-				}
-				fmt.Fprintf(os.Stderr, "core log level=%d %s\n", level, s)
+				fmt.Fprintf(os.Stderr, "core log level=%d %s\n", level, coreLogText(message, a1, a2, a3))
 			}
 			return 0
 		})
@@ -576,6 +788,13 @@ func videoCallback(data, w, h, pitch uintptr) uintptr {
 		return 0
 	}
 	width, height, row := int(w), int(h), int(pitch)
+	if row <= 0 {
+		// A core may leave the stride out, meaning rows are simply packed.
+		row = width * 4
+		if s.format != pixXRGB8888 {
+			row = width * 2
+		}
+	}
 	s.mu.Lock()
 	if s.frame == nil || s.w != width || s.h != height {
 		s.frame = image.NewRGBA(image.Rect(0, 0, width, height))

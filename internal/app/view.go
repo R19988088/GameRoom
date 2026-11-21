@@ -516,7 +516,7 @@ func (a *App) chipBase(c *ui.Context, height float32, chosen bool) ui.Element {
 // line: it scrolls away with them, so a shelf at rest starts under the bar
 // and a scrolled one runs up behind it.
 const (
-	cardH   = 172
+	cardH   = 192
 	cardMin = 200
 	cardGap = 8
 	headH   = 30
@@ -642,7 +642,7 @@ func (a *App) card(c *ui.Context, t *ui.Theme, idx int) {
 		b.Background(ui.Hex("#ffffff0a"))
 	}
 	b.Children(func() {
-		ui.Column(c).Fill().Gap(6).Children(func() {
+		ui.Column(c).Fill().Gap(5).Children(func() {
 			cover := ui.Box(c).Height(128).Radius(10).
 				Background(ui.Hex("#0b0b10")).Center().Clip()
 			if chosen {
@@ -666,6 +666,10 @@ func (a *App) card(c *ui.Context, t *ui.Theme, idx int) {
 					ui.Text(c, "★").FontSize(9).TextColor(t.Accent)
 				}
 			})
+
+			// The versions of this game hang under it: which dump plays, and
+			// the button that opens the list.
+			a.versionBar(c, t, g)
 		})
 	})
 

@@ -87,9 +87,11 @@ func (p *AudioPipe) push(samples []int16) {
 		}
 	}
 	p.pushed += int64(len(samples))
-	// A slow output must not let the queue grow without bound: half a second
-	// of sound is more than enough to ride out a stutter.
-	if max := p.rate * 4; len(p.samples) > max {
+	// A slow output must not let the queue grow without bound: a quarter of a
+	// second of sound rides out a stutter, and anything older than that is
+	// already late enough that the ear hears it as a lag behind the picture.
+	// Two values per frame, so a quarter second is rate/2 of them.
+	if max := p.rate / 2; len(p.samples) > max {
 		p.samples = p.samples[len(p.samples)-max:]
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"image"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -100,6 +101,18 @@ type App struct {
 	cardEdit  bool
 	cardText  string
 
+	// The version picker under a card: which family every game belongs to, the
+	// dumps of each family, the one chosen to play, and the popup the card
+	// opened — one open flag per game, like the card's own menu.
+	verFam     map[int]string
+	verMembers map[string][]library.Game
+	verDefault map[string]int
+	verOpen    map[int]*bool
+	verGame    int
+	verSel     int
+	verClick   int
+	verClickAt time.Time
+
 	shown []library.Game
 	// The body, filed by the standard the bar shows: sections with their
 	// header, and the lines of cards that make them up. lines are laid out
@@ -155,7 +168,11 @@ type App struct {
 	player       *launch.Player
 	playerTarget launch.Target
 	playerGame   library.Game
-	filtersOpen  bool
+	// A game running in RetroArch's own window: the MAME cores cannot be
+	// stepped from this process (they take the rom's parent folder as the
+	// system name), so those games are handed to the frontend that can.
+	external    *exec.Cmd
+	filtersOpen bool
 
 	// The pad panel: what a machine's buttons read from. pads is the profile
 	// saved per machine in 数据/controls.json, and padLive the machine the
@@ -246,6 +263,7 @@ func boot() {
 			a.platform = a.biggestPlatform(a.group)
 		}
 		a.recount()
+		a.buildVersions()
 		a.refilter()
 		a.countMissing()
 	}
@@ -423,6 +441,7 @@ func (a *App) reload() {
 	}
 	a.countMissing()
 	a.recount()
+	a.buildVersions()
 	a.refilter()
 }
 
@@ -452,6 +471,11 @@ func (a *App) refilter() {
 	if a.lib != nil {
 		q := strings.ToLower(strings.TrimSpace(a.query))
 		machine := a.axis == library.AxisMachine || a.axis == ""
+		// A family is one card: whichever member matches the shelf, the menu or
+		// the search is the same game, and the card is its base dump. The other
+		// dumps are reached from the card's version button, not as cards of
+		// their own.
+		eligible := map[int]bool{}
 		for _, g := range a.lib.Games {
 			p := a.lib.Platform(g.PlatformKey)
 			if p == nil || p.Group != a.group {
@@ -464,15 +488,37 @@ func (a *App) refilter() {
 			} else if a.menu != "" && g.Menu != a.menu {
 				continue
 			}
-			if q != "" && !strings.Contains(strings.ToLower(g.Title), q) {
+			if q != "" && !a.versionMatches(g, q) {
 				continue
 			}
-			a.shown = append(a.shown, g)
+			eligible[a.versionBase(g).ID] = true
+		}
+		for _, g := range a.lib.Games {
+			if eligible[g.ID] {
+				a.shown = append(a.shown, g)
+			}
 		}
 	}
 	a.file()
 	a.chosen = 0
 	a.scroll.Y = 0
+}
+
+// versionMatches reports whether the game or any dump of its family has the
+// searched text, so looking for "真侍魂 X" still finds the one card.
+func (a *App) versionMatches(g library.Game, query string) bool {
+	matches := func(m library.Game) bool {
+		return strings.Contains(strings.ToLower(m.Title), query)
+	}
+	if matches(g) {
+		return true
+	}
+	for _, m := range a.verMembers[a.verFam[g.ID]] {
+		if matches(m) {
+			return true
+		}
+	}
+	return false
 }
 
 // section is one group of the body: the value of the chosen standard that
@@ -552,6 +598,35 @@ func (a *App) menuOpen(id int) *bool {
 		a.opens[id] = p
 	}
 	return p
+}
+
+// versionOpen is the open flag of one card's version popup: a card owns its
+// flag, the same way it owns its menu's.
+func (a *App) versionOpen(id int) *bool {
+	if a.verOpen == nil {
+		a.verOpen = map[int]*bool{}
+	}
+	p, ok := a.verOpen[id]
+	if !ok {
+		p = new(bool)
+		a.verOpen[id] = p
+	}
+	return p
+}
+
+// versionFor makes this card the one the open popup belongs to and closes the
+// other cards' flags, so only one list of versions is ever on screen.
+func (a *App) versionFor(id int) {
+	if a.verGame == id {
+		return
+	}
+	for k, p := range a.verOpen {
+		if k != id {
+			*p = false
+		}
+	}
+	a.verGame = id
+	a.verSel = 0
 }
 
 // menuFor makes this card the one the open menu belongs to, and closes the
@@ -921,6 +996,70 @@ func (a *App) scopeName() string {
 	return name + " · " + value
 }
 
+// runsExternal reports whether a core has to run in RetroArch's own process
+// rather than being stepped here. There are two reasons: MAME refuses this
+// process's paths, and Geolith loads a rom but draws nothing when it is handed
+// frames by this frontend. The rest of the list are the cores that ask the
+// frontend for a hardware render context — Flycast (Dreamcast, NAOMI), Dolphin,
+// Citra, PPSSPP, DuckStation, PCSX2 — and this window has only a software
+// framebuffer to give them, so they refuse to load a game at all. Opera joins
+// them because it opens its disc through the frontend's VFS interface, which
+// only RetroArch provides.
+func runsExternal(core string) bool {
+	c := strings.ToLower(strings.TrimSpace(core))
+	if strings.HasPrefix(c, "mame") || c == "geolith" {
+		return true
+	}
+	for _, name := range []string{
+		"flycast", "dolphin", "citra", "ppsspp", "duckstation", "pcsx2",
+		"swanstation", "mednafen_psx_hw", "yabause", "yabasanshiro", "kronos",
+		"mupen64plus_next", "parallel_n64", "opera",
+	} {
+		if c == name {
+			return true
+		}
+	}
+	return false
+}
+
+// playExternal hands a game to RetroArch's own window. The launcher keeps its
+// shelf behind it and reports when the game exits.
+func (a *App) playExternal(g library.Game, sim *library.Sim) {
+	if a.external != nil {
+		a.status = g.Title + "：已经有一个游戏在运行"
+		return
+	}
+	rom := filepath.Join(a.root, "rom", filepath.FromSlash(g.RomPath))
+	t, err := launch.Resolve(a.root, *sim, rom)
+	if err != nil {
+		a.status = "启动失败：" + err.Error()
+		return
+	}
+	// MAME reads its system folder with the ANSI code page, so it is pointed at
+	// the ASCII mirror built beside the emulator folder instead of the real one.
+	if cfg := a.mameSystem(t.Work); cfg != "" {
+		t.Args = append(t.Args, "--appendconfig", cfg)
+	}
+	cmd, err := launch.Start(t)
+	if err != nil {
+		a.status = "启动失败：" + err.Error()
+		return
+	}
+	a.external = cmd
+	a.status = g.Title + " · 正在用 RetroArch 打开"
+	go func() {
+		err := cmd.Wait()
+		a.win.Update(func() {
+			a.external = nil
+			if err != nil {
+				a.status = g.Title + " 已退出：" + err.Error()
+				return
+			}
+			a.status = g.Title + " 已退出"
+		})
+	}()
+}
+
 // launchGame starts the chosen game. The emulation happens in this process:
 // the core that RetroArch ships as a library is loaded here, the app steps it,
 // and the picture is drawn into this window's page. There is no second window.
@@ -928,6 +1067,9 @@ func (a *App) launchGame(g library.Game) {
 	if a.lib == nil || a.core != nil {
 		return
 	}
+	// The card of a family plays the version chosen under it; a card that is
+	// itself a version plays itself.
+	g = a.versionTarget(g)
 	sim := a.lib.SimFor(g)
 	if sim == nil {
 		a.status = g.Title + "：没有配置模拟器"
@@ -942,6 +1084,15 @@ func (a *App) launchGame(g library.Game) {
 		s := *sim
 		s.Core = g.Core
 		sim = &s
+	}
+	// MAME's libretro core takes the rom's folder as a "system" it must know,
+	// and reads its own files through the ANSI code page, which the emulator's
+	// Chinese folder breaks; Geolith loads a .neo here but never paints a
+	// frame. RetroArch runs both correctly and can be pointed at an ASCII
+	// system folder, so these games are started in RetroArch's own window.
+	if runsExternal(sim.Core) {
+		a.playExternal(g, sim)
+		return
 	}
 
 	rom := filepath.Join(a.root, "rom", filepath.FromSlash(g.RomPath))
@@ -964,7 +1115,7 @@ func (a *App) launchGame(g library.Game) {
 		a.status = "启动失败：rom 不是文件"
 		return
 	}
-	sess, err := core.Start(corePath, rom, filepath.Join(dir, "system"))
+	sess, err := core.Start(corePath, rom, a.asciiSystem(dir))
 	if err != nil {
 		a.status = "启动失败：" + err.Error()
 		return

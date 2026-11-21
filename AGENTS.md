@@ -455,5 +455,21 @@ CPS2/CPS3 的 384×224 以前被画成 1.71 的宽画面，因为进程内跑核
 
 验收：`jojobajr1`（CPS3）关滤镜截图，画面框 2119×1589 = 1.334；改前同一局是 2119×1235 = 1.716。
 
-已知问题（未修）：`fc` 平台的 `mesen` 核心在 `retro_init` 里崩溃——env 回调走完 52/16/35/65 之后
-`0xc0000005`，是核心侧的问题，`snes9x`/`fbneo`/`dosbox_pure` 同一条路径都正常。查比例时 FC 没法实测。
+### 核心读的路径：先 UTF-8，再 ANSI；zip 由前端拆（2026-11-21）
+
+两个老问题（FC 打不开、中文名 rom 打不开）根子都在 `retro_load_game` 拿到的那个路径/内容上。
+
+- **路径编码没有统一答案**。多数核心走 libretro-common 的 `fopen_utf8`（见 `compat/fopen_utf8.c`：
+  UTF-8 → UTF-16 → `_wfopen`），要**UTF-8**；少数老核心直接 `fopen`，要系统 **ANSI**（GBK）。
+  实测同一台机器：`fceumm`+中文名 `.nes` 用 UTF-8 才开得了、用 ANSI 必失败；`snes9x`+`马里奥医生.zip`
+  反过来，只有 ANSI 能开。所以 `Start` 里先按 UTF-8 传，失败再换 `ansiBytes()` 传一次，不再挑一个赌。
+- 目录（system / saves / core 路径）统一按 **UTF-8** 给，和 rom 的第一次尝试一致。
+- **zip 是容器**：核心自己读压缩包的（`blockExtract=true`，FBNeo/MAME 这类街机）原样把 zip 交过去；
+  其余核心看 `need_fullpath`——要路径就把包内最大的 rom 解到 `模拟器/RetroArch/cache/roms/<平台目录>/<zip名>/`
+  再传那个路径（同名稳定，存档能跟着找回来），能吃内存就用 `gi.data/gi.size` 直接喂字节，一个文件都不落盘。
+  `FCEUmm` 这版核心自己读不了 zip（`need_fullpath` 为真），就是靠这一步跑起来的。
+
+**FC 换核心**：`mesen` 在 `retro_init` 里 `0xc0000005` 崩（env 走完 52/16/35/65 就崩，全返回 1 也崩，
+同一个 dll 在 RetroArch 里正常），修不动，所以 `fc` 的规范核心改成 `fceumm`（`coreNames`/`CanonicalCore`、
+db 的 `sim` 表都已换，mesen 的 dll 仍留在 cores 里）。`fceumm`/`nestopia` 都能过 init，选 fceumm 是因为
+它认 zip。

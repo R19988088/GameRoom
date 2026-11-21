@@ -17,7 +17,7 @@ import (
 // platform, so a library stays portable. Ryujinx is the exception: there
 // is no libretro core for Switch, so those games keep their own emulator.
 var coreNames = map[string]string{
-	"mesen":           "Mesen",
+	"fceumm":          "FCEUmm",
 	"snes9x":          "Snes9x",
 	"genesis_plus_gx": "Genesis Plus GX",
 	"duckstation":     "DuckStation",
@@ -56,7 +56,9 @@ func CanonicalCore(platform, romPath string) string {
 
 	switch platform {
 	case "fc":
-		return "mesen"
+		// Mesen is the more accurate NES core, but its 2024 build crashes in
+		// retro_init inside this process, so FC runs on FCEUmm, which does not.
+		return "fceumm"
 	case "sfc":
 		return "snes9x"
 	case "3DO":

@@ -87,7 +87,7 @@ func (s *Session) SetMouse(m MouseState) { s.mouse.Store(m) }
 var (
 	workDir string
 	curCore string
-	keepStr []string
+	keepStr [][]byte
 )
 
 // Start loads a core and its content and leaves it ready to be stepped.
@@ -137,18 +137,65 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 	s.call(s.setInputState, syscall.NewCallback(inputCallback))
 	s.call(s.init)
 
+	// A core does not open a rom with fopen of its own: it goes through
+	// libretro-common, which takes the path as UTF-8 and turns it into a wide
+	// open, so a Chinese name reaches the file. The older cores still call
+	// fopen and want the system's ANSI spelling of the same path; those are
+	// tried second, and only when the first says no.
 	var gi struct {
 		path *byte
 		data unsafe.Pointer
 		size uint64
 		meta *byte
 	}
-	p, err := syscall.BytePtrFromString(romPath)
-	if err != nil {
-		return nil, err
+
+	var si struct {
+		name, version, validExts *byte
+		needFullPath             bool
+		blockExtract             bool
 	}
-	gi.path = p
-	if ok, _, _ := syscall.SyscallN(s.loadGame, uintptr(unsafe.Pointer(&gi))); ok == 0 {
+	if s.getSystemInfo != 0 {
+		s.call(s.getSystemInfo, uintptr(unsafe.Pointer(&si)))
+	}
+
+	// A zip is a container, not a rom: a core that reads its own archives
+	// (FBNeo, MAME and the arcade boards) sets blockExtract and wants the zip
+	// itself, while a console core wants the rom inside it — the file when it
+	// insists on a path, the bytes when it can take them in memory. Doing this
+	// here is what lets a library of zipped console roms run at all.
+	loadPath := romPath
+	var romData []byte
+	if isZip(romPath) && !si.blockExtract {
+		if si.needFullPath {
+			if p, ok := romFromZip(romPath, cacheRoot(workDir)); ok {
+				loadPath = p
+			}
+		} else if b, ok := romBytesFromZip(romPath); ok {
+			romData = b
+		}
+	}
+
+	attempt := func(path string, data []byte) bool {
+		gi.path, gi.data, gi.size, gi.meta = nil, nil, 0, nil
+		b := append([]byte(path), 0)
+		keepStr = append(keepStr, b)
+		gi.path = &b[0]
+		if len(data) > 0 {
+			keepStr = append(keepStr, data)
+			gi.data = unsafe.Pointer(&data[0])
+			gi.size = uint64(len(data))
+		}
+		ok, _, _ := syscall.SyscallN(s.loadGame, uintptr(unsafe.Pointer(&gi)))
+		return ok != 0
+	}
+
+	loaded := attempt(loadPath, romData)
+	if !loaded {
+		// Same path, the system's spelling of it: the cores that open with
+		// fopen never see the UTF-8 one as a file.
+		loaded = attempt(string(ansiBytes(loadPath)), romData)
+	}
+	if !loaded {
 		return nil, fmt.Errorf("这个核心打不开这个游戏：%s", romPath)
 	}
 
@@ -291,10 +338,11 @@ func pollKeys() map[int]bool {
 }
 
 var (
-	procLoadLibrary = syscall.NewLazyDLL("kernel32.dll").NewProc("LoadLibraryW")
-	procGetProc     = syscall.NewLazyDLL("kernel32.dll").NewProc("GetProcAddress")
-	procSetDllDir   = syscall.NewLazyDLL("kernel32.dll").NewProc("SetDllDirectoryW")
-	dllDirSet       bool
+	procLoadLibrary         = syscall.NewLazyDLL("kernel32.dll").NewProc("LoadLibraryW")
+	procGetProc             = syscall.NewLazyDLL("kernel32.dll").NewProc("GetProcAddress")
+	procSetDllDir           = syscall.NewLazyDLL("kernel32.dll").NewProc("SetDllDirectoryW")
+	procWideCharToMultiByte = syscall.NewLazyDLL("kernel32.dll").NewProc("WideCharToMultiByte")
+	dllDirSet               bool
 )
 
 func loadLibrary(path string) (uintptr, error) {
@@ -336,14 +384,14 @@ func envCallback(cmd, data uintptr) uintptr {
 			active.format = int(*(*uint32)(ptr(data)))
 		}
 		return 1
-	case 9, 30, 31: // system, content, save directory
+	case 9, 30, 31: // system, core assets, save directory
 		if data != 0 {
 			putStr(ptr(data), workDir)
 		}
 		return 1
-	case 15: // GET_VARIABLE: no options are offered, so the core uses its own
+	case 15: // GET_VARIABLE: no options are stored, so the core uses its own
 		return 0
-	case 16: // GET_VARIABLE_UPDATE
+	case 17: // GET_VARIABLE_UPDATE
 		// No options are offered, so there is never an update. The pointer some
 		// cores hand over here is not always a bool of theirs, so it is not
 		// written through: answering "nothing changed" is all a core needs.
@@ -356,19 +404,49 @@ func envCallback(cmd, data uintptr) uintptr {
 			*(*uintptr)(ptr(data)) = logCallback()
 		}
 		return 1
-	case 18: // GET_LIBRETRO_PATH
+	case 19: // GET_LIBRETRO_PATH
 		if data != 0 {
 			putStr(ptr(data), curCore)
 		}
+		return 1
+	case 16, 35, 65: // SET_VARIABLES, SET_CONTROLLER_INFO, SET_CONTENT_INFO_OVERRIDE
+		// The core is describing what it offers, not asking for anything. Taking
+		// the offer is all it needs, and turning it down is what some cores crash
+		// on, because they keep walking the array they just handed over. The
+		// options themselves are not kept: with no stored value GET_VARIABLE says
+		// "not found" and the core runs on its own defaults.
 		return 1
 	}
 	return 0
 }
 
 func putStr(dst unsafe.Pointer, s string) {
-	keepStr = append(keepStr, s)
+	// The folders a core is handed go through the same libretro-common code as
+	// the rom path, so they are spelled the same way: UTF-8, which that code
+	// turns into a wide open. The bytes are kept because the core holds on to
+	// the pointer rather than copying the string.
 	b := append([]byte(s), 0)
+	keepStr = append(keepStr, b)
 	*(*unsafe.Pointer)(dst) = unsafe.Pointer(&b[0])
+}
+
+// ansiBytes is a path as the system's ANSI code page spells it, for the older
+// cores that still open with fopen: UTF-8 to UTF-16 to ACP.
+func ansiBytes(s string) []byte {
+	u16, err := syscall.UTF16FromString(s)
+	if err != nil || len(u16) == 0 {
+		return append([]byte(s), 0)
+	}
+	n, _, _ := procWideCharToMultiByte.Call(0 /* CP_ACP */, 0,
+		uintptr(unsafe.Pointer(&u16[0])), uintptr(len(u16)-1), 0, 0, 0, 0)
+	if int32(n) <= 0 {
+		return append([]byte(s), 0)
+	}
+	out := make([]byte, int32(n)+1)
+	procWideCharToMultiByte.Call(0, 0,
+		uintptr(unsafe.Pointer(&u16[0])), uintptr(len(u16)-1),
+		uintptr(unsafe.Pointer(&out[0])), uintptr(int32(n)), 0, 0)
+	return out
 }
 
 // logCallback is the one function pointer a core may call to say something.
@@ -380,7 +458,17 @@ func logCallback() uintptr {
 	if logFn == 0 {
 		logFn = syscall.NewCallback(func(level, message uintptr) uintptr {
 			if os.Getenv("GAMEROOM_DEBUG") != "" && message != 0 {
-				fmt.Fprintf(os.Stderr, "core log level=%d\n", level)
+				// The message is a printf format with its arguments beside it, so
+				// only the text is shown: it is enough to read why a core said no.
+				b := (*[256]byte)(ptr(message))
+				var s []byte
+				for _, c := range b {
+					if c == 0 {
+						break
+					}
+					s = append(s, c)
+				}
+				fmt.Fprintf(os.Stderr, "core log level=%d %s\n", level, s)
 			}
 			return 0
 		})

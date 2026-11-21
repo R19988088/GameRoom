@@ -4,7 +4,7 @@ import "testing"
 
 func TestCanonicalCore(t *testing.T) {
 	cases := []struct{ platform, rom, want string }{
-		{"fc", "fc/魂斗罗/魂斗罗.zip", "mesen"},
+		{"fc", "fc/魂斗罗/魂斗罗.zip", "fceumm"},
 		{"sfc", "sfc/最终幻想6.zip", "snes9x"},
 		{"3DO", "3DO/game.iso", "opera"},
 		// A platform folder can hold several systems: the folder decides.
@@ -42,7 +42,7 @@ func TestNormalizeConsoles(t *testing.T) {
 		{ID: 19, PlatformKey: "arc", Name: "MAME Arcade", Exe: "模拟器/RetroArch/retroarch.exe", Core: "mamearcade", IsDefault: true},
 	}
 	games := []Game{
-		{ID: 1, PlatformKey: "fc", RomPath: "fc/魂斗罗.zip", SimID: 2, Core: "mesen"},
+		{ID: 1, PlatformKey: "fc", RomPath: "fc/魂斗罗.zip", SimID: 2, Core: "fceumm"},
 		{ID: 2, PlatformKey: "sfc", RomPath: "sfc/最终幻想6.zip", SimID: 4},
 		{ID: 3, PlatformKey: "任天堂", RomPath: "任天堂/switch/game.nsp", SimID: 27},
 		{ID: 4, PlatformKey: "任天堂", RomPath: "任天堂/3ds/game.cia", SimID: 0},
@@ -63,8 +63,8 @@ func TestNormalizeConsoles(t *testing.T) {
 		}
 	}
 
-	if s := simOf[1]; s.Core != "mesen" || s.Exe != retroArchExe {
-		t.Errorf("fc game runs %+v, want Mesen through RetroArch", s)
+	if s := simOf[1]; s.Core != "fceumm" || s.Exe != retroArchExe {
+		t.Errorf("fc game runs %+v, want FCEUmm through RetroArch", s)
 	}
 	if s := simOf[2]; s.Core != "snes9x" || !s.IsDefault {
 		t.Errorf("sfc game runs %+v, want the default Snes9x", s)

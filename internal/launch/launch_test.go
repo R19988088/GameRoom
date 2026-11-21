@@ -89,7 +89,9 @@ func TestResolve(t *testing.T) {
 	if target.Exe != exe {
 		t.Fatalf("Exe = %q, want %q", target.Exe, exe)
 	}
-	if len(target.Args) != 3 || target.Args[0] != "-L" || target.Args[1] != core || target.Args[2] != rom {
+	// The core is handed over relative to RetroArch's own folder, so the
+	// bundle keeps running after it is moved.
+	if len(target.Args) != 3 || target.Args[0] != "-L" || target.Args[1] != coreArg(exeDir, core) || target.Args[2] != rom {
 		t.Fatalf("Args = %#v", target.Args)
 	}
 	if target.Work != exeDir {

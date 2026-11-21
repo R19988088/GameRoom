@@ -996,71 +996,11 @@ func (a *App) scopeName() string {
 	return name + " · " + value
 }
 
-// runsExternal reports whether a core has to run in RetroArch's own process
-// rather than being stepped here. MAME refuses this process's paths, and Opera
-// reads its disc through the frontend's VFS — both are handed to RetroArch.
-// The rest of the list are the cores that ask the frontend for a hardware
-// render context — Flycast (Dreamcast, NAOMI), Dolphin, Citra, PPSSPP,
-// DuckStation, PCSX2 — and this window has only a software framebuffer to give
-// them, so they refuse to load a game at all.
-func runsExternal(core string) bool {
-	c := strings.ToLower(strings.TrimSpace(core))
-	if strings.HasPrefix(c, "mame") {
-		return true
-	}
-	for _, name := range []string{
-		"flycast", "dolphin", "citra", "ppsspp", "duckstation", "pcsx2",
-		"swanstation", "mednafen_psx_hw", "yabause", "yabasanshiro", "kronos",
-		"mupen64plus_next", "parallel_n64", "opera",
-	} {
-		if c == name {
-			return true
-		}
-	}
-	return false
-}
-
-// playExternal hands a game to RetroArch's own window. The launcher keeps its
-// shelf behind it and reports when the game exits.
-func (a *App) playExternal(g library.Game, sim *library.Sim) {
-	if a.external != nil {
-		a.status = g.Title + "：已经有一个游戏在运行"
-		return
-	}
-	rom := filepath.Join(a.root, "rom", filepath.FromSlash(g.RomPath))
-	t, err := launch.Resolve(a.root, *sim, rom)
-	if err != nil {
-		a.status = "启动失败：" + err.Error()
-		return
-	}
-	// MAME reads its system folder with the ANSI code page, so it is pointed at
-	// the ASCII mirror built beside the emulator folder instead of the real one.
-	if cfg := a.mameSystem(t.Work); cfg != "" {
-		t.Args = append(t.Args, "--appendconfig", cfg)
-	}
-	cmd, err := launch.Start(t)
-	if err != nil {
-		a.status = "启动失败：" + err.Error()
-		return
-	}
-	a.external = cmd
-	a.status = g.Title + " · 正在用 RetroArch 打开"
-	go func() {
-		err := cmd.Wait()
-		a.win.Update(func() {
-			a.external = nil
-			if err != nil {
-				a.status = g.Title + " 已退出：" + err.Error()
-				return
-			}
-			a.status = g.Title + " 已退出"
-		})
-	}()
-}
-
 // launchGame starts the chosen game. The emulation happens in this process:
 // the core that RetroArch ships as a library is loaded here, the app steps it,
 // and the picture is drawn into this window's page. There is no second window.
+// No core, whatever it asks of the frontend, is ever started as another program:
+// a game that this window cannot run is reported here instead.
 func (a *App) launchGame(g library.Game) {
 	if a.lib == nil || a.core != nil {
 		return
@@ -1083,15 +1023,20 @@ func (a *App) launchGame(g library.Game) {
 		s.Core = g.Core
 		sim = &s
 	}
+	// DuckStation draws PlayStation with OpenGL and dies inside this process on
+	// its first context; Mednafen's PSX core draws the same discs in software,
+	// so a PlayStation game is stepped with that one here. The saved sim is
+	// left as it was, so the same choice still works if the core is fixed.
+	if strings.EqualFold(sim.Core, "duckstation") {
+		s := *sim
+		s.Core = "mednafen_psx"
+		sim = &s
+	}
 	// MAME's libretro core takes the rom's folder as a "system" it must know,
 	// and reads its own files through the ANSI code page, which the emulator's
-	// Chinese folder breaks; Geolith loads a .neo here but never paints a
-	// frame. RetroArch runs both correctly and can be pointed at an ASCII
-	// system folder, so these games are started in RetroArch's own window.
-	if runsExternal(sim.Core) {
-		a.playExternal(g, sim)
-		return
-	}
+	// Chinese folder breaks; the ASCII system mirror beside it answers that. A
+	// core that draws with OpenGL is given a context inside this process. Either
+	// way the game is stepped here, in this window, with no second program.
 
 	rom := filepath.Join(a.root, "rom", filepath.FromSlash(g.RomPath))
 	exe := sim.Exe
@@ -1170,6 +1115,12 @@ func (a *App) stopPlayer() {
 		return
 	}
 	if a.player == nil {
+		if a.external != nil {
+			// The game in the external program: closing it is killing it, and the
+			// launcher's picture comes back when its process is gone.
+			a.external.Process.Kill()
+			return
+		}
 		return
 	}
 	a.player.Kill()

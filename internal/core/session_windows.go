@@ -54,6 +54,13 @@ type Session struct {
 	w, h   int
 	format int
 
+	// A core that draws with OpenGL fills a framebuffer of ours instead of the
+	// software one; the picture is read back from there every frame.
+	hw     hwRenderCallback
+	hwOn   bool
+	hwBL   bool
+	hwFail error
+
 	closed int32
 	quit   chan struct{}
 	done   chan struct{}
@@ -130,6 +137,25 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 	// black screen.
 	if coreName == "opera" && isArcadeDisc(romPath, systemDir) {
 		coreVars["opera"] = map[string]string{"opera_bios": "3do_arcade_saot.bin"}
+	}
+	// The library is a shelf of loose romsets (arc/dino.zip), not a software
+	// list. MAME reads the folder above the zip as a *system* name and, with the
+	// software lists on, tries to boot that system instead of the driver named
+	// after the file — which is a running but black screen. Its own defaults are
+	// for a curated software-list library; here the file name is the driver.
+	if strings.HasPrefix(coreName, "mame") {
+		if coreVars[coreName] == nil {
+			coreVars[coreName] = map[string]string{}
+		}
+		for k, v := range map[string]string{
+			"mame_softlists_enable":     "disabled",
+			"mame_softlists_auto_media": "disabled",
+			"mame_media_type":           "rom",
+			"mame_boot_to_bios":         "disabled",
+			"mame_boot_to_osd":          "disabled",
+		} {
+			coreVars[coreName][k] = v
+		}
 	}
 	s.keys.Store(map[int]bool{})
 	s.pads.Store(map[int]bool{})
@@ -243,6 +269,11 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 	}
 	if !loaded {
 		return nil, fmt.Errorf("这个核心打不开这个游戏：%s", romPath)
+	}
+	// The core has its framebuffer ready and asks the frontend to build its own
+	// OpenGL objects now; until that call it draws nothing.
+	if s.hwOn && s.hw.ContextReset != 0 {
+		syscall.SyscallN(s.hw.ContextReset)
 	}
 	// A core expects the frontend to reset it once the rom is in, the way
 	// RetroArch does; without it some cores sit on an uninitialised board.
@@ -463,6 +494,30 @@ func envCallback(cmd, data uintptr) uintptr {
 			putStr(ptr(data), workDir)
 		}
 		return 1
+	case 14: // SET_HW_RENDER: the core wants to draw with OpenGL of its own
+		if data == 0 {
+			return 0
+		}
+		cb := (*hwRenderCallback)(ptr(data))
+		switch cb.ContextType {
+		case hwContextOpenGL, hwContextOpenGLCore:
+		default:
+			return 0 // Direct3D or Vulkan: this app has only OpenGL to give
+		}
+		active.hw = *cb
+		active.hwBL = cb.BottomLeftOrigin != 0
+		if os.Getenv("GAMEROOM_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "hwrender: type=%d v=%d.%d depth=%v stencil=%v bl=%v\n",
+				cb.ContextType, cb.VersionMajor, cb.VersionMinor, cb.Depth != 0, cb.Stencil != 0, cb.BottomLeftOrigin != 0)
+		}
+		cb.GetFramebuffer = syscall.NewCallback(glCurrentFramebuffer)
+		cb.GetProcAddress = syscall.NewCallback(glProcName)
+		if err := glPrepare(cb.ContextType, cb.VersionMajor, cb.VersionMinor, cb.Depth != 0, cb.Stencil != 0); err != nil {
+			active.hwFail = err
+			return 0
+		}
+		active.hwOn = true
+		return 1
 	case 15: // GET_VARIABLE: the few options a core must be told about
 		if data != 0 {
 			opt := (*retroVariable)(ptr(data))
@@ -494,7 +549,16 @@ func envCallback(cmd, data uintptr) uintptr {
 	case 45: // GET_VFS_INTERFACE (experimental, so 45|0x10000 on the wire)
 		// A core that reads its own files asks for a file system instead of
 		// opening them with fopen. Refusing leaves it with nothing to read: it
-		// either refuses the rom or boots to a black screen.
+		// either refuses the rom or boots to a black screen. The version is the
+		// one the core asked for, or the newest this frontend speaks when the
+		// core asks for a probe.
+		// Only Geolith's cartridge reader is the format below. Every other core
+		// asks for its own version of this interface, and answering with v1's
+		// layout makes PlayStation cores die on the first read: they are told
+		// "no" and keep reading their discs and roms with ordinary files.
+		if coreName != "geolith" || os.Getenv("GAMEROOM_NOVFS") != "" {
+			return 0
+		}
 		if data != 0 {
 			info := (*vfsInfo)(ptr(data))
 			asked := info.version
@@ -510,15 +574,110 @@ func envCallback(cmd, data uintptr) uintptr {
 			return 1
 		}
 		return 0
-	case 16, 35, 65: // SET_VARIABLES, SET_CONTROLLER_INFO, SET_CONTENT_INFO_OVERRIDE
-		// The core is describing what it offers, not asking for anything. Taking
-		// the offer is all it needs, and turning it down is what some cores crash
-		// on, because they keep walking the array they just handed over. The
-		// options themselves are not kept: with no stored value GET_VARIABLE says
-		// "not found" and the core runs on its own defaults.
+	case 16, 52, 53, 82, 83: // SET_VARIABLES, SET_CORE_OPTIONS*, all keeping defaults
+		// The core is describing what it offers. Its defaults are kept: a core
+		// builds its own switches from the answers to GET_VARIABLE, and a
+		// "not found" for every key leaves MAME with empty switches of its own
+		// making ("unknown option: -<UNADORNED2>") and the game unloadable.
+		if data != 0 {
+			keepOptions(int(cmd)&0xffff, data)
+		}
+		return 1
+	case 35, 65: // SET_CONTROLLER_INFO, SET_CONTENT_INFO_OVERRIDE
+		// Nothing is asked for here, and turning it down is what some cores
+		// crash on, because they keep walking the array they just handed over.
 		return 1
 	}
 	return 0
+}
+
+// retroCoreOptionValue and retroCoreOptionDefinition are libretro's option
+// entries: a key with the values it takes, and the one it starts on.
+type retroCoreOptionValue struct {
+	Value, Label *byte
+}
+
+type retroCoreOptionDefinition struct {
+	Key, Desc, Info *byte
+	Values          [128]retroCoreOptionValue
+	Default         *byte
+}
+
+type retroCoreOptionsIntl struct {
+	US    *retroCoreOptionDefinition
+	Local *retroCoreOptionDefinition
+}
+
+// keepOptions reads the list a core hands over and remembers each key's
+// default, so GET_VARIABLE can hand the core a usable answer.
+func keepOptions(cmd int, data uintptr) {
+	// Only the MAME cores build their command line out of these answers and
+	// cannot start a game without them. Other cores were already running on
+	// "not found" and their saved option files; handing them defaults that
+	// nobody chose changes what they load, and FBNeo crashed on it.
+	if !strings.HasPrefix(coreName, "mame") {
+		return
+	}
+	if coreVars[coreName] == nil {
+		coreVars[coreName] = map[string]string{}
+	}
+	vars := coreVars[coreName]
+	keep := func(key, value string) {
+		if os.Getenv("GAMEROOM_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "option: %s = %q\n", key, value)
+		}
+		if key == "" || value == "" {
+			return
+		}
+		if _, ok := vars[key]; ok {
+			return // the saved option file and the launcher's own choices win
+		}
+		vars[key] = value
+	}
+	switch cmd {
+	case 16: // retro_variable list: value is "Label|value;default"
+		p := (*byte)(ptr(data))
+		for p != nil && readable(uintptr(unsafe.Pointer(p))) {
+			v := (*retroVariable)(unsafe.Pointer(p))
+			if v.key == nil || !readable(uintptr(unsafe.Pointer(v.key))) {
+				break
+			}
+			keep(cString(v.key), optionDefault(cString(v.value)))
+			p = (*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(v)) + unsafe.Sizeof(retroVariable{})))
+		}
+	case 52: // SET_CORE_OPTIONS_INTL: { us list, localised list }
+		intl := (*retroCoreOptionsIntl)(ptr(data))
+		first := intl.US
+		if first == nil {
+			first = intl.Local
+		}
+		base := uintptr(unsafe.Pointer(first))
+		size := unsafe.Sizeof(retroCoreOptionDefinition{})
+		for i := 0; i < 64 && base != 0; i++ {
+			at := base + uintptr(i)*size
+			if !readable(at) {
+				break
+			}
+			def := (*retroCoreOptionDefinition)(unsafe.Pointer(at))
+			if def.Key == nil || !readable(uintptr(unsafe.Pointer(def.Key))) {
+				break
+			}
+			keep(cString(def.Key), cString(def.Default))
+		}
+	}
+}
+
+// optionDefault digs the starting value out of a legacy variable's
+// "Label|value1;Label2|value2" style description.
+func optionDefault(desc string) string {
+	s := desc
+	if i := strings.LastIndexByte(desc, ';'); i >= 0 {
+		s = desc[i+1:]
+	}
+	if i := strings.IndexByte(s, '|'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
 func putStr(dst unsafe.Pointer, s string) {
@@ -865,7 +1024,26 @@ func audioSampleCallback(left, right uintptr) uintptr {
 // are copied out here and the session keeps the result.
 func videoCallback(data, w, h, pitch uintptr) uintptr {
 	s := active
-	if s == nil || data == 0 || w == 0 || h == 0 {
+	if s == nil || w == 0 || h == 0 {
+		return 0
+	}
+	if s.hwOn {
+		width, height := int(w), int(h)
+		buf := glReadFrame(width, height, int(pitch), s.hwBL)
+		if buf == nil {
+			return 0
+		}
+		s.mu.Lock()
+		if s.frame == nil || s.w != width || s.h != height {
+			s.frame = image.NewRGBA(image.Rect(0, 0, width, height))
+			s.w, s.h = width, height
+		}
+		s.frames++
+		copy(s.frame.Pix, buf)
+		s.mu.Unlock()
+		return 0
+	}
+	if data == 0 {
 		return 0
 	}
 	width, height, row := int(w), int(h), int(pitch)

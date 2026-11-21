@@ -36,7 +36,11 @@ func main() {
 		fmt.Println("RESULT NO_ROM", rom)
 		return
 	}
-	s, err := core.Start(corePath, rom, filepath.Join(raDir, "system"))
+	sysDir := filepath.Join(raDir, "system")
+	if s := os.Getenv("GAMEROOM_PROBE_SYS"); s != "" {
+		sysDir = s
+	}
+	s, err := core.Start(corePath, rom, sysDir)
 	if err != nil {
 		fmt.Println("RESULT START_FAIL", err)
 		return

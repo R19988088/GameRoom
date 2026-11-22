@@ -279,12 +279,40 @@ func glProcName(name uintptr) uintptr {
 	// entry point handed to those cores is therefore a small stub that makes
 	// the shared context current on the calling thread, then runs the driver's
 	// own function with the arguments untouched.
+	if coreName == "flycast" && cn == "glBindFramebuffer" {
+		// Flycast's last step draws its finished picture into "framebuffer 0",
+		// the window's own one, which belongs to whichever context drew it and
+		// cannot be read back from here. The call is redirected to the colour
+		// target this app hands out, so every frame it presents lands in the
+		// picture that is read back.
+		if shimBindFB == 0 {
+			shimBindFB = syscall.NewCallback(glBindFramebufferShim)
+		}
+		return shimBindFB
+	}
 	if coreName == "pcsx2" || coreName == "flycast" {
 		if os.Getenv("GAMEROOM_GLSTUB") != "" {
 			return glThreadStub(cn)
 		}
 	}
 	return gproc(cn)
+}
+
+// shimBindFB is the callback handed to Flycast in place of glBindFramebuffer.
+var shimBindFB uintptr
+
+func glBindFramebufferShim(target, fb uint32) uintptr {
+	if fb == 0 {
+		// 0x8CA9 is GL_DRAW_FRAMEBUFFER: the one drawing goes to. The read side
+		// is left alone, so the app's own readback still looks at the same
+		// colour attachment.
+		glUseCurrent()
+		fb = uint32(glFBO)
+	}
+	if bind := gproc("glBindFramebuffer"); bind != 0 {
+		syscall.SyscallN(bind, uintptr(target), uintptr(fb))
+	}
+	return 0
 }
 
 // glPrepare creates the hidden window and a context matching what the core
@@ -473,7 +501,15 @@ func glCreateContext(major, minor uint32, depth, stencil bool) error {
 			}
 		}
 	}
-	return glMakeFBO(2048, 2048, depth, stencil)
+	if err := glMakeFBO(2048, 2048, depth, stencil); err != nil {
+		return err
+	}
+	// The context this app made stays off any thread between frames. A core such
+	// as Dolphin runs its GPU work on threads it started itself, and those get a
+	// shared context of their own; wglShareLists refuses while the context it
+	// shares from is current anywhere, so it is released here rather than kept.
+	procWglMakeCurrent.Call(0, 0)
+	return nil
 }
 
 // glMakeFBO gives the core a colour target it can draw into; the app reads it
@@ -595,10 +631,18 @@ func glThreadContext() uintptr {
 	if rc == 0 {
 		return 0
 	}
+	// wglShareLists fails while either context is current somewhere, and this
+	// thread may still have the app's own context current from an earlier call.
+	if cur, _, _ := procWglGetCurrentContext.Call(); cur != 0 {
+		procWglMakeCurrent.Call(0, 0)
+	}
 	// Sharing is what lets a frame the main context reads back contain what
 	// this thread drew.
 	ok, _, _ := procWglShareLists.Call(uintptr(glRC), rc)
 	if ok == 0 {
+		if os.Getenv("GAMEROOM_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "gl: share lists failed for thread %d\n", tid)
+		}
 		procWglDeleteContext.Call(rc)
 		return 0
 	}

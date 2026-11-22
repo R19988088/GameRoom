@@ -61,6 +61,11 @@ func (s *Session) StartSound() {
 	if s.audio == nil {
 		return
 	}
+	// Diagnostic: GAMEROOM_NOAUDIO leaves the core's audio_ready unstarted, so a
+	// crash that only appears with sound can be told apart from a drawing fault.
+	if os.Getenv("GAMEROOM_NOAUDIO") != "" {
+		return
+	}
 	s.sndOnce.Do(func() { go s.soundLoop() })
 }
 

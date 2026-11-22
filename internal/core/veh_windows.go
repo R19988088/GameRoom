@@ -44,6 +44,12 @@ func installExceptionFilter() {
 				}
 				return exceptionContinueExecution
 			}
+			if os.Getenv("GAMEROOM_DEBUG") != "" {
+				// EXCEPTION_RECORD: code, flags, inner pointer, address.
+				code := *(*uint32)(unsafe.Pointer(rec))
+				addr := *(*uintptr)(unsafe.Pointer(rec + 16))
+				fmt.Fprintf(os.Stderr, "veh: exception %#x at %#x%s\n", code, addr, moduleOf(addr))
+			}
 			return 0
 		})
 		proc.Call(1, cb)

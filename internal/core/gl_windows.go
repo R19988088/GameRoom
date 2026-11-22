@@ -92,17 +92,24 @@ var (
 	procWglGetProcAddress      = opengl32.NewProc("wglGetProcAddress")
 	procWglGetCurrentContext   = opengl32.NewProc("wglGetCurrentContext")
 	procWglCreateContextAttrib = uintptr(0) // wglCreateContextAttribsARB, from the extensions
+	procWglShareLists          = opengl32.NewProc("wglShareLists")
+	procGetThreadId            = syscall.NewLazyDLL("kernel32.dll").NewProc("GetCurrentThreadId")
+	glThreadRC                 = map[uintptr]syscall.Handle{}
 
 	glProcs = map[string]uintptr{}
+	glProcMu sync.Mutex
 )
 
 // gproc finds a GL entry point. wglGetProcAddress answers only for the 3.x and
 // extension ones; the 1.1 calls are exported from opengl32 itself, so both are
 // tried, and a name is looked up once.
 func gproc(name string) uintptr {
+	glProcMu.Lock()
 	if p, ok := glProcs[name]; ok {
+		glProcMu.Unlock()
 		return p
 	}
+	glProcMu.Unlock()
 	addr := uintptr(0)
 	if a, err := syscall.BytePtrFromString(name); err == nil {
 		r, _, _ := procWglGetProcAddress.Call(uintptr(unsafe.Pointer(a)))
@@ -118,11 +125,133 @@ func gproc(name string) uintptr {
 			addr = a
 		}
 	}
+	glProcMu.Lock()
 	glProcs[name] = addr
+	glProcMu.Unlock()
 	return addr
 }
 
 func getProcAddress(name string) uintptr { return gproc(name) }
+
+// glStubHelper runs before every GL call a foreign core makes: it is what makes
+// the shared context current on that thread.
+var glStubHelper = syscall.NewCallback(func() uintptr {
+	glUseCurrent()
+	return 0
+})
+
+var (
+	stubMu   sync.Mutex
+	stubMap  = map[string]uintptr{}
+	procVAll = syscall.NewLazyDLL("kernel32.dll").NewProc("VirtualAlloc")
+)
+
+// glThreadStub builds, once per entry point, a stub that
+//   1. saves the four integer argument registers and xmm0..3,
+//   2. calls glStubHelper so this thread gets the context,
+//   3. restores them, and
+//   4. jumps to the driver's own function.
+// The arguments therefore reach OpenGL untouched, floats included.
+func glThreadStub(name string) uintptr {
+	real := gproc(name)
+	if real == 0 {
+		return 0
+	}
+	stubMu.Lock()
+	defer stubMu.Unlock()
+	if s, ok := stubMap[name]; ok {
+		return s
+	}
+	mem, _, _ := procVAll.Call(0, 4096, 0x3000, 0x40)
+	if mem == 0 {
+		return real
+	}
+	code := []byte{
+		0x48, 0x83, 0xEC, 0x88, // sub rsp, 0x88
+		0x48, 0x89, 0x4C, 0x24, 0x20, // mov [rsp+0x20], rcx
+		0x48, 0x89, 0x54, 0x24, 0x28, // mov [rsp+0x28], rdx
+		0x4C, 0x89, 0x44, 0x24, 0x30, // mov [rsp+0x30], r8
+		0x4C, 0x89, 0x4C, 0x24, 0x38, // mov [rsp+0x38], r9
+		0x0F, 0x11, 0x44, 0x24, 0x40, // movups [rsp+0x40], xmm0
+		0x0F, 0x11, 0x4C, 0x24, 0x50, // movups [rsp+0x50], xmm1
+		0x0F, 0x11, 0x54, 0x24, 0x60, // movups [rsp+0x60], xmm2
+		0x0F, 0x11, 0x5C, 0x24, 0x70, // movups [rsp+0x70], xmm3
+		0x49, 0xBB, 0, 0, 0, 0, 0, 0, 0, 0, // mov r11, helper
+		0x41, 0xFF, 0xD3, // call r11
+		0x0F, 0x10, 0x44, 0x24, 0x40, // movups xmm0, [rsp+0x40]
+		0x0F, 0x10, 0x4C, 0x24, 0x50,
+		0x0F, 0x10, 0x54, 0x24, 0x60,
+		0x0F, 0x10, 0x5C, 0x24, 0x70,
+		0x48, 0x8B, 0x4C, 0x24, 0x20, // mov rcx, [rsp+0x20]
+		0x48, 0x8B, 0x54, 0x24, 0x28,
+		0x4C, 0x8B, 0x44, 0x24, 0x30,
+		0x4C, 0x8B, 0x4C, 0x24, 0x38,
+		0x48, 0x83, 0xC4, 0x88, // add rsp, 0x88
+		0x49, 0xBB, 0, 0, 0, 0, 0, 0, 0, 0, // mov r11, real
+		0x41, 0xFF, 0xE3, // jmp r11
+	}
+	// Patch the two mov r11 slots: the helper call first, the driver jump last.
+	first := 0
+	for i := 0; i+1 < len(code); i++ {
+		if code[i] == 0x49 && code[i+1] == 0xBB {
+			if first == 0 {
+				putU64(code[i+2:], uint64(glStubHelper))
+				first = i + 1
+			} else {
+				putU64(code[i+2:], uint64(real))
+				break
+			}
+		}
+	}
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(mem)), len(code)), code)
+	stubMap[name] = mem
+	return mem
+}
+
+func putU64(b []byte, v uint64) {
+	b[0], b[1], b[2], b[3] = byte(v), byte(v>>8), byte(v>>16), byte(v>>24)
+	b[4], b[5], b[6], b[7] = byte(v>>32), byte(v>>40), byte(v>>48), byte(v>>56)
+}
+
+// gdbgStubs wraps the shader calls when GAMEROOM_GLDBG is set, so a core whose
+// shaders fail silently can say why: whether this thread even had our context
+// current, and what the driver's own log was.
+var gdbgStubs = map[string]uintptr{
+	"glCompileShader": syscall.NewCallback(func(shader uintptr) uintptr {
+		real := gproc("glCompileShader")
+		if real == 0 {
+			return 0
+		}
+		syscall.SyscallN(real, shader)
+		var ok int32
+		syscall.SyscallN(gproc("glGetShaderiv"), shader, 0x8B81, uintptr(unsafe.Pointer(&ok)))
+		if ok == 0 {
+			var n int32 = 4096
+			var buf [4096]byte
+			syscall.SyscallN(gproc("glGetShaderInfoLog"), shader, 4096, uintptr(unsafe.Pointer(&n)), uintptr(unsafe.Pointer(&buf[0])))
+			ctx, _, _ := procWglGetCurrentContext.Call()
+			fmt.Fprintf(os.Stderr, "gldbg: shader compile FAIL ctx=%#x log=%q\n", ctx, string(buf[:n]))
+		}
+		return 0
+	}),
+	"glLinkProgram": syscall.NewCallback(func(prog uintptr) uintptr {
+		real := gproc("glLinkProgram")
+		if real == 0 {
+			return 0
+		}
+		syscall.SyscallN(real, prog)
+		var ok int32
+		syscall.SyscallN(gproc("glGetProgramiv"), prog, 0x8B82, uintptr(unsafe.Pointer(&ok)))
+		if ok == 0 {
+			var n int32 = 4096
+			var buf [4096]byte
+			syscall.SyscallN(gproc("glGetProgramInfoLog"), prog, 4096, uintptr(unsafe.Pointer(&n)), uintptr(unsafe.Pointer(&buf[0])))
+			ctx, _, _ := procWglGetCurrentContext.Call()
+			fmt.Fprintf(os.Stderr, "gldbg: program link FAIL ctx=%#x log=%q\n", ctx, string(buf[:n]))
+		}
+		return 0
+	}),
+}
 
 // glProcName is the answer a core gets when it asks for a function by name:
 // the pointer it then calls is the driver's own, so the core draws with the
@@ -131,7 +260,31 @@ func glProcName(name uintptr) uintptr {
 	if name == 0 {
 		return 0
 	}
-	return gproc(cString((*byte)(ptr(name))))
+	// A core resolves its GL entry points on whichever thread will draw —
+	// PCSX2 does it on its GS thread. Making the shared context current here
+	// means that thread has one before its first call, not after it faults.
+	glUseCurrent()
+	cn := cString((*byte)(ptr(name)))
+	if os.Getenv("GAMEROOM_GLPROC") != "" {
+		fmt.Fprintf(os.Stderr, "glproc: %s\n", cn)
+	}
+	if os.Getenv("GAMEROOM_GLDBG") != "" {
+		if stub, ok := gdbgStubs[cn]; ok {
+			return stub
+		}
+	}
+	// PCSX2 and Flycast call OpenGL from threads they made themselves. A
+	// context is current per thread, so the call from one of those threads
+	// lands in the driver with nothing current and faults the process. Every
+	// entry point handed to those cores is therefore a small stub that makes
+	// the shared context current on the calling thread, then runs the driver's
+	// own function with the arguments untouched.
+	if coreName == "pcsx2" || coreName == "flycast" {
+		if os.Getenv("GAMEROOM_GLSTUB") != "" {
+			return glThreadStub(cn)
+		}
+	}
+	return gproc(cn)
 }
 
 // glPrepare creates the hidden window and a context matching what the core
@@ -397,21 +550,60 @@ func glMakeFBO(w, h int, depth, stencil bool) error {
 }
 
 // glCurrentFramebuffer is what the core asks for to draw into.
-func glCurrentFramebuffer() uintptr { return uintptr(glFBO) }
+func glCurrentFramebuffer() uintptr {
+	if s := active; s != nil {
+		s.fbAsked.Store(true)
+	}
+	return uintptr(glFBO)
+}
 
 // glUseCurrent makes the shared context current on the calling thread. A core
 // draws from the thread that runs it, not from the one that created the
 // context, and OpenGL calls without a current context on that thread are a
 // fault rather than a picture.
-func glUseCurrent() {
-	if glRC == 0 {
-		return
+func glUseCurrent() bool {
+	if glRC == 0 || glHDC == 0 {
+		return false
 	}
+	if cur, _, _ := procWglGetCurrentContext.Call(); cur == uintptr(glRC) {
+		return true
+	}
+	// A context is current in one thread at a time, and two of them cannot be
+	// current at once. Cores such as PCSX2 and Flycast draw from a thread of
+	// their own, so that thread gets its own context sharing our objects: the
+	// textures and framebuffers the core made are the same, the thread simply
+	// has the context it needs.
+	rc := glThreadContext()
+	if rc == 0 {
+		return false
+	}
+	procWglMakeCurrent.Call(uintptr(glHDC), uintptr(rc))
 	cur, _, _ := procWglGetCurrentContext.Call()
-	if cur == uintptr(glRC) {
-		return
+	return cur == uintptr(rc)
+}
+
+// glThreadContext returns this thread's own share-list context, creating it the
+// first time the thread draws.
+func glThreadContext() uintptr {
+	tid, _, _ := procGetThreadId.Call()
+	stubMu.Lock()
+	defer stubMu.Unlock()
+	if rc, ok := glThreadRC[uintptr(tid)]; ok {
+		return uintptr(rc)
 	}
-	procWglMakeCurrent.Call(uintptr(glHDC), uintptr(glRC))
+	rc, _, _ := procWglCreateContext.Call(uintptr(glHDC))
+	if rc == 0 {
+		return 0
+	}
+	// Sharing is what lets a frame the main context reads back contain what
+	// this thread drew.
+	ok, _, _ := procWglShareLists.Call(uintptr(glRC), rc)
+	if ok == 0 {
+		procWglDeleteContext.Call(rc)
+		return 0
+	}
+	glThreadRC[uintptr(tid)] = syscall.Handle(rc)
+	return rc
 }
 
 // glBindDrawFBO puts the frame target back on before a frame runs, so a core
@@ -420,7 +612,11 @@ func glBindDrawFBO() {
 	if glRC == 0 || glFBO == 0 {
 		return
 	}
-	glUseCurrent()
+	if !glUseCurrent() {
+		// No context on this thread: calling GL now would fault the process,
+		// and there is nothing to draw into anyway.
+		return
+	}
 	if bindFB := gproc("glBindFramebuffer"); bindFB != 0 {
 		syscall.SyscallN(bindFB, 0x8D40, uintptr(glFBO))
 	}

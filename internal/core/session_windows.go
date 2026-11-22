@@ -11,6 +11,7 @@ import (
 	"image"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -60,7 +61,13 @@ type Session struct {
 	hwOn   bool
 	hwBL   bool
 	vkOn   bool
-	hwFail error
+	// A core such as PCSX2 asks for a GL context for its window handling but
+	// renders the picture itself and hands the finished frame to the video
+	// callback. Once that happens the frontend has no business touching GL in
+	// the run loop: those calls land on a thread without a context and fault.
+	softFrames atomic.Bool
+	fbAsked    atomic.Bool
+	hwFail     error
 
 	closed int32
 	quit   chan struct{}
@@ -109,6 +116,9 @@ var (
 // Start loads a core and its content and leaves it ready to be stepped.
 func Start(corePath, romPath, systemDir string) (*Session, error) {
 	installExceptionFilter()
+	if os.Getenv("GAMEROOM_DEBUG") != "" {
+		fmt.Fprintf(os.Stderr, "start: core=%q rom=%q sys=%q\n", corePath, romPath, systemDir)
+	}
 	workDir = systemDir
 	h, err := loadLibrary(corePath)
 	if err != nil {
@@ -275,11 +285,22 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 	// The core has its framebuffer ready and asks the frontend to build its own
 	// OpenGL or Vulkan objects now; until that call it draws nothing.
 	if (s.hwOn || s.vkOn) && s.hw.ContextReset != 0 {
+		if os.Getenv("GAMEROOM_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "ctx: reset begin\n")
+		}
+		glUseCurrent()
 		syscall.SyscallN(s.hw.ContextReset)
+		if os.Getenv("GAMEROOM_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "ctx: reset done\n")
+		}
 	}
 	// A core expects the frontend to reset it once the rom is in, the way
 	// RetroArch does; without it some cores sit on an uninitialised board.
-	if s.reset != 0 {
+	// RetroArch does not reset a core it has just loaded: retro_load_game has
+	// already put it at the start of the game, and a second reset makes the
+	// heavier cores (PCSX2 above all) start their machine threads twice and
+	// deadlock in the second one. Reset stays on the user's reset button.
+	if s.reset != 0 && os.Getenv("GAMEROOM_RESET_ON_LOAD") != "" {
 		s.call(s.reset)
 	}
 	// RetroArch announces a joypad on both ports before it steps a core;
@@ -325,6 +346,12 @@ var active *Session
 // Run steps the core until Close. Frames are published as they come.
 func (s *Session) Run() {
 	defer close(s.done)
+	// OpenGL is bound to a thread, and the cores call it straight from here.
+	// A goroutine that migrates to another thread leaves its context behind,
+	// so this one stays where it is for the whole game.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	glUseCurrent()
 	period := time.Duration(float64(time.Second) / s.fps)
 	next := time.Now()
 	for {
@@ -334,12 +361,19 @@ func (s *Session) Run() {
 		default:
 		}
 		s.SetKeys(pollKeys())
-		if s.hwOn {
-			// A GL core that never asks which framebuffer to draw into draws
-			// into this one, so it is bound again for every frame.
+		if os.Getenv("GAMEROOM_DEBUG") != "" && s.frames < 40 {
+			fmt.Fprintf(os.Stderr, "run: enter frame %d fps=%v\n", s.frames, s.fps)
+		}
+		t0 := time.Now()
+		if s.hwOn && s.fbAsked.Load() && !s.softFrames.Load() {
+			// A core that asked for our framebuffer draws into it, so it is bound
+			// again for every frame.
 			glBindDrawFBO()
 		}
 		s.call(s.run)
+		if os.Getenv("GAMEROOM_DEBUG") != "" && s.frames < 40 {
+			fmt.Fprintf(os.Stderr, "run: frame %d done after %v\n", s.frames, time.Since(t0))
+		}
 		if f, ok := s.onFrame.Load().(func()); ok && f != nil {
 			f()
 		}
@@ -804,6 +838,14 @@ func loadCoreOptions(name, raDir string) {
 	for k, v := range coreVars[name] {
 		vars[k] = v
 	}
+	// PCSX2's hardware renderer wants the GS to draw OpenGL on its own thread,
+	// which this frontend cannot hand to it yet: the shaders fail to compile
+	// and the core then faults. Its software renderer runs every PS2 game and
+	// hands back finished frames, so it is the default until the GL path is
+	// settled; GAMEROOM_PCSX2_GL=1 switches the experiment back on.
+	if strings.HasPrefix(name, "pcsx2") && os.Getenv("GAMEROOM_PCSX2_GL") == "" {
+		vars["pcsx2_renderer"] = "Software"
+	}
 	coreVars[name] = vars
 }
 
@@ -1127,6 +1169,9 @@ func videoCallback(data, w, h, pitch uintptr) uintptr {
 	if s == nil || w == 0 || h == 0 {
 		return 0
 	}
+	if os.Getenv("GAMEROOM_DEBUG") != "" && s.frames < 3 {
+		fmt.Fprintf(os.Stderr, "video: cb data=%v %dx%d pitch=%d\n", data != 0, w, h, pitch)
+	}
 	if s.vkOn {
 		width, height := int(w), int(h)
 		buf := vkReadFrame(width, height)
@@ -1162,6 +1207,7 @@ func videoCallback(data, w, h, pitch uintptr) uintptr {
 	if data == 0 {
 		return 0
 	}
+	s.softFrames.Store(true)
 	width, height, row := int(w), int(h), int(pitch)
 	if row <= 0 {
 		// A core may leave the stride out, meaning rows are simply packed.

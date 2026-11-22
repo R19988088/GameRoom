@@ -715,7 +715,9 @@ func glReadFrame(w, h, pitch int, bottomLeft bool) []byte {
 	}
 	buf := make([]byte, w*h*4)
 	syscall.SyscallN(readPix, 0, 0, uintptr(w), uintptr(h), 0x1908, 0x1401, uintptr(unsafe.Pointer(&buf[0])))
-	if !bottomLeft {
+	// The rows are flipped when the core said its picture is bottom-up, which
+	// is what a framebuffer straight from the driver looks like.
+	if bottomLeft {
 		row := make([]byte, w*4)
 		for y := 0; y < h/2; y++ {
 			top := y * w * 4

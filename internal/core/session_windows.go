@@ -779,7 +779,14 @@ func loadCoreOptions(name, raDir string) {
 	path := filepath.Join(raDir, "config", name, name+".opt")
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return
+		// The folder is not always named after the core: PlayStation 2 keeps
+		// its settings under LRPS2, and the keys inside still start with
+		// "pcsx2_". Whichever folder speaks the core's own key prefix is the
+		// one that belongs to it.
+		b = findOptionsByKeys(raDir, name)
+		if b == nil {
+			return
+		}
 	}
 	vars := map[string]string{}
 	for _, line := range strings.Split(string(b), "\n") {
@@ -798,6 +805,40 @@ func loadCoreOptions(name, raDir string) {
 		vars[k] = v
 	}
 	coreVars[name] = vars
+}
+
+// findOptionsByKeys looks in config\* for the .opt file that speaks this core's
+// option keys, which is how a core keeps its settings under a folder that has
+// nothing to do with its library name.
+func findOptionsByKeys(raDir, name string) []byte {
+	root := filepath.Join(raDir, "config")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var best []byte
+	bestScore := 2
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		p := filepath.Join(root, e.Name(), e.Name()+".opt")
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		score := 0
+		for _, line := range strings.Split(string(data), "\n") {
+			k, _, ok := strings.Cut(line, " = ")
+			if ok && strings.HasPrefix(strings.TrimSpace(k), name+"_") {
+				score++
+			}
+		}
+		if score > bestScore {
+			bestScore, best = score, data
+		}
+	}
+	return best
 }
 
 // isArcadeDisc reports whether the image in romPath is an American Laser Games

@@ -399,12 +399,28 @@ func glMakeFBO(w, h int, depth, stencil bool) error {
 // glCurrentFramebuffer is what the core asks for to draw into.
 func glCurrentFramebuffer() uintptr { return uintptr(glFBO) }
 
+// glUseCurrent makes the shared context current on the calling thread. A core
+// draws from the thread that runs it, not from the one that created the
+// context, and OpenGL calls without a current context on that thread are a
+// fault rather than a picture.
+func glUseCurrent() {
+	if glRC == 0 {
+		return
+	}
+	cur, _, _ := procWglGetCurrentContext.Call()
+	if cur == uintptr(glRC) {
+		return
+	}
+	procWglMakeCurrent.Call(uintptr(glHDC), uintptr(glRC))
+}
+
 // glBindDrawFBO puts the frame target back on before a frame runs, so a core
 // that draws to "whatever is bound" lands in the picture we read back.
 func glBindDrawFBO() {
 	if glRC == 0 || glFBO == 0 {
 		return
 	}
+	glUseCurrent()
 	if bindFB := gproc("glBindFramebuffer"); bindFB != 0 {
 		syscall.SyscallN(bindFB, 0x8D40, uintptr(glFBO))
 	}
@@ -417,6 +433,7 @@ func glReadFrame(w, h, pitch int, bottomLeft bool) []byte {
 	if glRC == 0 || w <= 0 || h <= 0 {
 		return nil
 	}
+	glUseCurrent()
 	if w > glWidth || h > glHeight {
 		return nil // a frame larger than the target: the core keeps the old picture
 	}

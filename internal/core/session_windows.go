@@ -59,6 +59,7 @@ type Session struct {
 	hw     hwRenderCallback
 	hwOn   bool
 	hwBL   bool
+	vkOn   bool
 	hwFail error
 
 	closed int32
@@ -272,8 +273,8 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 		return nil, fmt.Errorf("这个核心打不开这个游戏：%s", romPath)
 	}
 	// The core has its framebuffer ready and asks the frontend to build its own
-	// OpenGL objects now; until that call it draws nothing.
-	if s.hwOn && s.hw.ContextReset != 0 {
+	// OpenGL or Vulkan objects now; until that call it draws nothing.
+	if (s.hwOn || s.vkOn) && s.hw.ContextReset != 0 {
 		syscall.SyscallN(s.hw.ContextReset)
 	}
 	// A core expects the frontend to reset it once the rom is in, the way
@@ -472,12 +473,37 @@ func loadLibrary(path string) (uintptr, error) {
 	return h, nil
 }
 
+// cstrp reads a C string for the debug log only.
+func cstrp(p *byte) string {
+	if p == nil {
+		return ""
+	}
+	var b []byte
+	for i := 0; i < 256; i++ {
+		c := *(*byte)(unsafe.Add(unsafe.Pointer(p), i))
+		if c == 0 {
+			break
+		}
+		b = append(b, c)
+	}
+	return string(b)
+}
+
 func envCallback(cmd, data uintptr) uintptr {
 	if active == nil {
 		return 0
 	}
 	if os.Getenv("GAMEROOM_DEBUG") != "" {
 		fmt.Fprintf(os.Stderr, "env: cmd=%d(0x%x) data=0x%x\n", cmd, cmd, data)
+	}
+	// GET_HW_RENDER_INTERFACE. It arrives as 41|0x10000, which the masked
+	// switch below cannot tell apart from plain 41, so it is answered first.
+	if cmd == 0x10029 {
+		if active.vkOn && data != 0 {
+			*(*uintptr)(ptr(data)) = uintptr(unsafe.Pointer(&vkIface))
+			return 1
+		}
+		return 0
 	}
 	switch int(cmd) & 0xffff {
 	case 3: // GET_CAN_DUPE
@@ -500,10 +526,31 @@ func envCallback(cmd, data uintptr) uintptr {
 			return 0
 		}
 		cb := (*hwRenderCallback)(ptr(data))
+		if cb.ContextType == hwContextVulkan {
+			// Vulkan cores do not draw into a framebuffer of ours: they take a
+			// device and queue from the frontend and hand finished images back.
+			if err := vkPrepare(); err != nil {
+				if os.Getenv("GAMEROOM_DEBUG") != "" {
+					fmt.Fprintf(os.Stderr, "vk: %v\n", err)
+				}
+				active.hwFail = err
+				return 0
+			}
+			active.vkOn = true
+			active.hwOn = false
+			cb.GetFramebuffer = 0
+			cb.GetProcAddress = 0
+			// Kept so the context reset can be called once the rom is in, the
+			// order RetroArch uses: a Vulkan core picks its renderer while
+			// loading, and only then builds its device objects.
+			active.hw = *cb
+			active.hwBL = cb.BottomLeftOrigin != 0
+			return 1
+		}
 		switch cb.ContextType {
 		case hwContextOpenGL, hwContextOpenGLCore:
 		default:
-			return 0 // Direct3D or Vulkan: this app has only OpenGL to give
+			return 0 // Direct3D: this app has only OpenGL and Vulkan to give
 		}
 		active.hw = *cb
 		active.hwBL = cb.BottomLeftOrigin != 0
@@ -523,6 +570,9 @@ func envCallback(cmd, data uintptr) uintptr {
 		if data != 0 {
 			opt := (*retroVariable)(ptr(data))
 			v, ok := coreVar(opt.key)
+			if os.Getenv("GAMEROOM_DEBUG") != "" {
+				fmt.Fprintf(os.Stderr, "var: %q -> %q (%v)\n", cstrp(opt.key), v, ok)
+			}
 			if ok {
 				opt.value = &keepStrAdd(v)[0]
 				return 1
@@ -1026,6 +1076,22 @@ func audioSampleCallback(left, right uintptr) uintptr {
 func videoCallback(data, w, h, pitch uintptr) uintptr {
 	s := active
 	if s == nil || w == 0 || h == 0 {
+		return 0
+	}
+	if s.vkOn {
+		width, height := int(w), int(h)
+		buf := vkReadFrame(width, height)
+		if buf == nil {
+			return 0
+		}
+		s.mu.Lock()
+		if s.frame == nil || s.w != width || s.h != height {
+			s.frame = image.NewRGBA(image.Rect(0, 0, width, height))
+			s.w, s.h = width, height
+		}
+		s.frames++
+		copy(s.frame.Pix, buf)
+		s.mu.Unlock()
 		return 0
 	}
 	if s.hwOn {

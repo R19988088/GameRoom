@@ -22,17 +22,21 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// The numbers are libretro's own: 1 is a compatibility OpenGL context, 3 a
+// core profile one, 6 Vulkan. Treating 6 as a GL profile is what made Vulkan
+// cores ask for an interface nobody offered and then die in their own Vulkan
+// loader.
 const (
 	hwContextNone = iota
 	hwContextOpenGL
-	hwContextD3D9
-	hwContextD3D10
-	hwContextD3D11
-	hwContextD3D12
-	hwContextOpenGLCore
 	hwContextGLES2
+	hwContextOpenGLCore
 	hwContextGLES3
+	hwContextGLESVersion
 	hwContextVulkan
+	hwContextD3D11
+	hwContextD3D10
+	hwContextD3D12
 )
 
 // hwRenderCallback mirrors retro_hw_render_callback byte for byte: two words of

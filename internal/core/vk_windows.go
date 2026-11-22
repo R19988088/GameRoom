@@ -651,28 +651,16 @@ func vkPickDeviceExtensions(phys uintptr) []string {
 	if r, _, _ := syscall.SyscallN(enumerate, phys, 0, uintptr(unsafe.Pointer(&count)), uintptr(unsafe.Pointer(&props[0]))); r != vkSuccess {
 		return nil
 	}
-	want := map[string]bool{
-		"VK_KHR_swapchain":                   true,
-		"VK_KHR_maintenance1":                true,
-		"VK_KHR_get_memory_requirements2":    true,
-		"VK_KHR_bind_memory2":                true,
-		"VK_KHR_dedicated_allocation":        true,
-		"VK_KHR_sampler_mirror_clamp_to_edge": true,
-		"VK_KHR_image_format_list":           true,
-		"VK_EXT_descriptor_indexing":         true,
-		"VK_KHR_imageless_framebuffer":       true,
-		"VK_KHR_shader_float16_int8":         true,
-		"VK_KHR_copy_commands2":              true,
-	}
+	// Everything the driver offers is enabled: a core picks the extensions it
+	// was built against, and a missing one shows up as a null function pointer
+	// that it then calls.
 	var out []string
 	for i := range props {
 		name := string(props[i].Name[:])
 		if j := indexZero(name); j > 0 {
 			name = name[:j]
 		}
-		if want[name] {
-			out = append(out, name)
-		}
+		out = append(out, name)
 	}
 	return out
 }
@@ -755,6 +743,9 @@ func vkSetSignalSemaphore(handle, sem uintptr) uintptr {
 }
 
 func vkSetCommandBuffers(handle, num, cmds uintptr) uintptr {
+	if os.Getenv("GAMEROOM_DEBUG") != "" {
+		fmt.Fprintf(os.Stderr, "vk: set_command_buffers n=%d\n", num)
+	}
 	if num == 0 || cmds == 0 {
 		return 0
 	}
@@ -766,6 +757,9 @@ func vkSetCommandBuffers(handle, num, cmds uintptr) uintptr {
 }
 
 func vkSetImage(handle, image, numsems, sems uintptr) uintptr {
+	if os.Getenv("GAMEROOM_DEBUG") != "" {
+		fmt.Fprintf(os.Stderr, "vk: set_image img=0x%x sems=%d\n", image, numsems)
+	}
 	if image == 0 {
 		return 0
 	}

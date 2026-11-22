@@ -399,6 +399,17 @@ func glMakeFBO(w, h int, depth, stencil bool) error {
 // glCurrentFramebuffer is what the core asks for to draw into.
 func glCurrentFramebuffer() uintptr { return uintptr(glFBO) }
 
+// glBindDrawFBO puts the frame target back on before a frame runs, so a core
+// that draws to "whatever is bound" lands in the picture we read back.
+func glBindDrawFBO() {
+	if glRC == 0 || glFBO == 0 {
+		return
+	}
+	if bindFB := gproc("glBindFramebuffer"); bindFB != 0 {
+		syscall.SyscallN(bindFB, 0x8D40, uintptr(glFBO))
+	}
+}
+
 // glReadFrame reads the colour target back as RGBA rows, top row first. The core
 // draws bottom-up (OpenGL's own orientation) unless it said otherwise, so the
 // rows are flipped here once rather than twice further up.

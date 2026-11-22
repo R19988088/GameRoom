@@ -334,6 +334,11 @@ func (s *Session) Run() {
 		default:
 		}
 		s.SetKeys(pollKeys())
+		if s.hwOn {
+			// A GL core that never asks which framebuffer to draw into draws
+			// into this one, so it is bound again for every frame.
+			glBindDrawFBO()
+		}
 		s.call(s.run)
 		if f, ok := s.onFrame.Load().(func()); ok && f != nil {
 			f()
@@ -526,7 +531,10 @@ func envCallback(cmd, data uintptr) uintptr {
 			return 0
 		}
 		cb := (*hwRenderCallback)(ptr(data))
-		if cb.ContextType == hwContextVulkan {
+		if os.Getenv("GAMEROOM_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "hwrender: ask type=%d v=%d.%d\n", cb.ContextType, cb.VersionMajor, cb.VersionMinor)
+		}
+		if cb.ContextType == hwContextVulkan && os.Getenv("GAMEROOM_VK") != "" {
 			// Vulkan cores do not draw into a framebuffer of ours: they take a
 			// device and queue from the frontend and hand finished images back.
 			if err := vkPrepare(); err != nil {

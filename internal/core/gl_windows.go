@@ -187,7 +187,7 @@ func glCreateWindow() error {
 		uintptr(unsafe.Pointer(name)),
 		uintptr(unsafe.Pointer(name)),
 		0x80000000, // WS_POPUP, never shown
-		0, 0, 1, 1,
+		0, 0, 1920, 1080,
 		0, 0, 0, 0)
 	if hwnd == 0 {
 		return fmt.Errorf("无法建立 OpenGL 窗口：%v", callErr)
@@ -429,9 +429,32 @@ func glReadFrame(w, h, pitch int, bottomLeft bool) []byte {
 	if readPix == 0 || bindFB == 0 {
 		return nil
 	}
-	syscall.SyscallN(bindFB, 0x8D40, uintptr(glFBO))
+	if os.Getenv("GAMEROOM_DEBUG") != "" {
+		if geti := gproc("glGetIntegerv"); geti != 0 {
+			var bound int32
+			syscall.SyscallN(geti, 0x8CA6, uintptr(unsafe.Pointer(&bound)))
+			var vp [4]int32
+			syscall.SyscallN(geti, 0x0BA2, uintptr(unsafe.Pointer(&vp[0])))
+			fmt.Fprintf(os.Stderr, "gl: drew into fb=%d viewport=%d,%d %dx%d (ours=%d) ask=%dx%d\n",
+				bound, vp[0], vp[1], vp[2], vp[3], glFBO, w, h)
+		}
+	}
+	// A core either draws into the framebuffer we hand out or straight into the
+	// window's own one; whichever it used is the one to read back from. The
+	// window is created at a usable size for exactly this case.
+	target := glFBO
+	readFrom := uintptr(0x8CE0) // GL_COLOR_ATTACHMENT0
+	if geti := gproc("glGetIntegerv"); geti != 0 {
+		var bound int32
+		syscall.SyscallN(geti, 0x8CA6, uintptr(unsafe.Pointer(&bound)))
+		if bound == 0 {
+			target = 0
+			readFrom = 0x0405 // GL_BACK
+		}
+	}
+	syscall.SyscallN(bindFB, 0x8D40, uintptr(target))
 	if readBuf != 0 {
-		syscall.SyscallN(readBuf, 0x8CE0)
+		syscall.SyscallN(readBuf, readFrom)
 	}
 	buf := make([]byte, w*h*4)
 	syscall.SyscallN(readPix, 0, 0, uintptr(w), uintptr(h), 0x1908, 0x1401, uintptr(unsafe.Pointer(&buf[0])))

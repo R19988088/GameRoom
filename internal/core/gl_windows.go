@@ -639,7 +639,17 @@ func glFramebufferForCurrentContext() uint32 {
 		texFB = gproc("glFramebufferTexture2DEXT")
 	}
 	fb := uint32(0)
-	syscall.SyscallN(genFB, 1, uintptr(unsafe.Pointer(&fb)))
+	// Framebuffer names are per context, and cores pass the number they were
+	// given to whichever thread draws. That number only means the same target
+	// if every context holds a framebuffer under the same name, so the name the
+	// app uses is kept here: names are handed out in order from 1, so asking for
+	// more of them walks up to the app's own number.
+	for i := 0; i < 64; i++ {
+		syscall.SyscallN(genFB, 1, uintptr(unsafe.Pointer(&fb)))
+		if fb == glFBO || i == 63 {
+			break
+		}
+	}
 	syscall.SyscallN(bindFB, 0x8D40, uintptr(fb))
 	syscall.SyscallN(texFB, 0x8D40, 0x8CE0, 0x0DE1, uintptr(glTex), 0)
 	if (glDepth || glStencil) && os.Getenv("GAMEROOM_FBO_NODEPTH") == "" {
@@ -742,6 +752,12 @@ func glThreadContext() uintptr {
 		return 0
 	}
 	glThreadRC[uintptr(tid)] = syscall.Handle(rc)
+	// The framebuffer the core was given is a number, and numbers mean something
+	// only inside one context. A framebuffer under that same number is made here
+	// before this thread draws, so a core that binds the number on this thread
+	// lands in the shared colour texture.
+	procWglMakeCurrent.Call(uintptr(glHDC), rc)
+	glFramebufferForCurrentContext()
 	return rc
 }
 
@@ -799,6 +815,25 @@ func glReadFrame(w, h, pitch int, bottomLeft bool) []byte {
 			}
 			fmt.Fprintf(os.Stderr, "gl: drew into fb=%d viewport=%d,%d %dx%d (ours=%d) ask=%dx%d status=0x%x err=%d\n",
 				bound, vp[0], vp[1], vp[2], vp[3], glFBO, w, h, status, errv)
+		}
+	}
+	// A frame drawn into the shared colour texture can be taken straight out of
+	// the texture, which does not depend on which context holds the framebuffer
+	// name the core was given.
+	if os.Getenv("GAMEROOM_TEXREAD") != "" && glTex != 0 {
+		if gti := gproc("glGetTexImage"); gti != 0 {
+			buf := make([]byte, w*h*4)
+			syscall.SyscallN(gti, 0x0DE1, 0, 0x1908, 0x1401, uintptr(unsafe.Pointer(&buf[0])))
+			if bottomLeft {
+				row := make([]byte, w*4)
+				for y := 0; y < h/2; y++ {
+					top, bot := y*w*4, (h-1-y)*w*4
+					copy(row, buf[top:top+w*4])
+					copy(buf[top:top+w*4], buf[bot:bot+w*4])
+					copy(buf[bot:bot+w*4], row)
+				}
+			}
+			return buf
 		}
 	}
 	// A core either draws into the framebuffer we hand out or straight into the

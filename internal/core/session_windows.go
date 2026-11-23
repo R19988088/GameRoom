@@ -1227,6 +1227,17 @@ func videoCallback(data, w, h, pitch uintptr) uintptr {
 		}
 		s.frames++
 		copy(s.frame.Pix, buf)
+		if os.Getenv("GAMEROOM_DEBUG") != "" && s.frames%120 == 1 {
+			sum, nz := 0, 0
+			for i := 0; i+3 < len(buf); i += 4 {
+				v := int(buf[i]) + int(buf[i+1]) + int(buf[i+2])
+				sum += v
+				if v > 24 {
+					nz++
+				}
+			}
+			fmt.Fprintf(os.Stderr, "hw: frame %d %dx%d mean=%.1f lit=%d\n", s.frames, width, height, float64(sum)/float64(len(buf)/4*3), nz)
+		}
 		s.mu.Unlock()
 		return 0
 	}

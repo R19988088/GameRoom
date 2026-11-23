@@ -38,7 +38,7 @@ func defaultCRT() crtParams {
 		"LINEAR": 0.2, "CURVE_X": 0.07, "CURVE_Y": 0.07,
 		"MASK_INTENSITY": 0.9, "MASK_TYPE": 0, "ss": 0.5,
 		"DIFFUSION": 0.05, "DIFF_OVEREXP": 0, "REFLECTION": 0.25, "REFLECTION_SWITCH": 1,
-		"E_OFFSET": 1.8, "REFLECT_GAP": 0.02, "FILLET_D": -0.5, "B_CORNER": 0.8, "BORDER_SIZE": 0,
+		"E_OFFSET": 1.8, "REFLECT_GAP": 0.02,
 		"LINE_PITCH_COEF": 1, "LINE_THICKNESS": 0.95, "LINE_OPACITY": 0.95,
 		"PIC_SIZE": 0.5, "INT_TOL": 0.05, "INT_SCALE": 0, "GAMMA": 2.2, "PAD_Y": 0,
 	}
@@ -142,7 +142,6 @@ var knobs = []knob{
 	{"EXPOSURE", "曝光", 0.1, 2, 0, 1, 0.1},
 	{"CT", "色温", -2.8, 2.8, 0, 1, 0.1},
 	{"CORNER", "圆角", 0, 1, 0, 1, 0.1},
-	{"BORDER_SIZE", "边框尺寸", 0, 0.5, 0, 1, 0.1},
 	{"INT_TOL", "允许过扫描", 0, 0.1, 0, 1, 0.1},
 	{"INT_SCALE", "强制整数缩放", 0, 1, 1, 1, 0.1},
 	{"DIFFUSION", "光晕扩散", 0, 1, 0, 1, 0.1},
@@ -151,8 +150,6 @@ var knobs = []knob{
 	{"E_OFFSET", "边框反射偏移", 0, 2, 0, 1, 0.1},
 	{"REFLECTION_SWITCH", "边框反射开关", 0, 1, 1, 1, 0.1},
 	{"REFLECT_GAP", "反射间距 (%)", 0, 0.24, 0, 100, 1},
-	{"B_CORNER", "边框圆角大小", 0, 1, 0, 1, 0.1},
-	{"FILLET_D", "边框圆角曲率", -0.5, 0.5, 0, 1, 0.1},
 	{"PPOY", "图像位置 Y", -50, 50, 0, 1, 0.1},
 	{"PAD_Y", "上下间距 (%)", 0, 10, 0, 1, 0.5},
 }
@@ -249,7 +246,6 @@ var CORNER float
 var PPOY float
 var PAD_Y float
 var PIC_SIZE float
-var BORDER_SIZE float
 var INT_TOL float
 var INT_SCALE float
 var DIFFUSION float
@@ -259,8 +255,6 @@ var E_OFFSET float
 var REFLECT_GAP float
 var REFLECTION_SWITCH float
 var GAME_ASPECT float
-var B_CORNER float
-var FILLET_D float
 
 // warp is the tube's glass, taken on coordinates centred on the picture, so the
 // picture bends around its own middle and stays centred.
@@ -515,8 +509,8 @@ func LayerEffect(pos vec2) vec4 {
 	c := warp(uv - vec2(0.5, 0.5))
 
 	isz := image0Size()
-	// The picture keeps its own shape inside the window; PIC_SIZE trims it and
-	// BORDER_SIZE takes the glass's rim off what is left. Everything outside the
+	// The picture keeps its own shape inside the window; PIC_SIZE trims it, and
+	// PAD_Y holds it away from the glass's top and bottom. Everything outside the
 	// picture is the glass, so the reflection reaches the window's own edges.
 	ar := isz.x / isz.y
 	if GAME_ASPECT > 0.4 {
@@ -546,8 +540,8 @@ func LayerEffect(pos vec2) vec4 {
 		rw = 1.0
 		rh = ratio / ar
 	}
-	rw = rw * PIC_SIZE * (1.0 - BORDER_SIZE) * padY
-	rh = rh * PIC_SIZE * (1.0 - BORDER_SIZE) * padY
+	rw = rw * PIC_SIZE * padY
+	rh = rh * PIC_SIZE * padY
 	if rw < 0.03 {
 		rw = 0.03
 	}
@@ -791,9 +785,12 @@ func filterName(level string) string {
 // moves is a third narrower than the 204 it had. The panel keeps its 720: the
 // window it opens in is only that plus the two insets, so the padding and the
 // gutter are paid for by the name's side, not by a wider sheet of glass.
+// The top and bottom take 16, not 48: the title and its ✕ belong to the glass's
+// own edge, and only the columns sit in from the sides.
 const (
 	filterPanelW    = 720
 	filterPanelPad  = 48
+	filterPanelEdge = 16
 	filterColumnGap = 120
 	filterLabelW    = 144
 	filterPillW     = 100
@@ -820,7 +817,7 @@ func filterBodyContentH() float32 {
 func (a *App) filterBodyHeight(c *ui.Context) float32 {
 	h := filterBodyContentH()
 	if _, pageH := c.Size(); pageH > 0 {
-		avail := pageH - 2*edgeInset - 2*filterPanelPad -
+		avail := pageH - 2*edgeInset - 2*filterPanelEdge -
 			filterHeaderH - filterSwitchH - filterFooterH - 3*filterPanelGap
 		if avail < h {
 			h = avail
@@ -834,15 +831,16 @@ func (a *App) filterBodyHeight(c *ui.Context) float32 {
 
 // filterPanel is the panel itself: one group of the preset's parameters in two
 // columns on one page, with a single on/off switch above it and 保存 / 切换
-// below. The columns are the whole of the layout standard: 48 of padding, 120
-// between them, and an 8px vertical rhythm. The two buttons are the whole of the
-// group management: 保存 writes the numbers being heard into the current
-// tune-<n>.json (or starts the next one), 切换 moves to the next saved group and
-// takes both its preset and its numbers.
+// below. The columns are the whole of the layout standard: 48 in from the sides,
+// 120 between them, 16 above the title and below the buttons, and an 8px
+// vertical rhythm. The two buttons are the whole of the group management: 保存
+// writes the numbers being heard into the current tune-<n>.json (or starts the
+// next one), 切换 moves to the next saved group and takes both its preset and
+// its numbers.
 func (a *App) filterPanel(c *ui.Context, t *ui.Theme) {
 	ui.Box(c).Absolute().Left(0).Right(0).Top(0).Bottom(0).Children(func() {
 		col := ui.Column(c).Absolute().Right(edgeInset).Top(edgeInset).Width(filterPanelW).
-			Padding(filterPanelPad).Radius(18).Gap(filterPanelGap).
+			Padding(filterPanelEdge, filterPanelPad, filterPanelEdge, filterPanelPad).Radius(18).Gap(filterPanelGap).
 			Material(glass.Glass{Clarity: 0.62, Tint: ui.Hex("#14161ee6")}).
 			Border(1, ui.Hex("#ffffff1f")).
 			Shadow(0, 26, 60, 0, ui.Hex("#000000cc"))

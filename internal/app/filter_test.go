@@ -51,6 +51,13 @@ func TestFilterPanelUsesTwoWideColumns(t *testing.T) {
 	if filterLabelW != 144 {
 		t.Fatalf("the name is %d wide, want 144 (30%% less than the 204 it was)", filterLabelW)
 	}
+	// The title and its ✕ sit on the glass's own top edge, 16 in, not in the
+	// columns' 48.
+	if title, ok := tt.Find("脑浆油条 参数"); !ok {
+		t.Fatalf("the panel's title is missing")
+	} else if cy := title.Y + title.H/2; cy > 16+16+filterHeaderH {
+		t.Fatalf("the title's middle is at %.0f, too far below the panel's top edge", cy)
+	}
 
 	// A shorter window keeps the same two columns but clips the body into one
 	// scroll; the footer must still be on screen, not pushed below the window.

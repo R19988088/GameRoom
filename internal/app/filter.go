@@ -543,11 +543,17 @@ func LayerEffect(pos vec2) vec4 {
 	rw = rw * PIC_SIZE * padY
 	rh = rh * PIC_SIZE * padY
 
-	// The picture is an even number of the core's own lines tall, so the bright
-	// and dark rows of a line divide it the same way on every line: the scanline
-	// pattern sits identically on line 1 and line 224 instead of sliding a
-	// fraction of a pixel per line, which is what turns the mask into a moiré.
-	// What the even step leaves unused stays black in the bezel.
+	// The picture is a whole number of the core's own pixels: one game pixel is
+	// k screen pixels across and k rows down, k taken from 1 to 8. The scanlines
+	// run one game line at a time, so every line divides into the same k rows and
+	// the pattern sits identically on line 1 and line 224 instead of sliding a
+// fraction of a pixel per line, which is what turns the mask into a moiré.
+// Any whole k holds that, odd ones included: what breaks the lock is a fraction,
+// not an odd number. Only whole steps are allowed because that is the whole
+// point of the lock (and, with 224 lines, only whole steps exist on a display
+// this coarse). The best step for the box is the one that fits, not the nearest
+// power of two, or the picture is either a patch in the middle or nearly the
+// whole screen with nothing in between.
 	kRows := 0.0
 	if INT_SCALE > 0.5 {
 		boxH := rh * size.y * ps
@@ -559,12 +565,11 @@ func LayerEffect(pos vec2) vec4 {
 		if max := floor(boxW / (isz.y * ar)); k > max {
 			k = max
 		}
-		if k < 2.0 {
+		if k > 8.0 {
+			k = 8.0
+		}
+		if k < 1.0 {
 			k = 1.0
-		} else {
-			// 双数: each line gets an even number of output rows, so a line pairs
-			// up its bright and dark rows and no row is left over at its end.
-			k = floor(k*0.5) * 2.0
 		}
 		kRows = k
 		rh = k * isz.y / (size.y * ps)
@@ -715,14 +720,12 @@ func LayerEffect(pos vec2) vec4 {
 			}
 			pitch = sc * m
 		} else {
-			// Every divisor of the line, nearest to what the knob asks for; one
-			// scanline per output row (1) is left out because that is a mask with
-			// no bright row in it at all.
-			pitch = 1.0
-			if sc >= 2.0 {
-				pitch = 2.0
-			}
-			best := abs(pitch - want)
+			// Every divisor of the line, nearest to what the knob asks for, the
+			// whole line itself included: with an odd k that is the only one that
+			// always divides, and one scanline per output row (1) is left out
+			// because that is a mask with no bright row in it at all.
+			pitch = sc
+			best := abs(sc - want)
 			for i := 1; i <= 16; i++ {
 				d := float(i)
 				if mod(sc, d) < 0.001 {

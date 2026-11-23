@@ -12,8 +12,10 @@ import (
 //     (suv*size*ps). Reading the pitch off the window draws a picture that is
 //     half the window twice as fine as it is, so every game line reads a
 //     different part of the pattern and the mask turns into blocks.
-//  2. the line scale is snapped to an even whole number of rows, so a line's
-//     bright and dark rows divide it the same way on every line.
+//  2. the line scale is a whole number of screen pixels per game pixel, 1 to 8,
+//     never a fraction and never only the even steps (2026-11-23: the even-only
+//     rule left a 27" 4K display with just 4x, a patch in the middle, and 8x,
+//     nearly the whole screen, and nothing between them).
 //  3. the pitch is snapped to a divisor of that line (or a whole multiple), so
 //     the scanline and the line never drift against each other.
 //  4. the phase is taken a hair inside the line, so a row exactly on an edge
@@ -22,8 +24,10 @@ func TestScanlineIsLockedToThePicture(t *testing.T) {
 	for _, want := range []struct{ src, why string }{
 		{"dp := vec2(suv.x*pw, suv.y*ph)",
 			"the scanline phase must be measured in the picture's own pixels"},
-		{"k = floor(k*0.5) * 2.0",
-			"the picture's line scale must be be an even number of output rows"},
+		{"if k > 8.0 {",
+			"the picture's scale must be a whole 1..8 screen pixels per game pixel"},
+		{"pitch = sc\n",
+			"the pitch must start on the whole line, which divides even when k is odd"},
 		{"if mod(sc, d) < 0.001",
 			"the scanline pitch must be a divisor of the line it sits on"},
 		{"mod(dp.y+0.0001, pitch)",

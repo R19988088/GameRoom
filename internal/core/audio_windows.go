@@ -100,10 +100,10 @@ func (p *AudioPipe) push(samples []int16) {
 		}
 	}
 	p.pushed += int64(len(samples))
-	// Two values per frame, so a fifth of a second is rate/5 of them. When the
-	// queue is full the core waits for the device: the sound becomes the clock
-	// the emulation keeps, and no sample is ever thrown away.
-	if limit := p.rate / 5; len(p.samples) > limit {
+	// Two values per frame, so a twenty-fifth of a second is rate/25 of them.
+	// The smaller the queue the closer sound sits to the frame on screen; the
+	// core is held back just enough to keep the device fed.
+	if limit := p.rate / 25; len(p.samples) > limit {
 		for !p.closed && len(p.samples) > limit {
 			p.cond.Wait()
 		}

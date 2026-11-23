@@ -713,6 +713,11 @@ func glReadFrame(w, h, pitch int, bottomLeft bool) []byte {
 	if readBuf != 0 {
 		syscall.SyscallN(readBuf, readFrom)
 	}
+	// Drawing may still be queued in the driver; read after it has landed, or the
+	// pixels read back are whatever was there before this frame.
+	if finish := gproc("glFinish"); finish != 0 {
+		syscall.SyscallN(finish)
+	}
 	buf := make([]byte, w*h*4)
 	syscall.SyscallN(readPix, 0, 0, uintptr(w), uintptr(h), 0x1908, 0x1401, uintptr(unsafe.Pointer(&buf[0])))
 	// The rows are flipped when the core said its picture is bottom-up, which

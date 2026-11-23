@@ -69,6 +69,14 @@ type Session struct {
 	fbAsked    atomic.Bool
 	hwFail     error
 
+	// A core that presents after the frame callback has the picture ready only
+	// once Run() returns, so the readback can be taken there instead.
+	pendOn    bool
+	pendW     int
+	pendH     int
+	pendPitch int
+	pendBL    bool
+
 	closed int32
 	quit   chan struct{}
 	done   chan struct{}
@@ -371,6 +379,19 @@ func (s *Session) Run() {
 			glBindDrawFBO()
 		}
 		s.call(s.run)
+		if s.pendOn {
+			// The core finished its whole frame, present included, by now.
+			if buf := glReadFrame(s.pendW, s.pendH, s.pendPitch, s.pendBL); buf != nil {
+				s.mu.Lock()
+				if s.frame == nil || s.w != s.pendW || s.h != s.pendH {
+					s.frame = image.NewRGBA(image.Rect(0, 0, s.pendW, s.pendH))
+					s.w, s.h = s.pendW, s.pendH
+				}
+				s.frames++
+				copy(s.frame.Pix, buf)
+				s.mu.Unlock()
+			}
+		}
 		if os.Getenv("GAMEROOM_DEBUG") != "" && s.frames < 40 {
 			fmt.Fprintf(os.Stderr, "run: frame %d done after %v\n", s.frames, time.Since(t0))
 		}
@@ -1190,6 +1211,11 @@ func videoCallback(data, w, h, pitch uintptr) uintptr {
 	}
 	if s.hwOn {
 		width, height := int(w), int(h)
+		if os.Getenv("GAMEROOM_READ_AFTER") != "" {
+			s.pendOn = true
+			s.pendW, s.pendH, s.pendPitch, s.pendBL = width, height, int(pitch), s.hwBL
+			return 0
+		}
 		buf := glReadFrame(width, height, int(pitch), s.hwBL)
 		if buf == nil {
 			return 0

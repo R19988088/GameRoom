@@ -1210,6 +1210,12 @@ func inputCallback(port, device, index, id uintptr) uintptr {
 	}
 	switch int(device) {
 	case DeviceJoypad:
+		// A joypad answer belongs to one port. Until a second player has a
+		// binding set of its own, only port 0 answers; a core polling port 1
+		// must read "nothing held" rather than be handed player one's keys.
+		if port != 0 {
+			return 0
+		}
 		pads, _ := s.pads.Load().(map[int]bool)
 		if pads != nil && pads[int(id)] {
 			return 1

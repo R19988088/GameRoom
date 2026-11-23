@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -602,6 +603,13 @@ func glMakeFBO(w, h int, depth, stencil bool) error {
 	return nil
 }
 
+// glContextID is the context this thread has current, for telling threads apart
+// in the logs.
+func glContextID() uintptr {
+	c, _, _ := procWglGetCurrentContext.Call()
+	return c
+}
+
 // glCurrentFramebuffer is what the core asks for to draw into. The framebuffer
 // is made in the context of the thread that asks: names of framebuffer objects
 // belong to one context, so the app's own framebuffer cannot be handed to a
@@ -639,11 +647,20 @@ func glFramebufferForCurrentContext() uint32 {
 		texFB = gproc("glFramebufferTexture2DEXT")
 	}
 	fb := uint32(0)
-	// Framebuffer names are per context, and cores pass the number they were
-	// given to whichever thread draws. That number only means the same target
-	// if every context holds a framebuffer under the same name, so the name the
-	// app uses is kept here: names are handed out in order from 1, so asking for
-	// more of them walks up to the app's own number.
+	// Names in a context that shares our objects already include the app's own
+	// framebuffer, and asking for a new one can never hand that number back. So
+	// the app's number is tried first: if it is complete here, this thread draws
+	// into the very texture the app reads.
+	if st := gproc("glCheckFramebufferStatus"); st != 0 {
+		syscall.SyscallN(bindFB, 0x8D40, uintptr(glFBO))
+		status, _, _ := syscall.SyscallN(st, 0x8D40)
+		if status == 0x8CD5 {
+			glFBOs[cur] = glFBO
+			return glFBO
+		}
+	}
+	// Only when this context has no usable framebuffer under that number does a
+	// new one get made, walking up the names until the app's number is reached.
 	for i := 0; i < 64; i++ {
 		syscall.SyscallN(genFB, 1, uintptr(unsafe.Pointer(&fb)))
 		if fb == glFBO || i == 63 {
@@ -742,8 +759,18 @@ func glThreadContext() uintptr {
 		procWglMakeCurrent.Call(0, 0)
 	}
 	// Sharing is what lets a frame the main context reads back contain what
-	// this thread drew.
-	ok, _, _ := procWglShareLists.Call(uintptr(glRC), rc)
+	// this thread drew. It only succeeds while the context being shared from
+	// is current nowhere: the app takes the main context for the duration of a
+	// readback, so a refusal now is a collision with one of those, not a
+	// permanent state.
+	ok := uintptr(0)
+	for i := 0; i < 40; i++ {
+		ok, _, _ = procWglShareLists.Call(uintptr(glRC), rc)
+		if ok != 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if ok == 0 {
 		if os.Getenv("GAMEROOM_DEBUG") != "" {
 			fmt.Fprintf(os.Stderr, "gl: share lists failed for thread %d\n", tid)
@@ -860,6 +887,9 @@ func glReadFrame(w, h, pitch int, bottomLeft bool) []byte {
 	}
 	buf := make([]byte, w*h*4)
 	syscall.SyscallN(readPix, 0, 0, uintptr(w), uintptr(h), 0x1908, 0x1401, uintptr(unsafe.Pointer(&buf[0])))
+	// The context goes back to nobody afterwards: a thread that needs a share
+	// of it can only get one while it is current nowhere.
+	procWglMakeCurrent.Call(0, 0)
 	// The rows are flipped when the core said its picture is bottom-up, which
 	// is what a framebuffer straight from the driver looks like.
 	if bottomLeft {

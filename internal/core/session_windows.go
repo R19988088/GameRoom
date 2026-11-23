@@ -1236,7 +1236,7 @@ func videoCallback(data, w, h, pitch uintptr) uintptr {
 					nz++
 				}
 			}
-			fmt.Fprintf(os.Stderr, "hw: frame %d %dx%d mean=%.1f lit=%d\n", s.frames, width, height, float64(sum)/float64(len(buf)/4*3), nz)
+			fmt.Fprintf(os.Stderr, "hw: frame %d %dx%d mean=%.1f lit=%d ctx=%d\n", s.frames, width, height, float64(sum)/float64(len(buf)/4*3), nz, glContextID())
 		}
 		s.mu.Unlock()
 		return 0

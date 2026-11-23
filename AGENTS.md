@@ -315,13 +315,30 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
 - 时间轴（`rewindTrack`）：一条与条目等距的条，`已回退 N 帧` 的读数、`继续` 回到实时。**拖动就是回退**：
   按住轨道往左拖，按 `dx / (轨宽/(条数-1))` 映射到条目（`scrubDrag` 记起点条目与累计位移），
   每落到一条就 `rewindTo(i)` = `LoadState` + `Step()`。往回拖到底是最早的一条，往右拖到底回到最新。
-- **限制**：核心说 `CanState()` 但 `retro_serialize` 返回 0 的（PSX 的 `mednafen_psx` 实测如此）存不了，
-  面板底部的 `slotNote` 直接写核心给的话（"核心没有写出存档"），不会写出半份文件。
+- **不能存档的核心，格子上就是一个 ✕**（`canSave()` / `savable()`）：核心 `retro_serialize_size` 答 0，
+  或者第一次捕获就 PB 回来的空格子（回退行记成 `planned && step<=0`），九格全画 ✕ + `不支持`，
+  点它只在底部说一句 `这个核心不能存档`，不写任何文件；没有游戏时（`a.core == nil`）不判这一条。
+- **核心给不给存档，是量的不是猜的**：`retro_serialize` / `retro_unserialize` 是
+  `(void *data, size_t size)`，两个参数都得传。少传 `size` 时寄存器里是个野值，核心会答“没写出”
+  （`mednafen_psx` 就是这么被骗的），别的核心运气好才成——`state_windows.go` 里两处都补上了 `uintptr(len(buf))`。
+- 实测（`cmd/zzstate` 探针，Harmful Park，120 帧后连存六次 + 暂停后的队列往返）：
+
+  | 核心 | 声明 | raw 存 | raw 读 | 队列（暂停时）|
+  | --- | --- | --- | --- | --- |
+  | `fceumm` | 22KB | ~0 | ~0 | 16ms 一个帧边界 |
+  | `snes9x2010` | 826KB | 225µs | 456µs | 同上 |
+  | `mednafen_psx`（PSX 现行） | 16MB | 10–15ms | 0.5–1ms | 18ms 存 / 17ms 读，字节数对得上 |
+  | `pcsx_rearmed` | 4.4MB | 1.5–7ms | 1.5ms | 18ms |
+  | `duckstation` | — | 在本进程里 `retro_run` 直接崩（GL 上下文），所以 PSX 走 `mednafen_psx` | | |
+
+  PSX 的 16MB 一份意味着回退行只剩 128MB/16MB = 8 条（成本 10–15ms → `step` 5–8 帧），
+  也就是约 0.7 秒的历史——够“退一步”，不够长；要更长就抬 `rewindBytes`。
 - 退游戏时 `releaseGame()` 清 `savesOpen/slots/shots/slotSel` 并 `a.rew.reset()`；`launchGame` 开局前同样重置，
   回退行永远只属于当前这颗核心。
 - 测试：`rewind_test.go` 盯 `rewindPlan` 的三种核心（22KB / 16MB / 6ms 成本）、行的裁剪与 `−N 帧` 读数、
   `freeze` 与 `reset`；`savepanel_test.go` 盯九格布局（`建档` 数 = 9 − 已存档、槽位时间、`时间轴/继续/读取/删除`
-  都在窗内、✕ 不越过玻璃）、点存档位选不建档、无游戏时点空位只说原因不落文件，以及 `fileSafe`/`shrink`。
+  都在窗内、✕ 不越过玻璃）、点存档位选不建档、无游戏时点空位只说原因不落文件、无存档核心的九格全叉，
+  以及 `fileSafe`/`shrink`/`savable`。
 
 ## 跨平台核对（2026-11 查 buildbot.libretro.com）
 

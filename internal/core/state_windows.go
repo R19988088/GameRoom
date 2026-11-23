@@ -113,7 +113,10 @@ func (s *Session) SaveStateNow() ([]byte, error) {
 		s.stateBuf = make([]byte, n)
 	}
 	buf := s.stateBuf[:n]
-	if s.call(s.serialize, uintptr(unsafe.Pointer(&buf[0]))) == 0 {
+	// retro_serialize takes the buffer and its size: without the size the core
+	// reads whatever the register held, and answers "no" for some cores and a
+	// happy guess for others.
+	if s.call(s.serialize, uintptr(unsafe.Pointer(&buf[0])), uintptr(n)) == 0 {
 		return nil, errors.New("核心没有写出存档")
 	}
 	out := make([]byte, n)
@@ -144,7 +147,9 @@ func (s *Session) LoadStateNow(data []byte) error {
 	if len(data) == 0 {
 		return errors.New("这个存档是空的")
 	}
-	if s.call(s.unserialize, uintptr(unsafe.Pointer(&data[0]))) == 0 {
+	// retro_unserialize wants the block and how long it is, the same as its save
+	// side — a core that is given no length cannot tell where the state ends.
+	if s.call(s.unserialize, uintptr(unsafe.Pointer(&data[0])), uintptr(len(data))) == 0 {
 		return errors.New("核心没有接受这个存档")
 	}
 	return nil

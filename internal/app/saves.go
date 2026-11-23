@@ -36,6 +36,27 @@ type saveSlot struct {
 	Shot   *ui.Bitmap
 }
 
+// savable says whether a core that answers canState has slots to fill: one that
+// declares no state has none, and neither has one whose first capture came back
+// empty — the row remembers that as a plan with no step.
+func savable(canState bool, r *rewind) bool {
+	if !canState {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return !(r.planned && r.step <= 0)
+}
+
+// canSave is savable for the game on screen. With no game there is nothing to
+// judge, and the click on an empty tile says so instead.
+func (a *App) canSave() bool {
+	if a.core == nil {
+		return true
+	}
+	return savable(a.core.CanState(), &a.rew)
+}
+
 // savesDir is where the game on screen keeps its slots. Each game has its own
 // folder, so a shelf full of games does not collide.
 func (a *App) savesDir() string {

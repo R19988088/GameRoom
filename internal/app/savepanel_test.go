@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/R19988088/GameRoom/internal/core"
 	"github.com/R19988088/GameRoom/internal/library"
 	"github.com/egoist/mygo/ui"
 )
@@ -136,6 +137,80 @@ func TestSavePanelSaysWhatItCannotDo(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(filepath.Join(root, "数据", "存档")); err == nil && len(entries) > 0 {
 		t.Fatalf("a failed save still made %d files", len(entries))
+	}
+}
+
+// TestSavePanelCrossesOffACoreWithoutState: a core that declares no state offers
+// no slot to press — all nine show a cross and say so, instead of pretending a
+// click would write something.
+func TestSavePanelCrossesOffACoreWithoutState(t *testing.T) {
+	root := t.TempDir()
+	a := &App{root: root, theme: buildTheme(), crt: defaultCRT(), core: &core.Session{}}
+	a.playerGame = library.Game{Title: "电精", RomPath: `rom\sfc\电精.sfc`, PlatformKey: "sfc"}
+	a.savesOpen = true
+	a.scanSaves()
+	tt := ui.NewTester(func(c *ui.Context) { a.savePanel(c, &a.theme) }, 1280, 800)
+	tt.Frame()
+
+	if a.canSave() {
+		t.Fatalf("a core with no state is still offered as savable")
+	}
+	crosses := 0
+	for _, s := range tt.Texts() {
+		switch s {
+		case "✕":
+			crosses++
+		}
+	}
+	// Eight tiles plus the panel's own way out, which is also a ✕.
+	if crosses != saveSlots+1 {
+		t.Fatalf("%d crosses, want one per slot and one for the panel (%d)", crosses, saveSlots+1)
+	}
+	for _, s := range []string{"＋", "建档"} {
+		if tt.HasText(s) {
+			t.Fatalf("a slot still offers %s on a core with no state", s)
+		}
+	}
+	if !tt.HasText("不支持") {
+		t.Fatalf("the slots do not say the core has no state")
+	}
+	label, ok := tt.Find("不支持")
+	if !ok {
+		t.Fatalf("no crossed slot to press")
+	}
+	tt.ClickAt(label.X+10, label.Y-40)
+	tt.Frame()
+	if a.slotNote != "这个核心不能存档" {
+		t.Fatalf("a click on a crossed slot said %q, want why it did nothing", a.slotNote)
+	}
+	if entries, err := os.ReadDir(filepath.Join(root, "数据", "存档")); err == nil && len(entries) > 0 {
+		t.Fatalf("a crossed slot wrote %d files", len(entries))
+	}
+}
+
+// TestSavable: the two ways a core can have no slots are a core that declares no
+// state and one whose first capture came back empty.
+func TestSavable(t *testing.T) {
+	var fresh rewind
+	if !savable(true, &fresh) {
+		t.Fatalf("a core that declares state and has not been asked yet is not savable")
+	}
+	if savable(false, &fresh) {
+		t.Fatalf("a core that declares no state is savable")
+	}
+	var broken rewind
+	broken.mu.Lock()
+	broken.planned, broken.step = true, 0
+	broken.mu.Unlock()
+	if savable(true, &broken) {
+		t.Fatalf("a core whose first capture came back empty is savable")
+	}
+	var good rewind
+	good.mu.Lock()
+	good.planned, good.step = true, 5
+	good.mu.Unlock()
+	if !savable(true, &good) {
+		t.Fatalf("a core whose capture worked is not savable")
 	}
 }
 

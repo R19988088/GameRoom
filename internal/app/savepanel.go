@@ -144,12 +144,14 @@ func (a *App) saveHeader(c *ui.Context, t *ui.Theme) {
 // saveTile is one slot: the picture of the moment, and under it the slot's number
 // and when it was taken. An empty tile is the way to make a save — clicking it
 // writes the game as it stands now — and a full one is only selected, so reading
-// it is a second, deliberate press.
+// it is a second, deliberate press. A core that cannot give its state has no tiles
+// to press: every slot shows a cross, because there is nothing to write into it.
 func (a *App) saveTile(c *ui.Context, t *ui.Theme, n int) {
 	slot := a.slotAt(n)
-	sel := a.slotSel == n
+	savable := a.canSave()
+	sel := a.slotSel == n && savable
 	cell := ui.ButtonBase(c).Grow(1).Basis(0).Radius(10)
-	if cell.Hovered() {
+	if cell.Hovered() && savable {
 		cell.Background(ui.Hex("#ffffff0a"))
 	}
 	cell.Children(func() {
@@ -162,9 +164,16 @@ func (a *App) saveTile(c *ui.Context, t *ui.Theme, n int) {
 				shot.Border(1, ui.Hex("#ffffff24"))
 			}
 			shot.Children(func() {
-				if slot != nil && slot.Shot != nil {
+				switch {
+				case slot != nil && slot.Shot != nil:
 					ui.Image(c, slot.Shot).Fill().Fit(ui.FillBox).Radius(8)
-				} else {
+				case !savable:
+					// The core has no state: the slot is not a way in, it is a
+					// statement that there is nothing to put there.
+					ui.Column(c).Fill().Center().Children(func() {
+						ui.Text(c, "✕").FontSize(22).TextColor(ui.Hex("#ff453a80"))
+					})
+				default:
 					ui.Column(c).Fill().Center().Gap(2).Children(func() {
 						ui.Text(c, "＋").FontSize(15).TextColor(t.TextMuted.Alpha(0.5))
 						ui.Text(c, "建档").FontSize(9).TextColor(t.TextMuted.Alpha(0.45))
@@ -174,16 +183,26 @@ func (a *App) saveTile(c *ui.Context, t *ui.Theme, n int) {
 			ui.Row(c).Height(14).AlignItems(ui.Center).Gap(6).Children(func() {
 				ui.Text(c, fmt.Sprint(n)).FontSize(9.5).
 					TextColor(t.TextMuted.Alpha(0.7)).SingleLine()
-				if slot != nil {
+				switch {
+				case slot != nil:
 					ui.Text(c, slot.At.Format("01-02 15:04")).FontSize(9.5).
 						TextColor(t.TextMuted.Alpha(0.55)).SingleLine()
-				} else {
+				case !savable:
+					ui.Text(c, "不支持").FontSize(9.5).
+						TextColor(ui.Hex("#ff453a73")).SingleLine()
+				default:
 					ui.Text(c, "空位").FontSize(9.5).
 						TextColor(t.TextMuted.Alpha(0.45)).SingleLine()
 				}
 			})
 		})
 	})
+	if !savable {
+		if cell.Clicked() {
+			a.slotNote = "这个核心不能存档"
+		}
+		return
+	}
 	if cell.Clicked() {
 		if slot == nil {
 			a.saveInto(n)
@@ -288,7 +307,11 @@ func (a *App) rewindTrack(c *ui.Context, t *ui.Theme, v rewindView) {
 // take it off the shelf.
 func (a *App) saveFooter(c *ui.Context, t *ui.Theme) {
 	ui.Row(c).Height(24).AlignItems(ui.Center).Gap(8).Children(func() {
-		if note := a.slotNote; note != "" {
+		note := a.slotNote
+		if note == "" && !a.canSave() {
+			note = "这个核心不能存档"
+		}
+		if note != "" {
 			ui.Text(c, note).Grow(1).MinWidth(0).FontSize(9.5).
 				TextColor(t.TextMuted.Alpha(0.65)).SingleLine()
 		} else {

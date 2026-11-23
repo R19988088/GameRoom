@@ -106,7 +106,7 @@ var (
 	procGetThreadId            = syscall.NewLazyDLL("kernel32.dll").NewProc("GetCurrentThreadId")
 	glThreadRC                 = map[uintptr]syscall.Handle{}
 
-	glProcs = map[string]uintptr{}
+	glProcs  = map[string]uintptr{}
 	glProcMu sync.Mutex
 )
 
@@ -359,18 +359,18 @@ func glCreateWindow() error {
 	proc := syscall.NewCallback(glWindowProc)
 	name, _ := syscall.UTF16PtrFromString("GameRoomGL")
 	var wc struct {
-		Size            uint32
-		Style           uint32
-		WndProc         uintptr
-		ClsExtra        int32
-		WndExtra        int32
-		Instance        windows.Handle
-		Icon            windows.Handle
-		Cursor          windows.Handle
-		Background      windows.Handle
-		MenuName        *uint16
-		ClassName       *uint16
-		IconSm          windows.Handle
+		Size       uint32
+		Style      uint32
+		WndProc    uintptr
+		ClsExtra   int32
+		WndExtra   int32
+		Instance   windows.Handle
+		Icon       windows.Handle
+		Cursor     windows.Handle
+		Background windows.Handle
+		MenuName   *uint16
+		ClassName  *uint16
+		IconSm     windows.Handle
 	}
 	wc.Size = uint32(unsafe.Sizeof(wc))
 	wc.Style = 0x0020 | 0x0002 // CS_OWNDC | CS_HREDRAW
@@ -400,32 +400,32 @@ func glCreateWindow() error {
 // framebuffer of ours, never into the window.
 func choosePixfmt() error {
 	var pfd struct {
-		Size          uint16
-		Version       uint16
-		Flags         uint32
-		PixelType     uint8
-		ColorBits     uint8
-		RedBits       uint8
-		RedShift      uint8
-		GreenBits     uint8
-		GreenShift    uint8
-		BlueBits      uint8
-		BlueShift     uint8
-		AlphaBits     uint8
-		AlphaShift    uint8
-		AccumBits     uint8
-		AccumRedBits  uint8
-		AccumGreen    uint8
-		AccumBlue     uint8
-		AccumAlpha    uint8
-		DepthBits     uint8
-		StencilBits   uint8
-		AuxBuffers    uint8
-		LayerType     uint8
-		Reserved      uint8
-		LayerMask     uint32
-		VisibleMask   uint32
-		DamageMask    uint32
+		Size         uint16
+		Version      uint16
+		Flags        uint32
+		PixelType    uint8
+		ColorBits    uint8
+		RedBits      uint8
+		RedShift     uint8
+		GreenBits    uint8
+		GreenShift   uint8
+		BlueBits     uint8
+		BlueShift    uint8
+		AlphaBits    uint8
+		AlphaShift   uint8
+		AccumBits    uint8
+		AccumRedBits uint8
+		AccumGreen   uint8
+		AccumBlue    uint8
+		AccumAlpha   uint8
+		DepthBits    uint8
+		StencilBits  uint8
+		AuxBuffers   uint8
+		LayerType    uint8
+		Reserved     uint8
+		LayerMask    uint32
+		VisibleMask  uint32
+		DamageMask   uint32
 	}
 	pfd.Size = uint16(unsafe.Sizeof(pfd))
 	pfd.Version = 1

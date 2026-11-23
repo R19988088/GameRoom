@@ -22,19 +22,19 @@ import (
 )
 
 const (
-	vkStructureApplicationInfo         = 0
-	vkStructureInstanceCreateInfo      = 1
-	vkStructureDeviceQueueCreateInfo   = 2
-	vkStructureDeviceCreateInfo        = 3
-	vkStructureSubmitInfo              = 4
-	vkStructureMemoryAllocateInfo      = 5
-	vkStructureFenceCreateInfo         = 8
-	vkStructureBufferCreateInfo        = 12
-	vkStructureImageViewCreateInfo     = 15
-	vkStructureCommandPoolCreateInfo   = 39
-	vkStructureCommandBufferAllocInfo  = 40
-	vkStructureCommandBufferBeginInfo  = 42
-	vkStructureImageMemoryBarrier      = 45
+	vkStructureApplicationInfo        = 0
+	vkStructureInstanceCreateInfo     = 1
+	vkStructureDeviceQueueCreateInfo  = 2
+	vkStructureDeviceCreateInfo       = 3
+	vkStructureSubmitInfo             = 4
+	vkStructureMemoryAllocateInfo     = 5
+	vkStructureFenceCreateInfo        = 8
+	vkStructureBufferCreateInfo       = 12
+	vkStructureImageViewCreateInfo    = 15
+	vkStructureCommandPoolCreateInfo  = 39
+	vkStructureCommandBufferAllocInfo = 40
+	vkStructureCommandBufferBeginInfo = 42
+	vkStructureImageMemoryBarrier     = 45
 
 	vkSuccess                    = 0
 	vkQueueGraphicsBit           = 0x0001
@@ -64,24 +64,24 @@ const (
 // retroHWRenderInterfaceVulkan is the struct a Vulkan core reads after
 // GET_HW_RENDER_INTERFACE. The order and padding match libretro_vulkan.h.
 type retroHWRenderInterfaceVulkan struct {
-	InterfaceType    uint32
-	InterfaceVersion uint32
-	Handle           unsafe.Pointer
-	Instance         uintptr
-	GPU              uintptr
-	Device           uintptr
-	GetDeviceProc    uintptr
-	GetInstanceProc  uintptr
-	Queue            uintptr
-	QueueIndex       uint32
-	pad0             uint32
-	SetImage         uintptr
-	GetSyncIndex     uintptr
-	GetSyncIndexMask uintptr
-	SetCommandBuffers uintptr
-	WaitSyncIndex    uintptr
-	LockQueue        uintptr
-	UnlockQueue      uintptr
+	InterfaceType      uint32
+	InterfaceVersion   uint32
+	Handle             unsafe.Pointer
+	Instance           uintptr
+	GPU                uintptr
+	Device             uintptr
+	GetDeviceProc      uintptr
+	GetInstanceProc    uintptr
+	Queue              uintptr
+	QueueIndex         uint32
+	pad0               uint32
+	SetImage           uintptr
+	GetSyncIndex       uintptr
+	GetSyncIndexMask   uintptr
+	SetCommandBuffers  uintptr
+	WaitSyncIndex      uintptr
+	LockQueue          uintptr
+	UnlockQueue        uintptr
 	SetSignalSemaphore uintptr
 }
 
@@ -95,29 +95,29 @@ type retroVulkanImage struct {
 }
 
 type vkApplicationInfo struct {
-	SType           uint32
-	pad0            uint32
-	PNext           uintptr
-	AppName         uintptr
-	AppVersion      uint32
-	pad1            uint32
-	EngineName      uintptr
-	EngineVersion   uint32
-	APIVersion      uint32
+	SType         uint32
+	pad0          uint32
+	PNext         uintptr
+	AppName       uintptr
+	AppVersion    uint32
+	pad1          uint32
+	EngineName    uintptr
+	EngineVersion uint32
+	APIVersion    uint32
 }
 
 type vkInstanceCreateInfo struct {
-	SType                  uint32
-	pad0                   uint32
-	PNext                  uintptr
-	Flags                  uint32
-	pad1                   uint32
-	PAppInfo               uintptr
-	EnabledLayerCount      uint32
-	pad2                   uint32
-	PPLayerNames           uintptr
-	EnabledExtensionCount  uint32
-	pad3                   uint32
+	SType                   uint32
+	pad0                    uint32
+	PNext                   uintptr
+	Flags                   uint32
+	pad1                    uint32
+	PAppInfo                uintptr
+	EnabledLayerCount       uint32
+	pad2                    uint32
+	PPLayerNames            uintptr
+	EnabledExtensionCount   uint32
+	pad3                    uint32
 	PPEnabledExtensionNames uintptr
 }
 
@@ -166,11 +166,11 @@ type vkCommandBufferAllocateInfo struct {
 }
 
 type vkCommandBufferBeginInfo struct {
-	SType           uint32
-	pad0            uint32
-	PNext           uintptr
-	Flags           uint32
-	pad1            uint32
+	SType            uint32
+	pad0             uint32
+	PNext            uintptr
+	Flags            uint32
+	pad1             uint32
 	PInheritanceInfo uintptr
 }
 
@@ -216,11 +216,11 @@ type vkMemoryRequirements struct {
 }
 
 type vkMemoryAllocateInfo struct {
-	SType             uint32
-	pad0              uint32
-	PNext             uintptr
-	AllocationSize    uint64
-	MemoryTypeIndex   uint32
+	SType           uint32
+	pad0            uint32
+	PNext           uintptr
+	AllocationSize  uint64
+	MemoryTypeIndex uint32
 }
 
 type vkImageSubresourceLayers struct {
@@ -243,12 +243,12 @@ type vkExtent3D struct {
 }
 
 type vkBufferImageCopy struct {
-	BufferOffset     uint64
-	BufferRowLength  uint32
+	BufferOffset      uint64
+	BufferRowLength   uint32
 	BufferImageHeight uint32
-	ImageSubresource vkImageSubresourceLayers
-	ImageOffset      vkOffset3D
-	ImageExtent      vkExtent3D
+	ImageSubresource  vkImageSubresourceLayers
+	ImageOffset       vkOffset3D
+	ImageExtent       vkExtent3D
 }
 
 type vkSubmitInfo struct {
@@ -302,36 +302,36 @@ type vkPhysicalDeviceMemoryProperties struct {
 }
 
 type vkDeviceFunctions struct {
-	getDeviceQueue      uintptr
-	createCommandPool   uintptr
-	allocateCmdBuffers  uintptr
-	beginCmdBuffer      uintptr
-	cmdPipelineBarrier  uintptr
+	getDeviceQueue       uintptr
+	createCommandPool    uintptr
+	allocateCmdBuffers   uintptr
+	beginCmdBuffer       uintptr
+	cmdPipelineBarrier   uintptr
 	cmdCopyImageToBuffer uintptr
-	endCmdBuffer        uintptr
-	queueSubmit         uintptr
-	waitForFences       uintptr
-	resetFences         uintptr
-	queueWaitIdle       uintptr
-	createBuffer        uintptr
-	getBufferMemoryReqs uintptr
-	allocateMemory      uintptr
-	bindBufferMemory    uintptr
-	mapMemory           uintptr
-	unmapMemory         uintptr
-	destroyBuffer       uintptr
-	freeMemory          uintptr
-	resetCmdBuffer      uintptr
+	endCmdBuffer         uintptr
+	queueSubmit          uintptr
+	waitForFences        uintptr
+	resetFences          uintptr
+	queueWaitIdle        uintptr
+	createBuffer         uintptr
+	getBufferMemoryReqs  uintptr
+	allocateMemory       uintptr
+	bindBufferMemory     uintptr
+	mapMemory            uintptr
+	unmapMemory          uintptr
+	destroyBuffer        uintptr
+	freeMemory           uintptr
+	resetCmdBuffer       uintptr
 }
 
 var (
 	vkDLL             = windows.NewLazySystemDLL("vulkan-1.dll")
 	vkGetInstanceProc = vkDLL.NewProc("vkGetInstanceProcAddr")
 
-	vkOnce    sync.Once
-	vkErr     error
-	vkReady   bool
-	vkMutex   sync.Mutex
+	vkOnce  sync.Once
+	vkErr   error
+	vkReady bool
+	vkMutex sync.Mutex
 
 	vkInstance uintptr
 	vkPhysical uintptr
@@ -350,13 +350,13 @@ var (
 
 	vkIface retroHWRenderInterfaceVulkan
 
-	vkFrameMu   sync.Mutex
-	vkFrameView uintptr
+	vkFrameMu     sync.Mutex
+	vkFrameView   uintptr
 	vkFrameLayout uint32
 	vkFrameCreate uintptr
-	vkPending   []uintptr
-	vkLastSem   uintptr
-	vkLastSems  []uintptr
+	vkPending     []uintptr
+	vkLastSem     uintptr
+	vkLastSems    []uintptr
 )
 
 func vkProc(inst uintptr, name string) uintptr {
@@ -609,12 +609,12 @@ func vkPickInstanceExtensions() []string {
 		return nil
 	}
 	want := map[string]bool{
-		"VK_KHR_get_physical_device_properties2":    true,
-		"VK_KHR_external_memory_capabilities":       true,
-		"VK_KHR_external_semaphore_capabilities":    true,
-		"VK_KHR_get_surface_capabilities2":          true,
-		"VK_KHR_surface":                            true,
-		"VK_EXT_swapchain_colorspace":               true,
+		"VK_KHR_get_physical_device_properties2": true,
+		"VK_KHR_external_memory_capabilities":    true,
+		"VK_KHR_external_semaphore_capabilities": true,
+		"VK_KHR_get_surface_capabilities2":       true,
+		"VK_KHR_surface":                         true,
+		"VK_EXT_swapchain_colorspace":            true,
 	}
 	var out []string
 	for i := range props {
@@ -676,23 +676,23 @@ func indexZero(s string) int {
 
 func vkFillIface() {
 	vkIface = retroHWRenderInterfaceVulkan{
-		InterfaceType:     0, // RETRO_HW_RENDER_INTERFACE_VULKAN
-		InterfaceVersion:  1,
-		Handle:            unsafe.Pointer(&vkIface),
-		Instance:          vkInstance,
-		GPU:               vkPhysical,
-		Device:            vkDevice,
-		GetDeviceProc:     syscall.NewCallback(vkGetDeviceProcCb),
-		GetInstanceProc:   syscall.NewCallback(vkGetInstanceProcCb),
-		Queue:             vkQueue,
-		QueueIndex:        vkQueueIdx,
-		SetImage:          syscall.NewCallback(vkSetImage),
-		GetSyncIndex:      syscall.NewCallback(vkSyncIndex),
-		GetSyncIndexMask:  syscall.NewCallback(vkSyncIndex),
-		SetCommandBuffers: syscall.NewCallback(vkSetCommandBuffers),
-		WaitSyncIndex:     syscall.NewCallback(vkNoop),
-		LockQueue:         syscall.NewCallback(vkNoop),
-		UnlockQueue:       syscall.NewCallback(vkNoop),
+		InterfaceType:      0, // RETRO_HW_RENDER_INTERFACE_VULKAN
+		InterfaceVersion:   1,
+		Handle:             unsafe.Pointer(&vkIface),
+		Instance:           vkInstance,
+		GPU:                vkPhysical,
+		Device:             vkDevice,
+		GetDeviceProc:      syscall.NewCallback(vkGetDeviceProcCb),
+		GetInstanceProc:    syscall.NewCallback(vkGetInstanceProcCb),
+		Queue:              vkQueue,
+		QueueIndex:         vkQueueIdx,
+		SetImage:           syscall.NewCallback(vkSetImage),
+		GetSyncIndex:       syscall.NewCallback(vkSyncIndex),
+		GetSyncIndexMask:   syscall.NewCallback(vkSyncIndex),
+		SetCommandBuffers:  syscall.NewCallback(vkSetCommandBuffers),
+		WaitSyncIndex:      syscall.NewCallback(vkNoop),
+		LockQueue:          syscall.NewCallback(vkNoop),
+		UnlockQueue:        syscall.NewCallback(vkNoop),
 		SetSignalSemaphore: syscall.NewCallback(vkSetSignalSemaphore),
 	}
 }

@@ -518,11 +518,11 @@ func LayerEffect(pos vec2) vec4 {
 			ar = GAME_ASPECT
 		}
 	}
-	// PAD_Y is the spacing above and below the picture, in percent of its height on
-	// each side. It shrinks the picture as a whole — both axes by the same factor —
-	// so the content keeps its own proportions; the row scale below is then read
-	// from that smaller height, so the scanlines keep theirs too and never inherit
-	// the window's shape.
+	// PAD_Y is the spacing above and below the picture, in percent of the box on
+	// each side. It sets the box the picture has to fit, not its scale: with the
+	// integer lock on, the picture takes as many whole lines as the smaller box
+	// allows, so its shape and its scanlines stay the picture's own and only the
+	// black around it grows.
 	padY := 1.0
 	if PAD_Y > 0.0 {
 		padY = 1.0 - PAD_Y*0.02
@@ -542,6 +542,34 @@ func LayerEffect(pos vec2) vec4 {
 	}
 	rw = rw * PIC_SIZE * padY
 	rh = rh * PIC_SIZE * padY
+
+	// The picture is an even number of the core's own lines tall, so the bright
+	// and dark rows of a line divide it the same way on every line: the scanline
+	// pattern sits identically on line 1 and line 224 instead of sliding a
+	// fraction of a pixel per line, which is what turns the mask into a moiré.
+	// What the even step leaves unused stays black in the bezel.
+	kRows := 0.0
+	if INT_SCALE > 0.5 {
+		boxH := rh * size.y * ps
+		boxW := rw * size.x * ps
+		k := floor(boxH/isz.y*(1.0+INT_TOL))
+		if max := floor(size.y * ps / isz.y); k > max {
+			k = max
+		}
+		if max := floor(boxW / (isz.y * ar)); k > max {
+			k = max
+		}
+		if k < 2.0 {
+			k = 1.0
+		} else {
+			// 双数: each line gets an even number of output rows, so a line pairs
+			// up its bright and dark rows and no row is left over at its end.
+			k = floor(k*0.5) * 2.0
+		}
+		kRows = k
+		rh = k * isz.y / (size.y * ps)
+		rw = k * isz.y * ar / (size.x * ps)
+	}
 	if rw < 0.03 {
 		rw = 0.03
 	}
@@ -651,37 +679,90 @@ func LayerEffect(pos vec2) vec4 {
 		return vec4(pow(clamp(rcol*ii, vec3(0.0), vec3(1.0)), vec3(1.0/GAMMA)), 1.0)
 	}
 
-	// PAD_Y shrank the picture above, before its frame was measured, so the
-	// picture, its scanlines and the glass all read the same, smaller shape.
+	// PAD_Y shrank the box above, before the picture's frame was measured, so the
+	// picture, its scanlines and the glass all read the same shape.
 
 	suv := vec2(c.x/(2.0*hx), c.y/(2.0*hy)) + vec2(0.5, 0.5)
 	np := suv * isz
 	np.y = np.y + PPOY*0.01*isz.y
 	col := sampled(np, isz)
 
-	// The scanlines: the core's own lines taken to the output's rows by an
-	// integer scale, so the mask lands on the rows the game drew.
-	dp := vec2(suv.x*size.x, suv.y*size.y) * ps
-	rows := size.y * ps * rh
-	sc := floor(rows/isz.y*(1.0+INT_TOL))
+	// The scanlines: the core's own lines taken to the picture's own rows by the
+	// integer scale its frame was cut to, so the mask lands on the rows the game
+	// drew. dp is in the picture's pixels, not the window's: the pattern's pitch
+	// has to count the picture's rows, or the tube's lines read smaller than the
+	// picture is drawn and every line picks up a different part of them.
+	dp := vec2(suv.x*pw, suv.y*ph)
+	sc := kRows
+	if sc < 1.0 {
+		sc = ph / isz.y
+	}
 	if sc < 1.0 {
 		sc = 1.0
 	}
+	// The spacing knob is scanlines per game line, snapped to a whole divisor of
+	// the line (or a whole multiple of it): a pitch that does not divide the line
+	// leaves a fraction over on every one of them and the mask slides across the
+	// picture. Only when the lock is off can the pitch be any integer the knob
+	// names, which is how it used to shimmer.
+	pitch := sc
 	if INT_SCALE > 0.5 {
-		sc = floor(sc + 0.5)
+		want := sc * LINE_PITCH_COEF
+		if want > sc*1.25 {
+			m := floor(want/sc + 0.5)
+			if m < 2.0 {
+				m = 2.0
+			}
+			pitch = sc * m
+		} else {
+			// Every divisor of the line, nearest to what the knob asks for; one
+			// scanline per output row (1) is left out because that is a mask with
+			// no bright row in it at all.
+			pitch = 1.0
+			if sc >= 2.0 {
+				pitch = 2.0
+			}
+			best := abs(pitch - want)
+			for i := 1; i <= 16; i++ {
+				d := float(i)
+				if mod(sc, d) < 0.001 {
+					p := sc / d
+					if p >= 1.5 && abs(p-want) < best {
+						best = abs(p - want)
+						pitch = p
+					}
+				}
+			}
+		}
+	} else {
+		pitch = floor(sc*LINE_PITCH_COEF + 0.5)
+		if pitch < 3.0 {
+			pitch = 3.0
+		}
 	}
-	pitch := floor(sc*LINE_PITCH_COEF + 0.5)
-	if pitch < 3.0 {
-		pitch = 3.0
+	if pitch < 1.0 {
+		pitch = 1.0
 	}
 	g := pow(col, vec3(GAMMA*0.5))
 	z := prof(g, deltaOf(int(min(pitch, 7.0))-3))
 	z = pow(z, vec3(GAMMA))
 	aa := (z*0.7 + vec3(0.3)) * pitch
 	aa = aa * LINE_THICKNESS
-	bb := mod(dp.y, pitch) - pitch*0.5
+	// The phase is taken a hair inside the line: a row exactly on a line's edge
+	// reads as that edge only from one side, and mod() of it either side lands the
+	// bright/dark pair on a different colour of the mask, which is the one-row
+	// stripe that shows up now and then. The hair keeps every edge on the same
+	// side.
+	bb := mod(dp.y+0.0001, pitch) - pitch*0.5
 	cr := abs(bb*2.0 - 0.5)
-	cg := abs(-bb*2.0 - 0.5)
+	// The green line is flipped only when the pitch has a third row to flip it
+	// against. At one or two rows per line the flip has nothing to pair with and
+	// leaves every dark row green instead of dark, which tints the whole picture
+	// on a display too small to carry three rows a line.
+	cg := cr
+	if pitch > 2.9 {
+		cg = abs(-bb*2.0 - 0.5)
+	}
 	cc := vec3(cr, cg, cr)
 	dd := clamp(aa-cc+vec3(0.5), vec3(0.0), vec3(1.0))
 	dd = dd * z / (z*0.7 + vec3(0.3))
@@ -695,10 +776,12 @@ func LayerEffect(pos vec2) vec4 {
 	pp := pl*pl + bl*rr
 	pp = pp / (1.0 + rr*(1.0-DIFF_OVEREXP))
 
-	// The aperture mask, locked to the picture's own pixels: one triad of three
-	// colour cells per game pixel, which can never beat against the rows and never
-	// turns the picture into blocks, however large the image is drawn.
-	mcell := sc * 0.3333
+	// The aperture mask, locked to the picture's own columns: one triad of three
+	// colour cells per game pixel. Its width is the column's, not the row scale's,
+	// so a 4:3 frame made of wide pixels (384×224) still gets one triad per pixel
+	// and the mask can neither beat against the columns nor turn the picture into
+	// blocks.
+	mcell := sc * isz.y * ar / isz.x * 0.3333
 	mpx := floor(dp.x) + 0.5
 	mpy := floor(dp.y) + 0.5
 	if MASK_TYPE > 0.5 {

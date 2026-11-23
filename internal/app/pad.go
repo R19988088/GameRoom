@@ -972,3 +972,33 @@ func (a *App) captureTick(keys, pads map[int]bool) {
 	}
 }
 
+
+// player2 marks a binding as the second player's. The first player's ids stay
+// bare, so controls.json written before two players existed still loads.
+const player2 = "2p:"
+
+// padProfile2 is the second player's bindings for a machine: the stored "2p:"
+// ids with that prefix stripped, on top of a default set of its own.
+func (a *App) padProfile2(layout string) map[string]padBind {
+	m := defaultPadBinds2()
+	for id, b := range a.pads[layout] {
+		if strings.HasPrefix(id, player2) {
+			m[strings.TrimPrefix(id, player2)] = b
+		}
+	}
+	return m
+}
+
+// defaultPadBinds2 is the second player's untouched state: the same actions as
+// the first, no keyboard of its own, and gamepad slots 4 to 7.
+func defaultPadBinds2() map[string]padBind {
+	m := defaultPadBinds()
+	for id, b := range m {
+		b.Key, b.VK = "", 0
+		if b.Pad != 0 {
+			b.Pad += 4
+		}
+		m[id] = b
+	}
+	return m
+}

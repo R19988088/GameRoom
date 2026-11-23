@@ -5,12 +5,12 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// controllerButton is the pill beside the filter's: which machine's pad the
-// game reads, and the way into the model of its buttons.
 // panelW is the width of the pad panel's glass: both players, side by side,
-// 496 each with an 8 gap between them.
+// 484 each with an 8 gap between them and 12 of padding on either side.
 const panelW = 1000
 
+// controllerButton is the pill beside the filter's: which machine's pad the
+// game reads, and the way into the model of its buttons.
 func (a *App) controllerButton(c *ui.Context, t *ui.Theme) {
 	b := ui.ButtonBase(c).Width(controllerButtonWidth).Height(backButtonSize).PaddingX(14).
 		Radius(backButtonSize/2).AlignItems(ui.Center).Gap(8).
@@ -67,8 +67,8 @@ func padShort(id string) string {
 // game that is running — the machine is read from the game itself — so there is
 // nothing to pick by hand: the model shown is the pad being played, and a click
 // on one of its buttons waits for the key or the gamepad button to take its
-// place. The bindings are filed per machine, so every game of that machine
-// plays the same way.
+// place. Both players sit side by side, each with a model of its own: the left
+// one writes the bare ids, the right one the 2p: ids.
 func (a *App) padPanel(c *ui.Context, t *ui.Theme) {
 	ui.Box(c).Absolute().Left(0).Right(0).Top(0).Bottom(0).Children(func() {
 		col := ui.Column(c).Absolute().Right(edgeInset).Top(edgeInset).Width(panelW).
@@ -79,22 +79,64 @@ func (a *App) padPanel(c *ui.Context, t *ui.Theme) {
 		col.Children(func() {
 			a.padHeader(c, t)
 			if l := padLayoutFor(a.padLive); l != nil {
-				a.padModel(c, t, l)
+				ui.Row(c).Gap(8).AlignItems(ui.Start).Children(func() {
+					a.padColumn(c, t, l, 0)
+					a.padColumn(c, t, l, 1)
+				})
 			} else {
-				ui.Box(c).Width(padModelW).Height(96).Center().
+				ui.Box(c).Width(panelW-24).Height(96).Center().
 					Material(glass.Glass{Clarity: 0.7, Tint: ui.Hex("#ffffff0d")}).
 					Border(1, ui.Hex("#ffffff14")).Radius(14).Children(func() {
 					ui.Text(c, "这个机种用键盘，不需要手柄映射").FontSize(11).TextColor(t.TextMuted)
 				})
 			}
-			a.padFooter(c, t)
 		})
 	})
 }
 
+// padColumn is one player's half: who it is, the model, and the way back to
+// that player's defaults.
+func (a *App) padColumn(c *ui.Context, t *ui.Theme, l *padLayout, player int) {
+	ui.Column(c).Grow(1).Gap(8).Children(func() {
+		ui.Row(c).Height(16).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, playerTag(player)).FontSize(10).FontWeight(700).
+				TextColor(playerColor(player)).SingleLine()
+			ui.Box(c).Grow(1)
+			ui.Text(c, playerPadName(player)).FontSize(9).
+				TextColor(t.TextMuted.Alpha(0.7)).SingleLine()
+		})
+		a.padModel(c, t, l, player)
+		a.padFooter(c, t, player)
+	})
+}
+
+// playerTag is how a player's half is labelled.
+func playerTag(player int) string {
+	if player == 1 {
+		return "2P"
+	}
+	return "1P"
+}
+
+// playerColor keeps the two halves apart at a glance.
+func playerColor(player int) ui.Color {
+	if player == 1 {
+		return ui.Hex("#8fb7ff")
+	}
+	return ui.Hex("#f3a06b")
+}
+
+// playerPadName is the controller a player's defaults read.
+func playerPadName(player int) string {
+	if player == 1 {
+		return "手柄 2"
+	}
+	return "手柄 1"
+}
+
 // padHeader is the panel's title row: the machine the panel is showing, dead
 // centre of the panel, and the way out. While a button waits for a source, the
-// title turns into the wait itself.
+// title turns into the wait itself, naming the player it belongs to.
 func (a *App) padHeader(c *ui.Context, t *ui.Theme) {
 	ui.Row(c).Height(26).AlignItems(ui.Center).Children(func() {
 		// A spacer as wide as the close button, so the title sits in the middle
@@ -102,8 +144,8 @@ func (a *App) padHeader(c *ui.Context, t *ui.Theme) {
 		ui.Box(c).Width(26)
 		ui.Box(c).Grow(1).Center().Children(func() {
 			if a.cap != "" {
-				ui.Text(c, "按下键盘或手柄上的按键…").FontSize(10.5).
-					TextColor(ui.Hex("#f3a06b")).SingleLine()
+				ui.Text(c, playerTag(a.capP)+" · 按下键盘或手柄上的按键…").FontSize(10.5).
+					TextColor(playerColor(a.capP)).SingleLine()
 				return
 			}
 			name := "键盘"
@@ -124,10 +166,10 @@ func (a *App) padHeader(c *ui.Context, t *ui.Theme) {
 	})
 }
 
-// padModel draws the machine's pad: a body, the d-pad on the left, and its own
-// buttons where they sit on the real thing. The body is as wide as the panel's
-// contents, so its frame lines up with the rows above and below it.
-func (a *App) padModel(c *ui.Context, t *ui.Theme, l *padLayout) {
+// padModel draws one player's machine pad: a body, the d-pad on the left, and
+// its own buttons where they sit on the real thing. The body is as wide as the
+// column, so its frame lines up with the rows above and below it.
+func (a *App) padModel(c *ui.Context, t *ui.Theme, l *padLayout, player int) {
 	ui.Box(c).Width(padModelW).Height(padModelH).Children(func() {
 		ui.Box(c).Fill().Radius(20).Background(ui.Hex("#0a0c12d9")).
 			Border(1, ui.Hex("#ffffff12"))
@@ -153,16 +195,20 @@ func (a *App) padModel(c *ui.Context, t *ui.Theme, l *padLayout) {
 			}
 		}
 		for _, s := range l.Spots {
-			a.padSpot(c, t, l, s)
+			a.padSpot(c, t, l, s, player)
 		}
 	})
 }
 
-// padSpot is one button of the model. It shows what it reads from — the key's
-// face, the gamepad's button, or both — and the machine's own name for it.
-func (a *App) padSpot(c *ui.Context, t *ui.Theme, l *padLayout, s padSpot) {
-	waiting := a.cap == s.ID
+// padSpot is one button of one player's model. It shows what that player's
+// button reads from — the key's face, the gamepad's button, or both — and the
+// machine's own name for it.
+func (a *App) padSpot(c *ui.Context, t *ui.Theme, l *padLayout, s padSpot, player int) {
+	waiting := a.cap == s.ID && a.capP == player
 	p := a.padProfile(l.ID)[s.ID]
+	if player == 1 {
+		p = a.padProfile2(l.ID)[s.ID]
+	}
 	face := padFace(p)
 	combo := len(targetsOf(s)) > 1
 
@@ -211,7 +257,7 @@ func (a *App) padSpot(c *ui.Context, t *ui.Theme, l *padLayout, s padSpot) {
 		switch {
 		case waiting:
 			b.Background(ui.Hex("#e8763a3b")).Border(1, ui.Hex("#e8763aa6"))
-		case a.holdOn != "":
+		case a.hold[player].on != "":
 			b.Background(ui.Hex("#e8763a2e")).Border(1, ui.Hex("#e8763aa6"))
 		case b.Hovered():
 			b.Background(ui.Hex("#ffffff1f")).Border(1, ui.Hex("#ffffff40"))
@@ -267,7 +313,7 @@ func (a *App) padSpot(c *ui.Context, t *ui.Theme, l *padLayout, s padSpot) {
 		})
 	}
 	if b.Clicked() {
-		a.startCapture(s.ID)
+		a.startCapture(player, s.ID)
 	}
 }
 
@@ -305,8 +351,9 @@ func textColorFor(t *ui.Theme, waiting bool) ui.Color {
 	return t.Text.Alpha(0.9)
 }
 
-// padFooter is the last row: the way back to the defaults, at the panel's edge.
-func (a *App) padFooter(c *ui.Context, t *ui.Theme) {
+// padFooter is the last row of one player's half: the way back to that
+// player's defaults, at the column's edge.
+func (a *App) padFooter(c *ui.Context, t *ui.Theme, player int) {
 	ui.Row(c).Height(24).AlignItems(ui.Center).Children(func() {
 		ui.Box(c).Grow(1)
 		reset := ui.ButtonBase(c).Height(22).PaddingX(11).Radius(11).Center().
@@ -316,11 +363,11 @@ func (a *App) padFooter(c *ui.Context, t *ui.Theme) {
 			ui.Text(c, "恢复默认").FontSize(10).TextColor(t.Text.Alpha(0.85))
 		})
 		if reset.Clicked() {
-			a.resetPads(a.padLive)
-			a.holdOn, a.holdDown = "", false
-			a.cap = ""
+			a.resetPadPlayer(a.padLive, player)
+			a.hold[player] = padHold{}
+			if a.capP == player {
+				a.cap = ""
+			}
 		}
 	})
 }
-
-

@@ -251,6 +251,21 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
 `数据/config.json` 的 `crtShader` 只是预设名（`202603.slangp`），换滤镜就把新 `.slangp` 丢进
 `shaders/` 并改这里；留空则不套滤镜。
 
+### 滤镜面板：一组参数，保存 / 切换（2026-11-23）
+
+- `filterPanel` 不再按预设分四颗胶囊、也不再把 `knobs` 切两列：**一组参数**在 `ui.Scroll` 里单列排，
+  上面只有一个滤镜开关，底部只有 `保存` / `切换` 两颗按钮。默认面板宽 472、滚动区高 420，720p 也放得下。
+- 开关只改 `FilterLevel` 的 `off` 与 `normal`：关掉不丢 `CRTTune`，再打开参数还在；`crtEffect` 每帧读
+  uniform，所以开关、拖动、切换都在下一帧生效，不用重启游戏。
+- 保存：把当前 `CRTTune` 写进 `数据/filters/tune-<n>.json`，格式 `{"level": "...", "tune": {...}}`。
+  当前已选组就**覆盖该组**；没有选中组时取现有最大编号 + 1，连续点保存不会堆出一串副本。
+  `config.json` 的 `filterTune` 记住最后听到/保存的文件名。
+- 切换：`scanTunes()` 按 `tune-<n>` 的数字排序，`cycleTune()` 取下一组（到末尾回第一组），
+  同时套用该组的 `level` 与全部参数；没有保存组时按钮只写一行“还没有保存的组”，不假装切换。
+- 面板一打开会重新 `scanTunes()`，手工丢进 `数据/filters` 的文件不用重启就能被切到。
+- 测试：`tune_test.go` 盯“连续保存只一个文件、后写的覆盖前写的”“两组按编号循环并带 level/参数”
+  “开关关再开不丢参数”。
+
 ## 跨平台核对（2026-11 查 buildbot.libretro.com）
 
 | 核心 | Windows x64 | Linux x64 | macOS arm64 | macOS x64 |
@@ -414,9 +429,26 @@ RetroArch 本身不是 simUI 的一部分。
   SEGA 文件夹按路径分辨：`/ss/`→SS，`/model 2|3/`、`/stv/`、DC→`arcade`，其余→MD。
 - 六键不是按 RetroPad 的“直觉”叠的，要看核心：MD 的 A 读 Y、C 读 A、X/Y/Z 读 L/X/R；
   SS 的 A 读 B、B 读 A、C 读 R、Z 读 L。改动这些前先核对 `genesis_plus_gx` / `mednafen_saturn`。
-- 输入：`pushPad()` 每帧把掩码交给 `core.Session.SetPad`（`DeviceJoypad` 分支），keyboard 老路子不动；
-  面板自己读键用 `GetAsyncKeyState`、读手柄用 `XInputGetState`（`xinput1_4` → `9_1_0`/`1_3` 回退）。
+- 输入：`pushPad()` 每帧把两份掩码交给 `core.Session.SetPads`（port 0/1），核心按 `retro_set_input_state` 的 `port` 回答；
+  面板自己读键用 `GetAsyncKeyState`、读手柄用 `XInputGetState`（`xinput1_4` → `9_1_0`/`1_3` 回退），四个手柄都读。
 - 面板不自己切平台：顶部只显示当前机种名（居中），没有切换条；Esc 关面板。
+
+### 双人（2026-11-23）
+
+- `controls.json` 仍是一台机器一份；1P 的 id 保持裸名字，2P 的写在 `2p:` 前缀下，旧文件不用迁移。
+  `padProfile()` 跳过 `2p:` 条目，`padProfile2()` 剥掉前缀覆盖到 2P 默认表上。
+- `padBind` 多了 `ctrl`：XInput 控制器序号（0 是第一只手柄，1 是第二只）。`Pad` 仍是**一只柄上的按钮序号 + 1**，
+  2P 默认只把 `ctrl` 改成 1，**不能给 `Pad` 加 4** —— 那会从 A 跳到 LT，之前 `8af7c3c` 的 `+4` 已改正。
+  2P 默认无键盘、按钮集与 1P 相同，所以两只手柄不会互读。
+- 核心 `Session` 的 `keys` / `binds` / `pads` 都是按端口四份（`keyMasks` / `bindTables` / `padMasks`）：
+  `SetKeyBinds(port, table)` 分别写，`pollKeys()` 每个玩家各产一份（同一个 VK 两边都按会同时进两个端口），
+  `SetPads([4]map)` 一次写全，`inputCallback` 的 joypad 和 keyboard 都读自己 `port`；`Start` 已向 0/1 两个端口 announce 手柄。
+- 面板 `panelW=1000`：左右两列各 484，间距 8，内边距 12；标题居中，两列分别标 `1P` / `2P`。
+  点哪一列的键就抓哪一列（`capP` 记玩家），`capPad` 是 `map[int]map[int]bool`（控制器 → 按钮），
+  写回的绑定带控制器号；每列自己的“恢复默认”只清自己那一半。
+- 测试：`pad_test.go` 的 `TestSecondPlayerKeepsItsOwnButtons`、`TestPlayersReadTheirOwnPads`、
+  `TestSameKeyCanDriveBothPlayers`、`TestSecondPlayerBindingsAreFiledApart`、`TestSecondPlayerCaptureWritesItsOwnPrefix`；
+  `session_windows_test.go` 盯 joypad / keyboard 的端口回答和同一按键进两个端口。
 
 ### 本轮补充（2026-11-20）
 

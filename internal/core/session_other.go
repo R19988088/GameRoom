@@ -18,7 +18,13 @@ func Start(corePath, romPath, systemDir string) (*Session, error) { return nil, 
 func (s *Session) Run() {}
 
 // SetKeys does nothing.
-func (s *Session) SetKeys(keys map[int]bool) {}
+func (s *Session) SetKeys(keys keyMasks) {}
+
+// SetKeyBinds does nothing.
+func (s *Session) SetKeyBinds(port int, m map[int]int) {}
+
+// SetPads does nothing.
+func (s *Session) SetPads(pads padMasks) {}
 
 // SetPad does nothing.
 func (s *Session) SetPad(pads map[int]bool) {}

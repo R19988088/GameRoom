@@ -745,7 +745,11 @@ func (a *App) toggleFilters() {
 	a.padsOpen = false
 	a.cap = ""
 	a.dragKey = ""
-	if !a.filtersOpen {
+	if a.filtersOpen {
+		a.scanTunes()
+		a.tuneNote = ""
+		a.filterScroll.Y = 0
+	} else {
 		a.saveTune()
 	}
 }
@@ -763,23 +767,22 @@ func filterName(level string) string {
 	return "标准"
 }
 
-// filterOptions are the presets the panel offers at its top.
-var filterOptions = []struct {
-	Level string
-	Name  string
-}{
-	{"", "标准"},
-	{"soft", "柔和"},
-	{"strong", "强烈"},
-	{"off", "关闭"},
-}
+// filterPanelW is the panel's glass, and filterScrollH the height of the one
+// group of controls: tall enough for a dozen rows at a time, short enough that
+// the whole panel fits a 720p window.
+const (
+	filterPanelW  = 472
+	filterScrollH = 420
+)
 
-// filterPanel is the panel itself: the preset's own parameters, each on a glass
-// control, over the game it belongs to. Two columns keep the whole list on one
-// page, so nothing scrolls while a control is dragged.
+// filterPanel is the panel itself: one group of the preset's parameters in a
+// scroll, with a single on/off switch above it and 保存 / 切换 below. The two
+// buttons are the whole of the group management: 保存 writes the numbers being
+// heard into the current tune-<n>.json (or starts the next one), 切换 moves to
+// the next saved group and takes both its preset and its numbers.
 func (a *App) filterPanel(c *ui.Context, t *ui.Theme) {
 	ui.Box(c).Absolute().Left(0).Right(0).Top(0).Bottom(0).Children(func() {
-		col := ui.Column(c).Absolute().Right(edgeInset).Top(edgeInset).Width(472).
+		col := ui.Column(c).Absolute().Right(edgeInset).Top(edgeInset).Width(filterPanelW).
 			Padding(12).Radius(18).Gap(8).
 			Material(glass.Glass{Clarity: 0.62, Tint: ui.Hex("#14161ee6")}).
 			Border(1, ui.Hex("#ffffff1f")).
@@ -806,51 +809,79 @@ func (a *App) filterPanel(c *ui.Context, t *ui.Theme) {
 					a.win.Update(a.toggleFilters)
 				}
 			})
-			ui.Row(c).Height(28).Gap(6).AlignItems(ui.Center).Children(func() {
-				for _, opt := range filterOptions {
-					opt := opt
-					pill := ui.ButtonBase(c).Height(24).PaddingX(11).Radius(12).Center()
-					if opt.Level == a.cfg.FilterLevel ||
-						(opt.Level == "" && (a.cfg.FilterLevel == "" || a.cfg.FilterLevel == "normal")) {
-						pill.Material(glass.Glass{Clarity: 0.7, Tint: ui.Hex("#e8763a33")}).
-							Border(1, ui.Hex("#e8763a66"))
-					} else {
-						pill.Material(glass.Glass{Clarity: 0.7, Tint: ui.Hex("#ffffff14")}).
-							Border(1, ui.Hex("#ffffff1f"))
+			// One look on or off, not a row of preset groups: the switch is the
+			// only thing above the parameters.
+			on := a.cfg.FilterLevel != "off"
+			ui.Row(c).Height(24).AlignItems(ui.Center).Gap(8).Children(func() {
+				ui.Text(c, "滤镜").FontSize(11).FontWeight(600).
+					TextColor(t.Text.Alpha(0.9)).SingleLine()
+				ui.Text(c, filterName(a.cfg.FilterLevel)).FontSize(10).
+					TextColor(t.TextMuted).SingleLine()
+				ui.Box(c).Grow(1)
+				a.filterSwitch(c, t, on)
+			})
+			ui.Scroll(c).Height(filterScrollH).TrackScroll(&a.filterScroll).Children(func() {
+				ui.Column(c).Gap(4).Children(func() {
+					for _, k := range knobs {
+						k := k
+						a.knobRow(c, t, k)
 					}
-					pill.Children(func() {
-						ui.Text(c, opt.Name).FontSize(11).TextColor(t.Text.Alpha(0.85))
-					})
-					if pill.Clicked() {
-						a.pickPreset(opt.Level)
+				})
+			})
+			// The two buttons the player asked for, and a line saying which
+			// group is heard and what the last click did.
+			ui.Row(c).Height(26).AlignItems(ui.Center).Gap(6).Children(func() {
+				ui.Text(c, a.tuneStatus()).FontSize(10).TextColor(t.TextMuted).SingleLine()
+				note := a.tuneNote
+				if note == "" {
+					note = "一组参数，保存后可切换"
+				}
+				ui.Text(c, note).Grow(1).MinWidth(0).FontSize(9.5).
+					TextColor(t.TextMuted.Alpha(0.65)).SingleLine()
+				save := ui.ButtonBase(c).Width(58).Height(24).Radius(12).Center().
+					Material(glass.Glass{Clarity: 0.7, Tint: ui.Hex("#e8763a33")}).
+					Border(1, ui.Hex("#e8763a66"))
+				save.Children(func() {
+					ui.Text(c, "保存").FontSize(10.5).TextColor(t.Text.Alpha(0.9))
+				})
+				if save.Clicked() {
+					if err := a.saveCurrentTune(); err != nil {
+						a.tuneNote = err.Error()
 					}
 				}
-				ui.Box(c).Grow(1)
-				reset := ui.ButtonBase(c).Height(24).PaddingX(11).Radius(12).Center().
+				next := ui.ButtonBase(c).Width(58).Height(24).Radius(12).Center().
 					Material(glass.Glass{Clarity: 0.7, Tint: ui.Hex("#ffffff14")}).
 					Border(1, ui.Hex("#ffffff1f"))
-				reset.Children(func() {
-					ui.Text(c, "恢复原参数").FontSize(11).TextColor(t.Text.Alpha(0.85))
+				next.Children(func() {
+					ui.Text(c, "切换").FontSize(10.5).TextColor(t.Text.Alpha(0.85))
 				})
-				if reset.Clicked() {
-					a.cfg.CRTTune = map[string]float32{}
-					a.saveTune()
-				}
-			})
-			half := (len(knobs) + 1) / 2
-			ui.Row(c).Gap(14).AlignItems(ui.Start).Children(func() {
-				for _, list := range [][]knob{knobs[:half], knobs[half:]} {
-					list := list
-					ui.Column(c).Grow(1).Gap(4).Children(func() {
-						for _, k := range list {
-							k := k
-							a.knobRow(c, t, k)
-						}
-					})
+				if next.Clicked() {
+					if err := a.cycleTune(); err != nil {
+						a.tuneNote = err.Error()
+					}
 				}
 			})
 		})
 	})
+}
+
+// filterSwitch is the one on/off control above the group: the look on keeps the
+// numbers and the preset, off takes the picture back to the core's own.
+func (a *App) filterSwitch(c *ui.Context, t *ui.Theme, on bool) {
+	track := ui.ButtonBase(c).Width(44).Height(26).Background(ui.Hex("#00000000"))
+	track.Draw(func(p *ui.Painter, r ui.Rect) {
+		trackColor := ui.Hex("#ffffff2b")
+		knobX := r.X + 2
+		if on {
+			trackColor = ui.Hex("#34c759")
+			knobX = r.X + 24
+		}
+		p.Fill(ui.Rect{X: r.X, Y: r.Y + 2, W: 44, H: 22}, trackColor, 11)
+		p.Fill(ui.Rect{X: knobX, Y: r.Y + 4, W: 18, H: 18}, ui.Hex("#f7f8fa"), 9)
+	})
+	if track.Clicked() {
+		a.setFilterOn(!on)
+	}
 }
 
 // knobRow is one parameter: its name and its control.
@@ -978,14 +1009,6 @@ func roundStep(v float64, step float64) float64 {
 // round1 keeps a parameter at a tenth of a unit.
 func round1(v float64) float32 {
 	return float32(math.Round(v*10) / 10)
-}
-
-// pickPreset sets a look and drops what was tuned on top of the last one.
-func (a *App) pickPreset(level string) {
-	a.cfg.FilterLevel = level
-	a.cfg.CRTTune = map[string]float32{}
-	a.dragKey = ""
-	a.saveTune()
 }
 
 // saveTune keeps the parameters as the player left them.

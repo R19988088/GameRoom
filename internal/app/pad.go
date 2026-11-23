@@ -56,11 +56,15 @@ var padRetroIds = map[string]int{
 // padBind is where one button of a machine's pad is read from: a key of the
 // keyboard, a button of the gamepad, or both. The key is written down with its
 // Windows virtual-key code so it reads the same whatever the layout types;
-// Pad is the gamepad button's index + 1 in XInput's order, 0 for none.
+// Pad is the gamepad button's index + 1 in XInput's order, 0 for none, and
+// Ctrl is which XInput controller it belongs to (0 is the first player's, 1
+// the second's). The two players' pads have the same button numbers, so the
+// controller is what keeps them apart.
 type padBind struct {
-	Key string `json:"key,omitempty"`
-	VK  int    `json:"vk,omitempty"`
-	Pad int    `json:"pad,omitempty"`
+	Key  string `json:"key,omitempty"`
+	VK   int    `json:"vk,omitempty"`
+	Pad  int    `json:"pad,omitempty"`
+	Ctrl int    `json:"ctrl,omitempty"`
 }
 
 // --- the model each machine gets ---
@@ -566,10 +570,14 @@ func defaultPadBinds() map[string]padBind {
 }
 
 // padProfile is the profile a machine actually runs with: its saved bindings
-// laid over the defaults.
+// laid over the defaults. The second player's entries live in the same map
+// under the 2p: prefix, and are not part of this profile.
 func (a *App) padProfile(layout string) map[string]padBind {
 	m := defaultPadBinds()
 	for id, b := range a.pads[layout] {
+		if strings.HasPrefix(id, player2) {
+			continue
+		}
 		m[id] = b
 	}
 	return m
@@ -584,11 +592,21 @@ type padFile struct {
 
 func (a *App) controlsPath() string { return filepath.Join(a.root, "数据", "controls.json") }
 
-// keyBinds turns the player's keyboard bindings for a layout into the table a
-// running core reads: virtual-key code to RETROK code.
+// keyBinds turns the first player's keyboard bindings for a layout into the
+// table a running core reads: virtual-key code to RETROK code.
 func (a *App) keyBinds(layout string) map[int]int {
+	return keyBindsOf(a.padProfile(layout))
+}
+
+// keyBinds2 is the second player's keyboard, for port 1.
+func (a *App) keyBinds2(layout string) map[int]int {
+	return keyBindsOf(a.padProfile2(layout))
+}
+
+// keyBindsOf is one profile's keyboard as the core reads it.
+func keyBindsOf(prof map[string]padBind) map[int]int {
 	m := map[int]int{}
-	for _, b := range a.padProfile(layout) {
+	for _, b := range prof {
 		if b.VK != 0 {
 			if rk := core.RetroKey(b.VK); rk != 0 {
 				m[b.VK] = rk
@@ -598,11 +616,12 @@ func (a *App) keyBinds(layout string) map[int]int {
 	return m
 }
 
-// pushKeyBinds hands the current bindings to a game already running, so a
+// pushKeyBinds hands both players' bindings to a game already running, so a
 // change is felt on the next frame rather than at the next launch.
 func (a *App) pushKeyBinds() {
 	if a.core != nil {
-		a.core.SetKeyBinds(a.keyBinds(a.padLive))
+		a.core.SetKeyBinds(0, a.keyBinds(a.padLive))
+		a.core.SetKeyBinds(1, a.keyBinds2(a.padLive))
 	}
 }
 
@@ -632,13 +651,22 @@ func (a *App) savePads() {
 	_ = os.WriteFile(a.controlsPath(), append(data, '\n'), 0o644)
 }
 
-// bindPad writes one button's source down. One source drives one button only,
-// so the others give it up: two buttons on one key would fire together.
-func (a *App) bindPad(layout, id, opt string, vk, pad int) {
+// bindPad writes one player's button source down. One source drives one button
+// only within that player's pad, so the others give it up: two buttons on one
+// key would fire together. The second player's entries are filed under the 2p:
+// prefix, the first player's stay bare so old controls.json files still load.
+func (a *App) bindPad(layout string, player int, id, opt string, vk, pad, ctrl int) {
 	if a.pads[layout] == nil {
 		a.pads[layout] = map[string]padBind{}
 	}
+	key := id
+	if player == 1 {
+		key = player2 + id
+	}
 	prof := a.padProfile(layout)
+	if player == 1 {
+		prof = a.padProfile2(layout)
+	}
 	for other, ob := range prof {
 		if other == id {
 			continue
@@ -647,24 +675,47 @@ func (a *App) bindPad(layout, id, opt string, vk, pad int) {
 		if opt == "key" && ob.VK == vk {
 			ob.VK, ob.Key, gave = 0, "", true
 		}
-		if opt == "pad" && ob.Pad == pad {
+		if opt == "pad" && ob.Pad == pad && ob.Ctrl == ctrl {
 			ob.Pad, gave = 0, true
 		}
 		if gave {
-			a.pads[layout][other] = ob
+			a.pads[layout][keyOf(player, other)] = ob
 		}
 	}
 	if opt == "key" {
-		a.pads[layout][id] = padBind{Key: vkName(vk), VK: vk}
+		a.pads[layout][key] = padBind{Key: vkName(vk), VK: vk}
 	} else {
-		a.pads[layout][id] = padBind{Pad: pad}
+		a.pads[layout][key] = padBind{Pad: pad, Ctrl: ctrl}
 	}
 	a.savePads()
 }
 
+// keyOf files one button's binding under the player it belongs to.
+func keyOf(player int, id string) string {
+	if player == 1 {
+		return player2 + id
+	}
+	return id
+}
+
 // resetPads drops a machine's own bindings, leaving the defaults.
 func (a *App) resetPads(layout string) {
-	delete(a.pads, layout)
+	a.resetPadPlayer(layout, 0)
+	a.resetPadPlayer(layout, 1)
+}
+
+// resetPadPlayer drops one player's bindings for a machine, leaving the other
+// player's and the defaults alone.
+func (a *App) resetPadPlayer(layout string, player int) {
+	m := a.pads[layout]
+	for id := range m {
+		if (player == 1) == strings.HasPrefix(id, player2) {
+			delete(m, id)
+		}
+	}
+	if len(m) == 0 {
+		delete(a.pads, layout)
+	}
 	a.savePads()
 }
 
@@ -775,10 +826,11 @@ var padBits = []struct {
 	{0x4000, 12}, {0x8000, 13},
 }
 
-// heldPads is the gamepad as the panel reads it: the buttons down right now,
-// by XInput's index. The first pad that answers is the one. Its stick counts as
-// the d-pad, because most players hold the stick, not the cross.
-func heldPads() map[int]bool {
+// heldPads is every gamepad the panel reads, by XInput's controller index: each
+// controller keeps its own buttons, because two players press theirs at the
+// same time. A stick counts as the directions it is tilted in, because most
+// players hold the stick, not the cross.
+func heldPads() map[int]map[int]bool {
 	if xinputReady < 0 {
 		if err := xinputGet.Find(); err == nil {
 			xinputReady = 1
@@ -797,6 +849,7 @@ func heldPads() map[int]bool {
 	if xinputReady == 0 {
 		return nil
 	}
+	pads := map[int]map[int]bool{}
 	for i := uint32(0); i < 4; i++ {
 		var st xinputState
 		r, _, _ := xinputGet.Call(uintptr(i), uintptr(unsafe.Pointer(&st)))
@@ -830,22 +883,37 @@ func heldPads() map[int]bool {
 		if st.LX > 18000 {
 			held[19] = true
 		}
-		return held
+		pads[int(i)] = held
 	}
-	return nil
+	return pads
+}
+
+// bindDown says whether one binding's source is held: its key, or its own
+// controller's button. Two pads have the same button numbers, so the
+// controller in the binding is what picks the pad to read.
+func bindDown(b padBind, keys map[int]bool, pads map[int]map[int]bool) bool {
+	if b.VK != 0 && keys[b.VK] {
+		return true
+	}
+	if b.Pad > 0 {
+		if held := pads[b.Ctrl]; held != nil && held[b.Pad-1] {
+			return true
+		}
+	}
+	return false
 }
 
 // maskOf is the RetroPad held this frame for a profile: a button counts when
 // its key is down, or its gamepad button is. A macro counts as all the buttons
 // it presses.
-func maskOf(l *padLayout, prof map[string]padBind, keys, pads map[int]bool) map[int]bool {
+func maskOf(l *padLayout, prof map[string]padBind, keys map[int]bool, pads map[int]map[int]bool) map[int]bool {
 	if l == nil {
 		return nil
 	}
 	held := make(map[int]bool, 8)
 	for _, s := range l.Spots {
 		b := prof[s.ID]
-		if (b.VK != 0 && keys[b.VK]) || (b.Pad > 0 && pads[b.Pad-1]) {
+		if bindDown(b, keys, pads) {
 			for _, t := range targetsOf(s) {
 				if id, ok := padRetroIds[t]; ok && id >= 0 {
 					held[id] = true
@@ -856,51 +924,60 @@ func maskOf(l *padLayout, prof map[string]padBind, keys, pads map[int]bool) map[
 	return held
 }
 
-// pushPad hands the pad to the running core, which reads it as its own pad:
-// the machine's buttons are already the ids it knows.
+// pushPad hands both players' pads to the running core, which reads them as
+// its own pads: the machine's buttons are already the ids it knows, and each
+// player's mask goes to its own port.
 func (a *App) pushPad() {
 	if a.core == nil {
 		return
 	}
-	a.core.SetPad(a.padMask(heldVKs(), heldPads()))
+	keys, pads := heldVKs(), heldPads()
+	var masks [4]map[int]bool
+	masks[0] = a.padMask(0, keys, pads)
+	masks[1] = a.padMask(1, keys, pads)
+	a.core.SetPads(masks)
 }
 
-// padMask is the RetroPad the core reads this frame: the model's buttons, plus
-// the direction the stick's hold key is keeping on.
-func (a *App) padMask(keys, pads map[int]bool) map[int]bool {
+// padMask is the RetroPad one player's port reads this frame: the model's
+// buttons, plus the direction that player's stick hold key is keeping on.
+func (a *App) padMask(player int, keys map[int]bool, pads map[int]map[int]bool) map[int]bool {
 	l := padLayoutFor(a.padLive)
 	if l == nil {
 		return nil
 	}
 	prof := a.padProfile(a.padLive)
+	if player == 1 {
+		prof = a.padProfile2(a.padLive)
+	}
 	held := maskOf(l, prof, keys, pads)
 	// The hold key is a button of its own: pressed while the stick is tilted it
 	// keeps that direction on; pressed with nothing tilted it lets it go.
 	hb := prof["lshold"]
-	down := (hb.VK != 0 && keys[hb.VK]) || (hb.Pad > 0 && pads[hb.Pad-1])
-	if down && !a.holdDown {
-		a.holdDown = true
-		a.holdOn = ""
+	down := bindDown(hb, keys, pads)
+	h := &a.hold[player]
+	if down && !h.down {
+		h.down = true
+		h.on = ""
 		tilted := ""
 		for _, s := range l.Spots {
 			if s.Kind != "stick" {
 				continue
 			}
 			b := prof[s.ID]
-			if (b.VK != 0 && keys[b.VK]) || (b.Pad > 0 && pads[b.Pad-1]) {
+			if bindDown(b, keys, pads) {
 				tilted = targetsOf(s)[0]
 				break
 			}
 		}
 		if tilted != "" {
-			a.holdOn = tilted
+			h.on = tilted
 		}
 	}
 	if !down {
-		a.holdDown = false
+		h.down = false
 	}
-	if a.holdOn != "" {
-		if id, ok := padRetroIds[a.holdOn]; ok && id >= 0 {
+	if h.on != "" {
+		if id, ok := padRetroIds[h.on]; ok && id >= 0 {
 			held[id] = true
 		}
 	}
@@ -914,16 +991,17 @@ func (a *App) togglePads() {
 	a.padsOpen = !a.padsOpen
 	a.filtersOpen = false
 	a.cap = ""
+	a.capP = 0
 }
 
-// startCapture puts a button of the model in wait: the next key pressed on the
-// keyboard or button on the gamepad becomes its source.
-func (a *App) startCapture(id string) {
-	if a.cap == id {
+// startCapture puts a button of one player's model in wait: the next key
+// pressed on the keyboard or button on the gamepad becomes its source.
+func (a *App) startCapture(player int, id string) {
+	if a.cap == id && a.capP == player {
 		a.cap = ""
 		return
 	}
-	a.cap = id
+	a.cap, a.capP = id, player
 	a.capVK = heldVKs()
 	a.capPad = heldPads()
 }
@@ -947,17 +1025,21 @@ func (a *App) padTick() {
 
 // captureTick is the other half of padTick: the first key or gamepad button
 // pressed after the wait began becomes the one the button reads. Esc cancels
-// it, and a key already held when the wait began is not a press.
-func (a *App) captureTick(keys, pads map[int]bool) {
+// it, and a key already held when the wait began is not a press. A gamepad
+// button carries its controller, so player two can be bound to its own pad.
+func (a *App) captureTick(keys map[int]bool, pads map[int]map[int]bool) {
 	if keys[0x1B] && !a.capVK[0x1B] {
 		a.cap = ""
 		return
 	}
-	for i := 0; i < len(padNames); i++ {
-		if pads[i] && !a.capPad[i] {
-			a.bindPad(a.padLive, a.cap, "pad", 0, i+1)
-			a.cap = ""
-			return
+	for ctrl := 0; ctrl < 4; ctrl++ {
+		held := pads[ctrl]
+		for i := 0; i < len(padNames); i++ {
+			if held[i] && !a.capPad[ctrl][i] {
+				a.bindPad(a.padLive, a.capP, a.cap, "pad", 0, i+1, ctrl)
+				a.cap = ""
+				return
+			}
 		}
 	}
 	for _, k := range vkTable {
@@ -965,13 +1047,12 @@ func (a *App) captureTick(keys, pads map[int]bool) {
 			continue
 		}
 		if keys[k.VK] && !a.capVK[k.VK] {
-			a.bindPad(a.padLive, a.cap, "key", k.VK, 0)
+			a.bindPad(a.padLive, a.capP, a.cap, "key", k.VK, 0, 0)
 			a.cap = ""
 			return
 		}
 	}
 }
-
 
 // player2 marks a binding as the second player's. The first player's ids stay
 // bare, so controls.json written before two players existed still loads.
@@ -989,14 +1070,16 @@ func (a *App) padProfile2(layout string) map[string]padBind {
 	return m
 }
 
-// defaultPadBinds2 is the second player's untouched state: the same actions as
-// the first, no keyboard of its own, and gamepad slots 4 to 7.
+// defaultPadBinds2 is the second player's untouched state: the same buttons as
+// the first player's, no keyboard of its own, and the second XInput controller.
+// The button numbers stay the same because both pads have the same buttons;
+// the controller is what keeps the two from reading each other.
 func defaultPadBinds2() map[string]padBind {
 	m := defaultPadBinds()
 	for id, b := range m {
 		b.Key, b.VK = "", 0
 		if b.Pad != 0 {
-			b.Pad += 4
+			b.Ctrl = 1
 		}
 		m[id] = b
 	}

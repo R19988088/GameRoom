@@ -48,6 +48,9 @@ type config struct {
 	// name the preset sets them under; missing ones stay as the preset has
 	// them.
 	CRTTune map[string]float32 `json:"crtTune,omitempty"`
+	// FilterTune is the saved group under 数据/filters the player last heard or
+	// saved, by file name. Empty means none has been picked.
+	FilterTune string `json:"filterTune,omitempty"`
 }
 
 // defaultShader is 脑浆油条's PhosphorLine: a CRT look that keeps arcade
@@ -175,24 +178,42 @@ type App struct {
 	external    *exec.Cmd
 	filtersOpen bool
 
+	// The filter panel's saved groups: tune-<n>.json under 数据/filters, the one
+	// being heard (tuneIdx, -1 for none), and a line for the panel to say what a
+	// save or a switch did.
+	tuneFiles []string
+	tuneIdx   int
+	tuneNote  string
+
+	// The one group of controls scrolls: the state keeps its place while a
+	// parameter is dragged, so the list does not jump back to the top.
+	filterScroll ui.ScrollState
+
 	// The pad panel: what a machine's buttons read from. pads is the profile
 	// saved per machine in 数据/controls.json, and padLive the machine the
 	// running game reads (set at launch) — the panel follows the game, so there
-	// is nothing to pick by hand. cap is the button waiting for a key, with what
-	// was already held when the wait began, so a key pressed before it does not
-	// count.
+	// is nothing to pick by hand. cap is the button waiting for a key, capP the
+	// player whose column it belongs to, with what was already held when the
+	// wait began, so a key pressed before it does not count.
 	pads     map[string]map[string]padBind
 	padsOpen bool
 	padLive  string
 	cap      string
+	capP     int
 	capVK    map[int]bool
-	capPad   map[int]bool
+	capPad   map[int]map[int]bool
 	escDown  bool
-	// The stick's hold key: holdOn is the direction it is keeping on ("" for
-	// none), and holdDown whether the key itself is down, so only the press
-	// counts and not the repeat.
-	holdOn   string
-	holdDown bool
+	// The stick's hold key, one state per player: on is the direction it is
+	// keeping on ("" for none), down whether the key itself is down, so only the
+	// press counts and not the repeat.
+	hold [2]padHold
+}
+
+// padHold is one player's stick hold: the direction kept on, and whether the
+// hold key was already down on the last frame.
+type padHold struct {
+	on   string
+	down bool
 }
 
 // Run starts the launcher, one instance at a time.
@@ -324,6 +345,7 @@ func hasLayout(dir string) bool {
 func (a *App) configPath() string { return filepath.Join(a.root, "数据", "config.json") }
 
 func (a *App) loadConfig() {
+	defer a.scanTunes()
 	data, err := os.ReadFile(a.configPath())
 	if err == nil {
 		_ = json.Unmarshal(data, &a.cfg)
@@ -1102,10 +1124,11 @@ func (a *App) launchGame(g library.Game) {
 	a.playerGame = g
 	a.padsOpen = false
 	a.padLive = a.padLayoutOf(g)
-	sess.SetKeyBinds(a.keyBinds(a.padLive))
+	sess.SetKeyBinds(0, a.keyBinds(a.padLive))
+	sess.SetKeyBinds(1, a.keyBinds2(a.padLive))
 	a.filtersOpen = false
 	a.cap = ""
-	a.holdOn, a.holdDown = "", false
+	a.hold = [2]padHold{}
 	// The core's sound plays through the machine's own wave output, queued a
 	// few frames ahead: the game is the only thing making noise.
 	sess.StartSound()
@@ -1346,4 +1369,3 @@ func buildTheme() ui.Theme {
 	t.Spacing = 8
 	return t
 }
-

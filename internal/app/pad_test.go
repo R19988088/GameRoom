@@ -56,7 +56,7 @@ func TestMaskOfReadsBothSources(t *testing.T) {
 	if held := maskOf(l, prof, keys, nil); !held[padA] || held[padB] {
 		t.Fatalf("key A: held = %v, want only pad A", held)
 	}
-	pads := map[int]bool{prof["b"].Pad - 1: true}
+	pads := map[int]map[int]bool{0: {prof["b"].Pad - 1: true}}
 	if held := maskOf(l, prof, nil, pads); !held[padB] || held[padA] {
 		t.Fatalf("pad B: held = %v, want only pad B", held)
 	}
@@ -71,7 +71,7 @@ func TestMaskOfReadsBothSources(t *testing.T) {
 func TestBindPadTakesTheSourceFromTheOtherButton(t *testing.T) {
 	a := &App{root: t.TempDir(), pads: map[string]map[string]padBind{}}
 	bKey := defaultPadBinds()["b"].VK
-	a.bindPad("fc", "a", "key", bKey, 0)
+	a.bindPad("fc", 0, "a", "key", bKey, 0, 0)
 
 	prof := a.padProfile("fc")
 	if prof["a"].VK != bKey {
@@ -96,7 +96,7 @@ func TestPadBindingsLoadAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := &App{root: root, pads: map[string]map[string]padBind{}}
-	a.bindPad("cps2", "a", "pad", 0, 15) // LT
+	a.bindPad("cps2", 0, "a", "pad", 0, 15, 0) // LT
 
 	b := &App{root: root}
 	b.loadPads()
@@ -112,6 +112,119 @@ func TestPadBindingsLoadAgain(t *testing.T) {
 	c.loadPads()
 	if got := c.padProfile("cps2")["a"].Pad; got != defaultPads["a"] {
 		t.Fatalf("after reset A reads pad %d, want the default %d", got, defaultPads["a"])
+	}
+}
+
+// TestSecondPlayerKeepsItsOwnButtons: the second player's defaults are the
+// same buttons on controller two, not a different button of controller one. A
+// pad button is an index into one controller's buttons; shifting it by four
+// would land on Start/L3 instead.
+func TestSecondPlayerKeepsItsOwnButtons(t *testing.T) {
+	p2 := defaultPadBinds2()
+	for id := range padRetroIds {
+		b := p2[id]
+		if b.Key != "" || b.VK != 0 {
+			t.Errorf("%s has a keyboard of its own: %+v", id, b)
+		}
+		want := defaultPads[id]
+		if want == 0 {
+			continue
+		}
+		if b.Pad != want || b.Ctrl != 1 {
+			t.Errorf("%s reads controller %d button %d, want controller 1 button %d",
+				id, b.Ctrl, b.Pad, want)
+		}
+	}
+}
+
+// TestPlayersReadTheirOwnPads: two pads press the same button numbers at the
+// same time; each player's mask reads only the controller its binding names.
+func TestPlayersReadTheirOwnPads(t *testing.T) {
+	a := &App{pads: map[string]map[string]padBind{}, padLive: "fc"}
+	l := padLayoutFor("fc")
+	p1, p2 := a.padProfile("fc"), a.padProfile2("fc")
+	pads := map[int]map[int]bool{
+		0: {p1["a"].Pad - 1: true},
+		1: {p2["b"].Pad - 1: true},
+	}
+	h1 := maskOf(l, p1, nil, pads)
+	h2 := maskOf(l, p2, nil, pads)
+	if !h1[padA] || h1[padB] {
+		t.Errorf("player one read %v, want only A", h1)
+	}
+	if !h2[padB] || h2[padA] {
+		t.Errorf("player two read %v, want only B", h2)
+	}
+}
+
+// TestSameKeyCanDriveBothPlayers: a key both players bind is not a conflict:
+// each player's mask reads it, so both ports see their own button.
+func TestSameKeyCanDriveBothPlayers(t *testing.T) {
+	a := &App{root: t.TempDir(), pads: map[string]map[string]padBind{}, padLive: "fc"}
+	a.bindPad("fc", 0, "a", "key", 0x50, 0, 0) // P
+	a.bindPad("fc", 1, "a", "key", 0x50, 0, 0) // P again
+	l := padLayoutFor("fc")
+	keys := map[int]bool{0x50: true}
+	if h := maskOf(l, a.padProfile("fc"), keys, nil); !h[padA] {
+		t.Errorf("player one did not read the shared key: %v", h)
+	}
+	if h := maskOf(l, a.padProfile2("fc"), keys, nil); !h[padA] {
+		t.Errorf("player two did not read the shared key: %v", h)
+	}
+}
+
+// TestSecondPlayerBindingsAreFiledApart: player two's source lives under the
+// 2p: prefix, so writing it leaves player one's bare entry alone, and resetting
+// player two leaves player one alone.
+func TestSecondPlayerBindingsAreFiledApart(t *testing.T) {
+	a := &App{root: t.TempDir(), pads: map[string]map[string]padBind{}, padLive: "fc"}
+	a.bindPad("fc", 0, "a", "key", 0x50, 0, 0)
+	a.bindPad("fc", 1, "a", "pad", 0, 11, 1) // A on controller two
+
+	if _, ok := a.pads["fc"]["a"]; !ok {
+		t.Fatalf("player one's entry disappeared")
+	}
+	if _, ok := a.padProfile("fc")["2p:a"]; ok {
+		t.Fatalf("player two's entry leaked into player one's profile")
+	}
+	if b, ok := a.pads["fc"]["2p:a"]; !ok || b.Pad != 11 || b.Ctrl != 1 {
+		t.Fatalf("player two's entry is %+v, want controller 1 button 11", b)
+	}
+
+	a.resetPadPlayer("fc", 1)
+	if _, ok := a.pads["fc"]["2p:a"]; ok {
+		t.Fatalf("player two's entry survived its reset")
+	}
+	if _, ok := a.pads["fc"]["a"]; !ok {
+		t.Fatalf("player one's entry was cleared by player two's reset")
+	}
+}
+
+// TestSecondPlayerCaptureWritesItsOwnPrefix: a button clicked on the right half
+// waits for a source and files it under 2p:, carrying the controller it was
+// pressed on.
+func TestSecondPlayerCaptureWritesItsOwnPrefix(t *testing.T) {
+	a := &App{root: t.TempDir(), pads: map[string]map[string]padBind{}, padLive: "fc"}
+	a.cap, a.capP = "a", 1
+	a.capVK, a.capPad = map[int]bool{}, map[int]map[int]bool{}
+	a.captureTick(nil, map[int]map[int]bool{1: {10: true}}) // A on controller two
+
+	b, ok := a.pads["fc"]["2p:a"]
+	if !ok || b.Pad != 11 || b.Ctrl != 1 {
+		t.Fatalf("the capture filed %+v, want controller 1 button 11", b)
+	}
+	if _, ok := a.pads["fc"]["a"]; ok {
+		t.Fatalf("player two's capture wrote player one's entry")
+	}
+}
+
+// TestPadPanelLeavesRoomForBothColumns: the panel is exactly two models plus
+// the gap between them and the padding around them, so neither half is clipped.
+func TestPadPanelLeavesRoomForBothColumns(t *testing.T) {
+	const padding, gap = 12, 8
+	if padModelW*2+gap+padding*2 != panelW {
+		t.Fatalf("panel %d, want two %d models, a %d gap and %d padding",
+			panelW, padModelW, gap, padding)
 	}
 }
 
@@ -132,8 +245,9 @@ func TestPanelsTakeOneSlot(t *testing.T) {
 // waitFor starts a capture with nothing held, the state the panel begins in.
 func waitFor(a *App, id string) {
 	a.cap = id
+	a.capP = 0
 	a.capVK = map[int]bool{}
-	a.capPad = map[int]bool{}
+	a.capPad = map[int]map[int]bool{}
 }
 
 // TestCaptureTakesTheFirstNewKey: a button waiting for a source takes the first
@@ -157,7 +271,7 @@ func TestCaptureTakesTheFirstNewKey(t *testing.T) {
 func TestCaptureTakesAButton(t *testing.T) {
 	a := &App{root: t.TempDir(), pads: map[string]map[string]padBind{}, padLive: "cps2"}
 	waitFor(a, "r")
-	a.captureTick(nil, map[int]bool{9: true}) // RB
+	a.captureTick(nil, map[int]map[int]bool{0: {9: true}}) // RB
 
 	if b := a.padProfile("cps2")["r"]; b.Pad != 10 || b.VK != 0 {
 		t.Fatalf("6 reads %+v, want the pad's RB only", b)
@@ -169,8 +283,9 @@ func TestCaptureTakesAButton(t *testing.T) {
 func TestCaptureIgnoresHeldKeysAndCancel(t *testing.T) {
 	a := &App{root: t.TempDir(), pads: map[string]map[string]padBind{}, padLive: "cps2"}
 	a.cap = "b"
+	a.capP = 0
 	a.capVK = map[int]bool{0x50: true}
-	a.capPad = map[int]bool{}
+	a.capPad = map[int]map[int]bool{}
 	a.captureTick(map[int]bool{0x50: true}, nil)
 	if a.cap != "b" {
 		t.Fatalf("a key already held was taken")
@@ -230,7 +345,7 @@ func TestMacroPressesEveryButton(t *testing.T) {
 	}
 	for _, c := range cases {
 		a := &App{root: t.TempDir(), pads: map[string]map[string]padBind{}}
-		a.bindPad(c.layout, c.macro, "key", 0x50, 0) // P
+		a.bindPad(c.layout, 0, c.macro, "key", 0x50, 0, 0) // P
 		held := maskOf(padLayoutFor(c.layout), a.padProfile(c.layout), map[int]bool{0x50: true}, nil)
 		if len(held) != len(c.want) {
 			t.Errorf("%s %s presses %v, want %v", c.layout, c.macro, held, c.want)
@@ -317,7 +432,7 @@ func TestPlayStationButtonsFollowTheCore(t *testing.T) {
 				t.Errorf("%s %s reads %q, want %q", c.layout, c.label, s.ID, c.want)
 			}
 			a := &App{root: t.TempDir(), pads: map[string]map[string]padBind{}}
-			a.bindPad(c.layout, s.ID, "key", 0x50, 0)
+			a.bindPad(c.layout, 0, s.ID, "key", 0x50, 0, 0)
 			held := maskOf(l, a.padProfile(c.layout), map[int]bool{0x50: true}, nil)
 			if !held[c.id] {
 				t.Errorf("%s %s does not press the core's id %d", c.layout, c.label, c.id)
@@ -389,24 +504,24 @@ func TestStickHasItsOwnDirections(t *testing.T) {
 // lets it go. It is not a switch on the panel, and it presses nothing itself.
 func TestStickHoldKeyKeepsADirection(t *testing.T) {
 	a := &App{root: t.TempDir(), pads: map[string]map[string]padBind{}, padLive: "ps2"}
-	a.bindPad("ps2", "lshold", "key", 0x54, 0) // T
-	a.bindPad("ps2", "lsup", "key", 0x57, 0)   // W
+	a.bindPad("ps2", 0, "lshold", "key", 0x54, 0, 0) // T
+	a.bindPad("ps2", 0, "lsup", "key", 0x57, 0, 0)   // W
 	prof := a.padProfile("ps2")
 
 	tilt := map[int]bool{prof["lsup"].VK: true}
-	if held := a.padMask(map[int]bool{prof["lshold"].VK: true}, nil); len(held) != 0 {
+	if held := a.padMask(0, map[int]bool{prof["lshold"].VK: true}, nil); len(held) != 0 {
 		t.Fatalf("the hold key alone pressed %v, want nothing", held)
 	}
 
 	// Tilt the stick, then press the hold key: up stays on after the stick is let go.
-	a.padMask(tilt, nil)
-	a.padMask(map[int]bool{prof["lsup"].VK: true, prof["lshold"].VK: true}, nil)
-	if held := a.padMask(nil, nil); !held[padUp] {
+	a.padMask(0, tilt, nil)
+	a.padMask(0, map[int]bool{prof["lsup"].VK: true, prof["lshold"].VK: true}, nil)
+	if held := a.padMask(0, nil, nil); !held[padUp] {
 		t.Fatalf("the held direction was dropped: %v", held)
 	}
 	// Press the hold key again with nothing tilted: it lets go.
-	a.padMask(map[int]bool{prof["lshold"].VK: true}, nil)
-	if held := a.padMask(nil, nil); held[padUp] {
+	a.padMask(0, map[int]bool{prof["lshold"].VK: true}, nil)
+	if held := a.padMask(0, nil, nil); held[padUp] {
 		t.Fatalf("the hold key did not let the direction go")
 	}
 }

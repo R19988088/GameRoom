@@ -45,9 +45,9 @@ type Session struct {
 	// type leaves its input uninitialised until one is announced.
 	setPort uintptr
 
-	keys  atomic.Value // map[int]bool, RETROK codes held down
-	binds atomic.Value // map[int]int, the player's VK to RETROK table
-	pads  atomic.Value // map[int]bool, RETRO_DEVICE_ID_JOYPAD ids held down
+	keys  atomic.Value // keyMasks, RETROK codes held down, by port
+	binds atomic.Value // bindTables, each player's VK to RETROK table
+	pads  atomic.Value // padMasks, RETRO_DEVICE_ID_JOYPAD ids held down, by port
 	mouse atomic.Value // MouseState, the pointer as a core reads it
 
 	mu     sync.RWMutex
@@ -58,10 +58,10 @@ type Session struct {
 
 	// A core that draws with OpenGL fills a framebuffer of ours instead of the
 	// software one; the picture is read back from there every frame.
-	hw     hwRenderCallback
-	hwOn   bool
-	hwBL   bool
-	vkOn   bool
+	hw   hwRenderCallback
+	hwOn bool
+	hwBL bool
+	vkOn bool
 	// A core such as PCSX2 asks for a GL context for its window handling but
 	// renders the picture itself and hands the finished frame to the video
 	// callback. Once that happens the frontend has no business touching GL in
@@ -190,8 +190,9 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 			coreVars[coreName][k] = v
 		}
 	}
-	s.keys.Store(map[int]bool{})
-	s.pads.Store(map[int]bool{})
+	s.keys.Store(keyMasks{})
+	s.binds.Store(bindTables{})
+	s.pads.Store(padMasks{})
 	s.mouse.Store(MouseState{})
 	s.onFrame.Store(func() {})
 
@@ -490,34 +491,48 @@ func (s *Session) Run() {
 	}
 }
 
-// SetKeyBinds is the player's keyboard, as virtual-key codes to RETROK codes.
-// It takes effect on the next frame: a binding changed while a game runs is
-// read by the very next poll.
-func (s *Session) SetKeyBinds(m map[int]int) { s.binds.Store(m) }
+// SetKeyBinds is one player's keyboard, as virtual-key codes to RETROK codes.
+// The port says whose keyboard it is: a key both players bind appears in both
+// tables instead of one replacing the other. It takes effect on the next frame:
+// a binding changed while a game runs is read by the very next poll.
+func (s *Session) SetKeyBinds(port int, m map[int]int) {
+	if port < 0 || port >= maxPorts {
+		return
+	}
+	tables, _ := s.binds.Load().(bindTables)
+	tables[port] = m
+	s.binds.Store(tables)
+}
 
 // RetroKey is the RETROK code a virtual-key code stands for, or 0 if this
 // keyboard has no such key. The app builds its binding table with it.
 func RetroKey(vk int) int { return keyMap[vk] }
 
-// SetKeys takes the keyboard keys held down, as retrok codes. A change of
-// state is logged so a menu that moves twice can be told apart: two presses
+// SetKeys takes the keyboard keys held down, by port, as retrok codes. A change
+// of state is logged so a menu that moves twice can be told apart: two presses
 // here, or one press the core read on two frames.
-func (s *Session) SetKeys(keys map[int]bool) {
+func (s *Session) SetKeys(keys keyMasks) {
 	if os.Getenv("GAMEROOM_INPUT_LOG") != "" {
-		old, _ := s.keys.Load().(map[int]bool)
-		for k, v := range keys {
-			if v && !old[k] {
-				fmt.Fprintf(os.Stderr, "input: frame=%d down=%d\n", s.Frames(), k)
+		old, _ := s.keys.Load().(keyMasks)
+		for port, held := range keys {
+			for k, v := range held {
+				if v && !old[port][k] {
+					fmt.Fprintf(os.Stderr, "input: port=%d frame=%d down=%d\n", port, s.Frames(), k)
+				}
 			}
 		}
 	}
 	s.keys.Store(keys)
 }
 
-// SetPad takes the gamepad's buttons held down, as RETRO_DEVICE_ID_JOYPAD ids:
-// which physical button drives which id is the frontend's business, the core
-// only reads the ids it expects.
-func (s *Session) SetPad(pads map[int]bool) { s.pads.Store(pads) }
+// SetPads takes every port's gamepad buttons held down, as
+// RETRO_DEVICE_ID_JOYPAD ids: which physical button drives which id is the
+// frontend's business, the core only reads the ids it expects. All ports are
+// written at once, so a frame never reads one player new and the other old.
+func (s *Session) SetPads(pads padMasks) { s.pads.Store(pads) }
+
+// SetPad is the one-player form of SetPads.
+func (s *Session) SetPad(pads map[int]bool) { s.SetPads(padMasks{0: pads}) }
 
 // Frame is the last picture the core drew, owned by the session.
 func (s *Session) Frame() *image.RGBA {
@@ -595,21 +610,52 @@ func init() {
 	}
 }
 
-// pollKeys is the keyboard as the core sees it this frame. It is read from the
+// pollKeys is the keyboard as each port sees it this frame. It is read from the
 // system rather than from the app's own events on purpose: a game window has
-// the keyboard whether or not the page is looking at it.
-func pollKeys() map[int]bool {
-	held := make(map[int]bool, 8)
-	table := keyMap
+// the keyboard whether or not the page is looking at it. Every player's table
+// is polled, so a key both players bound reaches both ports.
+func pollKeys() keyMasks {
+	var tables bindTables
 	if active != nil {
-		if m, ok := active.binds.Load().(map[int]int); ok && len(m) > 0 {
-			table = m
+		if t, ok := active.binds.Load().(bindTables); ok {
+			tables = t
 		}
 	}
-	for vk, rk := range table {
-		if st, _, _ := procGetAsyncKey.Call(uintptr(vk)); st&0x8000 != 0 {
-			held[rk] = true
+	// The first player's table is the keyboard of the machine when no binding
+	// was written: a DOS game still gets the keys it expects.
+	if len(tables[0]) == 0 {
+		tables[0] = keyMap
+	}
+	// A key is asked of the system once, however many players read it.
+	down := map[int]bool{}
+	for _, table := range tables {
+		for vk := range table {
+			if _, done := down[vk]; done {
+				continue
+			}
+			st, _, _ := procGetAsyncKey.Call(uintptr(vk))
+			down[vk] = st&0x8000 != 0
 		}
+	}
+	return keysHeld(tables, down)
+}
+
+// keysHeld is the keyboard each port reads: one table per player, and which
+// virtual-key codes are down. A key both players bound is written into both
+// ports' masks, not overwritten by the later table.
+func keysHeld(tables bindTables, down map[int]bool) keyMasks {
+	var held keyMasks
+	for port, table := range tables {
+		if len(table) == 0 {
+			continue
+		}
+		m := make(map[int]bool, 8)
+		for vk, rk := range table {
+			if down[vk] {
+				m[rk] = true
+			}
+		}
+		held[port] = m
 	}
 	return held
 }
@@ -1210,14 +1256,10 @@ func inputCallback(port, device, index, id uintptr) uintptr {
 	}
 	switch int(device) {
 	case DeviceJoypad:
-		// A joypad answer belongs to one port. Until a second player has a
-		// binding set of its own, only port 0 answers; a core polling port 1
-		// must read "nothing held" rather than be handed player one's keys.
-		if port != 0 {
-			return 0
-		}
-		pads, _ := s.pads.Load().(map[int]bool)
-		if pads != nil && pads[int(id)] {
+		// A joypad answer belongs to the port that is being polled: each player
+		// has a mask of its own, so port 1 no longer reads port 0's buttons.
+		pads, _ := s.pads.Load().(padMasks)
+		if int(port) < len(pads) && pads[int(port)] != nil && pads[int(port)][int(id)] {
 			return 1
 		}
 		return 0
@@ -1255,8 +1297,11 @@ func inputCallback(port, device, index, id uintptr) uintptr {
 	if int(device) != DeviceKeyboard {
 		return 0
 	}
-	keys, _ := s.keys.Load().(map[int]bool)
-	if keys != nil && keys[int(id)] {
+	if int(port) >= maxPorts {
+		return 0
+	}
+	keys, _ := s.keys.Load().(keyMasks)
+	if keys[int(port)] != nil && keys[int(port)][int(id)] {
 		return 1
 	}
 	return 0
@@ -1436,5 +1481,3 @@ func CorePath(dir, name string) string {
 	}
 	return p
 }
-
-

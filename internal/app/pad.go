@@ -569,12 +569,142 @@ func defaultPadBinds() map[string]padBind {
 	return m
 }
 
+// gamePadKey files one game's own pad profile. A game has an id in the library,
+// so the key stays the same across restarts; a hand-made game without one falls
+// back to its rom path.
+func gamePadKey(g library.Game) string {
+	switch {
+	case g.ID != 0:
+		return "game:" + strconv.Itoa(g.ID)
+	case g.RomPath != "":
+		return "game:" + g.RomPath
+	}
+	return ""
+}
+
+// gamePadKeyHere is the key of the game on screen, "" when no game is running.
+func (a *App) gamePadKeyHere() string { return gamePadKey(a.playerGame) }
+
+// gamePadActive reports whether the game on screen reads its own profile rather
+// than the platform-wide one beside it.
+func (a *App) gamePadActive() bool {
+	k := a.gamePadKeyHere()
+	if k == "" {
+		return false
+	}
+	_, ok := a.gamePads[k]
+	return ok && !a.gameGeneric[k]
+}
+
+// gamePadUsesGeneric reports whether the switch beside the plus is on: the
+// platform-wide profile is the one being read and written. A game with no own
+// profile is always generic.
+func (a *App) gamePadUsesGeneric() bool {
+	k := a.gamePadKeyHere()
+	if k == "" {
+		return true
+	}
+	if _, ok := a.gamePads[k]; !ok {
+		return true
+	}
+	return a.gameGeneric[k]
+}
+
+// padBinds is the stored half of the profile in use: the game's own entries
+// when its switch is off, otherwise the machine's shared entries.
+func (a *App) padBinds(layout string) map[string]padBind {
+	if a.gamePadActive() {
+		return a.gamePads[a.gamePadKeyHere()]
+	}
+	return a.pads[layout]
+}
+
+// padEditMap is the map a binding is written into. It creates the chosen map
+// when it is missing, so a first edit on a fresh game or machine has somewhere
+// to land.
+func (a *App) padEditMap(layout string) map[string]padBind {
+	if a.gamePadActive() {
+		k := a.gamePadKeyHere()
+		if a.gamePads == nil {
+			a.gamePads = map[string]map[string]padBind{}
+		}
+		if a.gamePads[k] == nil {
+			a.gamePads[k] = map[string]padBind{}
+		}
+		return a.gamePads[k]
+	}
+	if a.pads == nil {
+		a.pads = map[string]map[string]padBind{}
+	}
+	if a.pads[layout] == nil {
+		a.pads[layout] = map[string]padBind{}
+	}
+	return a.pads[layout]
+}
+
+// addGamePadProfile gives the game on screen a profile of its own. The first
+// press copies the machine's shared entries, so the new profile starts from
+// what the player already uses; after that the plus only switches back to it.
+func (a *App) addGamePadProfile() {
+	k := a.gamePadKeyHere()
+	if k == "" {
+		a.padNote = "当前没有正在进行的游戏"
+		return
+	}
+	if a.gamePads == nil {
+		a.gamePads = map[string]map[string]padBind{}
+	}
+	if a.gameGeneric == nil {
+		a.gameGeneric = map[string]bool{}
+	}
+	if _, ok := a.gamePads[k]; !ok {
+		src := a.pads[a.padLive]
+		a.gamePads[k] = make(map[string]padBind, len(src))
+		for id, b := range src {
+			a.gamePads[k][id] = b
+		}
+		a.padNote = "已为本游戏建立专属配置"
+	} else {
+		a.padNote = "本游戏已有专属配置"
+	}
+	a.gameGeneric[k] = false
+	a.cap = ""
+	a.savePads()
+}
+
+// setGamePadGeneric switches the game on screen between its own profile and the
+// machine's shared one. The switch cannot make a profile that is not there yet;
+// the plus is the way to create one.
+func (a *App) setGamePadGeneric(generic bool) {
+	k := a.gamePadKeyHere()
+	if k == "" {
+		return
+	}
+	if _, ok := a.gamePads[k]; !ok {
+		if !generic {
+			a.padNote = "先按 + 为本游戏建立专属配置"
+		}
+		return
+	}
+	if a.gameGeneric == nil {
+		a.gameGeneric = map[string]bool{}
+	}
+	a.gameGeneric[k] = generic
+	a.cap = ""
+	a.savePads()
+	if generic {
+		a.padNote = "已切到通用配置"
+	} else {
+		a.padNote = "已切到本游戏专属"
+	}
+}
+
 // padProfile is the profile a machine actually runs with: its saved bindings
 // laid over the defaults. The second player's entries live in the same map
 // under the 2p: prefix, and are not part of this profile.
 func (a *App) padProfile(layout string) map[string]padBind {
 	m := defaultPadBinds()
-	for id, b := range a.pads[layout] {
+	for id, b := range a.padBinds(layout) {
 		if strings.HasPrefix(id, player2) {
 			continue
 		}
@@ -588,6 +718,12 @@ func (a *App) padProfile(layout string) map[string]padBind {
 type padFile struct {
 	Version int                           `json:"version"`
 	Layouts map[string]map[string]padBind `json:"layouts"`
+	// Games are the profiles a single game made for itself, keyed by
+	// gamePadKey. Generic says that game still reads its platform's shared
+	// profile even though it has entries of its own; a missing key means false,
+	// so a game profile dropped in by hand is used at once.
+	Games   map[string]map[string]padBind `json:"games,omitempty"`
+	Generic map[string]bool               `json:"generic,omitempty"`
 }
 
 func (a *App) controlsPath() string { return filepath.Join(a.root, "数据", "controls.json") }
@@ -628,21 +764,37 @@ func (a *App) pushKeyBinds() {
 // loadPads reads the bindings the player made. A missing file is the defaults.
 func (a *App) loadPads() {
 	a.pads = map[string]map[string]padBind{}
+	a.gamePads = map[string]map[string]padBind{}
+	a.gameGeneric = map[string]bool{}
 	data, err := os.ReadFile(a.controlsPath())
 	if err != nil {
 		return
 	}
 	var f padFile
-	if err := json.Unmarshal(data, &f); err != nil || f.Layouts == nil {
+	if err := json.Unmarshal(data, &f); err != nil {
 		return
 	}
-	a.pads = f.Layouts
+	if f.Layouts != nil {
+		a.pads = f.Layouts
+	}
+	if f.Games != nil {
+		a.gamePads = f.Games
+	}
+	if f.Generic != nil {
+		a.gameGeneric = f.Generic
+	}
 }
 
-// savePads keeps them: one entry per machine, shared by every game of it.
+// savePads keeps them: one entry per machine, shared by every game of it, plus
+// the profiles a single game made for itself.
 func (a *App) savePads() {
 	defer a.pushKeyBinds()
-	f := padFile{Version: 1, Layouts: a.pads}
+	f := padFile{
+		Version: 1,
+		Layouts: a.pads,
+		Games:   a.gamePads,
+		Generic: a.gameGeneric,
+	}
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return
@@ -656,9 +808,7 @@ func (a *App) savePads() {
 // key would fire together. The second player's entries are filed under the 2p:
 // prefix, the first player's stay bare so old controls.json files still load.
 func (a *App) bindPad(layout string, player int, id, opt string, vk, pad, ctrl int) {
-	if a.pads[layout] == nil {
-		a.pads[layout] = map[string]padBind{}
-	}
+	dst := a.padEditMap(layout)
 	key := id
 	if player == 1 {
 		key = player2 + id
@@ -679,13 +829,13 @@ func (a *App) bindPad(layout string, player int, id, opt string, vk, pad, ctrl i
 			ob.Pad, gave = 0, true
 		}
 		if gave {
-			a.pads[layout][keyOf(player, other)] = ob
+			dst[keyOf(player, other)] = ob
 		}
 	}
 	if opt == "key" {
-		a.pads[layout][key] = padBind{Key: vkName(vk), VK: vk}
+		dst[key] = padBind{Key: vkName(vk), VK: vk}
 	} else {
-		a.pads[layout][key] = padBind{Pad: pad, Ctrl: ctrl}
+		dst[key] = padBind{Pad: pad, Ctrl: ctrl}
 	}
 	a.savePads()
 }
@@ -704,16 +854,17 @@ func (a *App) resetPads(layout string) {
 	a.resetPadPlayer(layout, 1)
 }
 
-// resetPadPlayer drops one player's bindings for a machine, leaving the other
-// player's and the defaults alone.
+// resetPadPlayer drops one player's bindings for the profile in use — the
+// machine's shared one, or the game's own when its switch is off — leaving the
+// other player's and the defaults alone.
 func (a *App) resetPadPlayer(layout string, player int) {
-	m := a.pads[layout]
-	for id := range m {
+	dst := a.padEditMap(layout)
+	for id := range dst {
 		if (player == 1) == strings.HasPrefix(id, player2) {
-			delete(m, id)
+			delete(dst, id)
 		}
 	}
-	if len(m) == 0 {
+	if !a.gamePadActive() && len(a.pads[layout]) == 0 {
 		delete(a.pads, layout)
 	}
 	a.savePads()
@@ -992,6 +1143,9 @@ func (a *App) togglePads() {
 	a.filtersOpen = false
 	a.cap = ""
 	a.capP = 0
+	if a.padsOpen {
+		a.padNote = ""
+	}
 }
 
 // startCapture puts a button of one player's model in wait: the next key
@@ -1058,11 +1212,12 @@ func (a *App) captureTick(keys map[int]bool, pads map[int]map[int]bool) {
 // bare, so controls.json written before two players existed still loads.
 const player2 = "2p:"
 
-// padProfile2 is the second player's bindings for a machine: the stored "2p:"
-// ids with that prefix stripped, on top of a default set of its own.
+// padProfile2 is the second player's bindings for the profile in use: the
+// stored "2p:" ids with that prefix stripped, on top of a default set of its
+// own.
 func (a *App) padProfile2(layout string) map[string]padBind {
 	m := defaultPadBinds2()
-	for id, b := range a.pads[layout] {
+	for id, b := range a.padBinds(layout) {
 		if strings.HasPrefix(id, player2) {
 			m[strings.TrimPrefix(id, player2)] = b
 		}

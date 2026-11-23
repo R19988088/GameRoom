@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/egoist/mygo/ui"
+
 	"github.com/R19988088/GameRoom/internal/library"
 )
 
@@ -540,9 +542,189 @@ func TestStickHoldKeyKeepsADirection(t *testing.T) {
 	}
 }
 
-// so every button has to be inside it, no button twice, the four arms of the
-// d-pad always there, and the face buttons sitting on shared columns instead of
-// wherever they happen to land.
+// TestGamePadProfileCopiesTheSharedOneAndStaysApart: the plus starts the game
+// profile from the machine's shared bindings, and an edit there leaves the
+// shared profile alone.
+func TestGamePadProfileCopiesTheSharedOneAndStaysApart(t *testing.T) {
+	a := &App{
+		root: t.TempDir(), pads: map[string]map[string]padBind{},
+		padLive: "fc", playerGame: library.Game{ID: 7, Title: "Fighting Vipers 2"},
+	}
+	a.bindPad("fc", 0, "a", "key", 0x50, 0, 0) // P on the shared profile
+	a.addGamePadProfile()
+
+	k := gamePadKey(a.playerGame)
+	if !a.gamePadActive() || a.gameGeneric[k] {
+		t.Fatalf("after plus, active = %v, generic = %v, want the game profile",
+			a.gamePadActive(), a.gameGeneric[k])
+	}
+	if got := a.gamePads[k]["a"]; got.VK != 0x50 {
+		t.Fatalf("the new profile copied %+v, want the shared P", got)
+	}
+
+	a.bindPad("fc", 0, "a", "key", 0x51, 0, 0) // Q on the game profile
+	if got := a.pads["fc"]["a"].VK; got != 0x50 {
+		t.Fatalf("editing the game profile changed the shared one to %d", got)
+	}
+	if got := a.padProfile("fc")["a"].VK; got != 0x51 {
+		t.Fatalf("the game reads %d, want its own Q", got)
+	}
+}
+
+// TestGamePadProfileSwitchChoosesWhichIsHeard: the 通用 switch is not an alias
+// for the plus; it chooses between the two existing profiles and keeps both.
+func TestGamePadProfileSwitchChoosesWhichIsHeard(t *testing.T) {
+	a := &App{
+		root: t.TempDir(), pads: map[string]map[string]padBind{},
+		padLive: "fc", playerGame: library.Game{ID: 8, Title: "Viewtiful Joe"},
+	}
+	a.addGamePadProfile()
+	a.bindPad("fc", 0, "a", "key", 0x51, 0, 0) // Q only in the game profile
+
+	a.setGamePadGeneric(true)
+	if !a.gamePadUsesGeneric() {
+		t.Fatalf("the 通用 switch did not turn on")
+	}
+	if got := a.padProfile("fc")["a"].VK; got != defaultKeys["a"] {
+		t.Fatalf("generic A reads %d, want the default %d", got, defaultKeys["a"])
+	}
+
+	a.setGamePadGeneric(false)
+	if got := a.padProfile("fc")["a"].VK; got != 0x51 {
+		t.Fatalf("back on the game profile A reads %d, want Q", got)
+	}
+}
+
+// TestGamePadProfilesAreFiledPerGame: two games of one machine do not share a
+// game profile, and a game with no profile of its own still reads the machine's.
+func TestGamePadProfilesAreFiledPerGame(t *testing.T) {
+	a := &App{
+		root: t.TempDir(), pads: map[string]map[string]padBind{},
+		padLive: "fc", playerGame: library.Game{ID: 1, Title: "Game One"},
+	}
+	a.addGamePadProfile()
+	a.bindPad("fc", 0, "a", "key", 0x51, 0, 0) // Q for game one
+
+	a.playerGame = library.Game{ID: 2, Title: "Game Two"}
+	if a.gamePadActive() {
+		t.Fatalf("game two inherited game one's profile")
+	}
+	if got := a.padProfile("fc")["a"].VK; got != defaultKeys["a"] {
+		t.Fatalf("game two reads %d, want the shared default %d", got, defaultKeys["a"])
+	}
+
+	a.addGamePadProfile()
+	a.bindPad("fc", 0, "a", "key", 0x52, 0, 0) // R for game two
+	if got := a.gamePads["game:1"]["a"].VK; got != 0x51 {
+		t.Fatalf("game one's profile changed to %d", got)
+	}
+	if got := a.gamePads["game:2"]["a"].VK; got != 0x52 {
+		t.Fatalf("game two's profile reads %d, want R", got)
+	}
+}
+
+// TestGamePadProfileCarriesBothPlayers: a game's own profile is one file for
+// both ports, so the 2p: entries are copied and edited there too, not left on
+// the machine's shared profile.
+func TestGamePadProfileCarriesBothPlayers(t *testing.T) {
+	a := &App{
+		root: t.TempDir(), pads: map[string]map[string]padBind{},
+		padLive: "fc", playerGame: library.Game{ID: 12, Title: "Tatsunoko vs. Capcom"},
+	}
+	a.bindPad("fc", 1, "a", "pad", 0, 11, 1) // A on controller two, shared
+	a.addGamePadProfile()
+
+	k := gamePadKey(a.playerGame)
+	if got := a.gamePads[k]["2p:a"]; got.Pad != 11 || got.Ctrl != 1 {
+		t.Fatalf("game profile copied player two as %+v", got)
+	}
+	a.bindPad("fc", 1, "a", "key", 0x51, 0, 0) // Q for player two only
+	if _, ok := a.pads["fc"]["2p:a"]; !ok {
+		t.Fatalf("the shared player-two entry disappeared")
+	}
+	if got := a.padProfile2("fc")["a"].VK; got != 0x51 {
+		t.Fatalf("player two reads %d from the game profile, want Q", got)
+	}
+}
+
+// TestGamePadProfilesSurviveARestart: controls.json keeps the game profiles
+// and the per-game 通用 choice, so a restart does not put the machine's profile
+// back under the player's hands.
+func TestGamePadProfilesSurviveARestart(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "数据"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	game := library.Game{ID: 11, Title: "Rhythm Heaven Fever"}
+	a := &App{root: root, pads: map[string]map[string]padBind{}, padLive: "wii", playerGame: game}
+	a.addGamePadProfile()
+	a.bindPad("wii", 0, "a", "key", 0x51, 0, 0) // Q only in the game profile
+
+	b := &App{root: root, playerGame: game, padLive: "wii"}
+	b.loadPads()
+	if !b.gamePadActive() {
+		t.Fatalf("the game profile was forgotten")
+	}
+	if got := b.padProfile("wii")["a"].VK; got != 0x51 {
+		t.Fatalf("restart reads %d, want the game profile's Q", got)
+	}
+
+	b.setGamePadGeneric(true)
+	c := &App{root: root, playerGame: game, padLive: "wii"}
+	c.loadPads()
+	if !c.gamePadUsesGeneric() {
+		t.Fatalf("the 通用 choice was forgotten")
+	}
+	if got := c.padProfile("wii")["a"].VK; got != defaultKeys["a"] {
+		t.Fatalf("restart on 通用 reads %d, want the default", got)
+	}
+}
+
+// TestOldControlsFileStillLoads: a controls.json written before game profiles
+// existed has only layouts; it still reads as the machine's shared profile, with
+// no migration and no game profile invented.
+func TestOldControlsFileStillLoads(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "数据"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := `{"version":1,"layouts":{"fc":{"a":{"key":"P","vk":80}}}}`
+	if err := os.WriteFile(filepath.Join(root, "数据", "controls.json"), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{root: root, padLive: "fc", playerGame: library.Game{ID: 42}}
+	a.loadPads()
+	if !a.gamePadUsesGeneric() || a.gamePadActive() {
+		t.Fatalf("old file became a game profile: active = %v, generic = %v",
+			a.gamePadActive(), a.gamePadUsesGeneric())
+	}
+	if got := a.padProfile("fc")["a"].VK; got != 0x50 {
+		t.Fatalf("old P binding reads %d, want 0x50", got)
+	}
+}
+
+// TestPadPanelShowsGameConfigRow: the row under the title carries the profile
+// it is editing, the plus that starts a game profile, and the 通用 switch that
+// keeps the machine's own one reachable.
+func TestPadPanelShowsGameConfigRow(t *testing.T) {
+	a := &App{
+		root: t.TempDir(), pads: map[string]map[string]padBind{},
+		padLive: "fc", playerGame: library.Game{ID: 21, Title: "Fighting Vipers 2"},
+		theme: buildTheme(),
+	}
+	tt := ui.NewTester(func(c *ui.Context) { a.padPanel(c, &a.theme) }, 1100, 500)
+	tt.Frame()
+	for _, want := range []string{"配置", "+ 专属", "通用"} {
+		if !tt.HasText(want) {
+			t.Errorf("pad panel is missing %q", want)
+		}
+	}
+}
+
+// TestModelsFitTheCanvasAndLineUp: every model has to fit the canvas the panel
+// gives it, so every button has to be inside it, no button twice, the four arms
+// of the d-pad always there, and the face buttons sitting on shared columns
+// instead of wherever they happen to land.
 func TestModelsFitTheCanvasAndLineUp(t *testing.T) {
 	if len(padLayouts) < 19 {
 		t.Fatalf("only %d models", len(padLayouts))

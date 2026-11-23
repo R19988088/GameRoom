@@ -198,11 +198,17 @@ type App struct {
 	pads     map[string]map[string]padBind
 	padsOpen bool
 	padLive  string
-	cap      string
-	capP     int
-	capVK    map[int]bool
-	capPad   map[int]map[int]bool
-	escDown  bool
+	// Game-specific pad profiles: bindings filed under a game's own key, and
+	// whether that game still reads the platform-wide profile beside it. A game
+	// with no own entries follows its platform, exactly as before.
+	gamePads    map[string]map[string]padBind
+	gameGeneric map[string]bool
+	padNote     string
+	cap         string
+	capP        int
+	capVK       map[int]bool
+	capPad      map[int]map[int]bool
+	escDown     bool
 	// The stick's hold key, one state per player: on is the direction it is
 	// keeping on ("" for none), down whether the key itself is down, so only the
 	// press counts and not the repeat.

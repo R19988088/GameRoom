@@ -79,6 +79,7 @@ func (a *App) padPanel(c *ui.Context, t *ui.Theme) {
 		col.Children(func() {
 			a.padHeader(c, t)
 			if l := padLayoutFor(a.padLive); l != nil {
+				a.padConfigRow(c, t)
 				ui.Row(c).Gap(8).AlignItems(ui.Start).Children(func() {
 					a.padColumn(c, t, l, 0)
 					a.padColumn(c, t, l, 1)
@@ -162,6 +163,73 @@ func (a *App) padHeader(c *ui.Context, t *ui.Theme) {
 		})
 		if close.Clicked() {
 			a.win.Update(a.togglePads)
+		}
+	})
+}
+
+// padConfigRow is the line under the title: which profile the panel is editing
+// and the two ways to change that. The plus gives the game on screen a profile
+// of its own; the 通用 switch beside it keeps the machine-wide profile one
+// keystroke away. Editing never touches both at once.
+func (a *App) padConfigRow(c *ui.Context, t *ui.Theme) {
+	generic := a.gamePadUsesGeneric()
+	ui.Row(c).Height(24).AlignItems(ui.Center).Gap(8).Children(func() {
+		ui.Text(c, "配置").FontSize(10).TextColor(t.TextMuted.Alpha(0.7)).SingleLine()
+		name, col := "通用", t.TextMuted
+		if !generic {
+			name, col = "本游戏专属", playerColor(0)
+		}
+		ui.Text(c, name).FontSize(10.5).FontWeight(700).TextColor(col).SingleLine()
+		note := a.padNote
+		if note == "" {
+			note = "这台机器的游戏共用"
+			if !generic {
+				note = "只对当前游戏生效"
+			}
+		}
+		ui.Text(c, note).Grow(1).MinWidth(0).FontSize(9.5).
+			TextColor(t.TextMuted.Alpha(0.55)).SingleLine()
+		a.padAddButton(c, t)
+		a.padGenericSwitch(c, t, generic)
+	})
+}
+
+// padAddButton is the plus: the first press copies the machine's bindings into
+// a profile for this game, later presses switch back to it.
+func (a *App) padAddButton(c *ui.Context, t *ui.Theme) {
+	b := ui.ButtonBase(c).Width(66).Height(22).Radius(11).Center().
+		Material(glass.Glass{Clarity: 0.7, Tint: ui.Hex("#ffffff12")}).
+		Border(1, ui.Hex("#ffffff1f"))
+	if b.Hovered() {
+		b.Background(ui.Hex("#e8763a24")).Border(1, ui.Hex("#e8763a66"))
+	}
+	b.Children(func() {
+		ui.Text(c, "+ 专属").FontSize(9.5).FontWeight(600).
+			TextColor(t.Text.Alpha(0.88)).SingleLine()
+	})
+	if b.Clicked() {
+		a.win.Update(a.addGamePadProfile)
+	}
+}
+
+// padGenericSwitch is the 通用 toggle beside the plus. On reads and writes the
+// machine's shared profile; off reads and writes this game's own.
+func (a *App) padGenericSwitch(c *ui.Context, t *ui.Theme, on bool) {
+	ui.Row(c).Height(22).AlignItems(ui.Center).Gap(5).Children(func() {
+		ui.Text(c, "通用").FontSize(9.5).TextColor(t.TextMuted.Alpha(0.8)).SingleLine()
+		track := ui.ButtonBase(c).Width(36).Height(22).Background(ui.Hex("#00000000"))
+		track.Draw(func(p *ui.Painter, r ui.Rect) {
+			trackColor := ui.Hex("#ffffff2b")
+			knobX := r.X + 2
+			if on {
+				trackColor = ui.Hex("#34c759")
+				knobX = r.X + 18
+			}
+			p.Fill(ui.Rect{X: r.X, Y: r.Y + 2, W: 36, H: 18}, trackColor, 9)
+			p.Fill(ui.Rect{X: knobX, Y: r.Y + 4, W: 14, H: 14}, ui.Hex("#f7f8fa"), 7)
+		})
+		if track.Clicked() {
+			a.win.Update(func() { a.setGamePadGeneric(!on) })
 		}
 	})
 }

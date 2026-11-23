@@ -27,6 +27,15 @@ type scrubDrag struct {
 	px     float32
 }
 
+// spanText reads a stretch of play the way the timeline counts it: in tenths of a
+// second, as milliseconds under a second and as seconds over it.
+func spanText(ms int) string {
+	if ms >= 1000 {
+		return fmt.Sprintf("%.1f 秒", float64(ms)/1000)
+	}
+	return fmt.Sprintf("%d ms", ms)
+}
+
 // saveButton is the pill beside the look: the way into the save panel. It only
 // appears for a game this process is stepping — a game handed to RetroArch's own
 // window has no state here to save.
@@ -220,18 +229,18 @@ func (a *App) rewindRow(c *ui.Context, t *ui.Theme, v rewindView) {
 		ui.Text(c, "时间轴").FontSize(10).FontWeight(600).
 			TextColor(t.Text.Alpha(0.85)).SingleLine()
 		if v.Count > 1 {
-			ui.Text(c, fmt.Sprintf("覆盖 %d 帧", v.Span)).FontSize(9.5).
-				TextColor(t.TextMuted.Alpha(0.55)).SingleLine()
+			ui.Text(c, fmt.Sprintf("覆盖 %s · 每格 %s", spanText(v.Span), spanText(v.Seg))).
+				FontSize(9.5).TextColor(t.TextMuted.Alpha(0.55)).SingleLine()
 		} else if v.Note != "" {
 			ui.Text(c, v.Note).FontSize(9.5).
 				TextColor(t.TextMuted.Alpha(0.65)).SingleLine()
 		} else {
-			ui.Text(c, "还没有可回退的帧").FontSize(9.5).
+			ui.Text(c, "还没有可回退的分段").FontSize(9.5).
 				TextColor(t.TextMuted.Alpha(0.55)).SingleLine()
 		}
 		ui.Box(c).Grow(1)
 		if v.Back > 0 {
-			ui.Text(c, fmt.Sprintf("已回退 %d 帧", v.Back)).FontSize(10.5).
+			ui.Text(c, fmt.Sprintf("已回退 %s", spanText(v.Back))).FontSize(10.5).
 				TextColor(t.Accent).SingleLine()
 		}
 		cont := ui.ButtonBase(c).Width(58).Height(24).Radius(12).Center().

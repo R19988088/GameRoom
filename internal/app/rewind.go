@@ -8,15 +8,16 @@ import (
 	"github.com/R19988088/GameRoom/internal/core"
 )
 
-// A rewind is a row of states: the machine as it was, one capture every step
-// frames, the newest at the end. Stepping the game back is putting an older one
-// of them back — a frame at a time when the core's state is small, further when
-// it is big, because a state that costs a frame to write cannot be written every
-// frame. What is kept is bounded by bytes as well, so a heavy core is never
-// asked to hold a gigabyte of DMA.
+// A rewind is a row of states: the machine as it was, one capture every segment
+// of the game, the newest at the end. The timeline is measured in tenths of a
+// second, not in frames — a capture is 100ms of play (200ms, 300ms when the core
+// is too big to be caught up with that often) — so the row reads the same however
+// fast the machine runs. What is kept is bounded by bytes as well, so a heavy
+// core is never asked to hold a gigabyte of DMA.
 const (
 	rewindBytes      = 128 << 20
 	rewindSpan       = 2 * time.Second
+	rewindSegment    = 100 * time.Millisecond
 	rewindCostBudget = 2 * time.Millisecond
 	rewindMaxEntries = 240
 )
@@ -28,8 +29,12 @@ type rewindEntry struct {
 }
 
 // rewindPlan says how a core's states fit into the row: one capture every step
-// frames and max of them — about two seconds of history, at the finest
-// granularity the state's size and the cost of writing it allow.
+// frames and max of them — about two seconds of history, cut into segments of
+// 100ms. A state that costs more than the budget cannot be taken that often, so
+// the segment grows to the next tenth of a second rather than to whatever the
+// cost works out to: the timeline always reads in round hundreds of
+// milliseconds, and a PlayStation, whose state takes 10–15ms to write, steps back
+// 200ms at a time instead of 133.
 func rewindPlan(size int, fps float64, cost time.Duration) (step, max int) {
 	if size <= 0 {
 		return 0, 0
@@ -37,11 +42,20 @@ func rewindPlan(size int, fps float64, cost time.Duration) (step, max int) {
 	if fps <= 0 {
 		fps = 60
 	}
-	span := int(rewindSpan.Seconds() * fps)
-	step = 1
-	if cost > rewindCostBudget {
-		step = int(math.Ceil(float64(cost) / float64(rewindCostBudget)))
+	// One segment is this many frames of this machine: 6 at 60fps, 5 at 50.
+	seg := int(math.Round(fps * rewindSegment.Seconds()))
+	if seg < 1 {
+		seg = 1
 	}
+	step = seg
+	if cost > rewindCostBudget {
+		if byCost := int(math.Ceil(float64(cost) / float64(rewindCostBudget))); byCost > step {
+			// Round up to whole segments, so every step of the timeline is a
+			// round tenth of a second.
+			step = int(math.Ceil(float64(byCost)/float64(seg))) * seg
+		}
+	}
+	span := int(rewindSpan.Seconds() * fps)
 	if span <= 0 {
 		span = 60
 	}
@@ -63,8 +77,9 @@ func rewindPlan(size int, fps float64, cost time.Duration) (step, max int) {
 // open, which is why it carries a lock of its own.
 type rewind struct {
 	mu      sync.Mutex
-	step    int // frames between captures, 0 when the core has no state
-	max     int // how many captures are kept
+	step    int     // frames between captures, 0 when the core has no state
+	max     int     // how many captures are kept
+	fps     float64 // the machine's rate, for reading frames as milliseconds
 	planned bool
 	last    int // the frame of the newest capture, -1 for none
 	idx     int // the entry the picture is at, -1 for the live edge
@@ -84,6 +99,16 @@ func (r *rewind) reset() {
 	r.entries = nil
 	r.note = ""
 	r.cost = 0
+	r.fps = 0
+}
+
+// ms is the game's time for a number of its frames, as the timeline reads it.
+func (r *rewind) ms(frames int) int {
+	fps := r.fps
+	if fps <= 0 {
+		fps = 60
+	}
+	return int(math.Round(float64(frames) * 1000 / fps))
 }
 
 // freeze stops the row from growing while the panel is open, so the states it
@@ -113,13 +138,14 @@ func (r *rewind) add(frame int, data []byte) {
 }
 
 // view is what the panel draws: how many states there are, which one the picture
-// is at, how far back that is in frames, and whether the row is live.
+// is at, how far back that is in milliseconds of play, and whether the row is live.
 type rewindView struct {
 	Count int
 	Idx   int
-	Back  int // frames behind the live edge, 0 while live
-	Span  int // frames the whole row covers
-	Step  int
+	Back  int // milliseconds behind the live edge, 0 while live
+	Span  int // milliseconds the whole row covers
+	Seg   int // milliseconds of game in one step of the timeline
+	Step  int // frames of game in one segment
 	Note  string
 }
 
@@ -127,12 +153,19 @@ func (r *rewind) view() rewindView {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	v := rewindView{Count: len(r.entries), Idx: r.idx, Step: r.step, Note: r.note}
+	if r.step > 0 {
+		v.Seg = r.ms(r.step)
+	}
 	if len(r.entries) > 0 {
 		if r.idx >= 0 && r.idx < len(r.entries) {
-			v.Back = r.entries[len(r.entries)-1].Frame - r.entries[r.idx].Frame
+			v.Back = r.ms(r.entries[len(r.entries)-1].Frame - r.entries[r.idx].Frame)
 		}
-		if len(r.entries) > 1 {
-			v.Span = r.entries[len(r.entries)-1].Frame - r.entries[0].Frame
+		// The row is counted in whole segments: twenty of them are two seconds of
+		// play, even though the oldest and the newest are nineteen apart.
+		if r.step > 0 {
+			v.Span = r.ms(len(r.entries) * r.step)
+		} else if len(r.entries) > 1 {
+			v.Span = r.ms(r.entries[len(r.entries)-1].Frame - r.entries[0].Frame)
 		}
 	}
 	return v
@@ -215,6 +248,7 @@ func (a *App) captureRewind(s *core.Session) {
 	if !r.planned || cost > 2*rewindCostBudget {
 		step, max := rewindPlan(len(data), s.FPS(), cost)
 		r.step, r.max = step, max
+		r.fps = s.FPS()
 	}
 	r.planned = true
 	r.cost = cost

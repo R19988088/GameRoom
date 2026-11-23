@@ -307,12 +307,13 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
   有图的位置点一下只是**选中**（`slotSel`），读取/删除要再按按钮——一次点击不会既存档又覆盖。
   `读取` = `loadFrom()`：`LoadState` 进去 + `Step()` 一帧让玻璃显示那一瞬，并把回退行重置。
 - **回退行**（`rewind.go`）：`OnFrame` 里每帧调 `captureRewind()`，在核心线程、`retro_run` 之后调
-  `SaveStateNow()` 存一份；**节奏按成本算**，不按时间算：`rewindPlan(size,fps,cost)` 用一个 2ms 的预算推 `step`
-  （`step = ceil(cost/2ms)`，最少 1 帧），`max` 取 2 秒 / step，再被 128MB 与 240 条夹住。
-  实测：`fceumm` 22KB → 每帧一份；`snes9x2010` 826KB → 每帧一份（raw 写 225µs / 读 456µs）；
-  `mednafen_psx` 16MB → 8 份（128MB/16MB）。注意 `Do()` 一次往返固定 ≈16ms（一个帧边界的延迟），
-  所以预算只看核心线程内的 raw 成本，不看 `Do` 的往返。
-- 时间轴（`rewindTrack`）：一条与条目等距的条，`已回退 N 帧` 的读数、`继续` 回到实时。**拖动就是回退**：
+  `SaveStateNow()` 存一份。**分段以 100ms 计，不是按帧**：`rewindPlan(size,fps,cost)` 里
+  `step = round(fps × 0.1)`（60fps = 6 帧、50fps = 5 帧），`max = 2 秒 / step`（两条夹：128MB 与 240 条）。
+  成本超预算时**整段往上抬到下一个 100ms**（一个状态要 15ms 写不完一次 100ms，就变 12 帧 = 200ms），
+  所以读数永远是整百毫秒，不会出现 133ms 这种碎数。注意 `Do()` 一次往返固定 ≈16ms（一个帧边界的延迟），
+  预算只看核心线程内的 raw 成本。
+- 时间轴（`rewindTrack`）：一条与条目等距的条，读数 `已回退 200 ms`、旁边 `覆盖 2.0 秒 · 每格 100 ms`
+  （`Span` 按整段算：20 段 = 2 秒，不是首尾相差的 1.9 秒），`继续` 回到实时。**拖动就是回退**：
   按住轨道往左拖，按 `dx / (轨宽/(条数-1))` 映射到条目（`scrubDrag` 记起点条目与累计位移），
   每落到一条就 `rewindTo(i)` = `LoadState` + `Step()`。往回拖到底是最早的一条，往右拖到底回到最新。
 - **不能存档的核心，格子上就是一个 ✕**（`canSave()` / `savable()`）：核心 `retro_serialize_size` 答 0，
@@ -331,7 +332,8 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
   | `pcsx_rearmed` | 4.4MB | 1.5–7ms | 1.5ms | 18ms |
   | `duckstation` | — | 在本进程里 `retro_run` 直接崩（GL 上下文），所以 PSX 走 `mednafen_psx` | | |
 
-  PSX 裁剪后一份 3.6MB，回退行是 24 条、覆盖 2 秒（`rewindBytes` 的 128MB 里只用 86MB）。
+  PSX 裁剪后一份 3.6MB、成本 10–15ms，所以分段抬到 200ms：10 条、覆盖 2 秒，占 36MB。
+  `fceumm` / `snes9x2010` 都是 100ms × 20 条。
 - **快照的体积**（`state_windows.go` + `saves.go`）：
   - **先裁掉核心没写的那截**。`retro_serialize_size` 是“最多可能写多大”，不是“写了多大”：
     `mednafen_psx` 声明 16MB，实际只写 **3.75MB**。所以存档前 `clear(buf)`，写完后
@@ -349,10 +351,10 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
     | `snes9x2010` | 826KB | 826KB | ~? | 225µs |
 
     也就是 PSX 的一个存档从 16MB 变成 379KB（42 倍）。
-  - 回退行里的状态**不压**：那是每 `step` 帧一次的热路径，deflate 的 8ms 加在 10ms 的采集上
-    会把 PSX 拖慢；裁剪后的 3.6MB × 24 条 ≈ 86MB，仍在 `rewindBytes` 的 128MB 以内。
-  - 副作用：`rewindPlan` 用的是裁剪后的长度，所以 PSX 的回退行从 8 条（被 16MB 撑满上限）
-    变成 24 条、覆盖 2 秒——体积小下来之后历史反而长了。
+  - 回退行里的状态**不压**：那是每段一次的热路径，deflate 的 8ms 加在 10ms 的采集上
+    会把 PSX 拖慢；裁剪后的 3.6MB × 10 条 ≈ 36MB，仍在 `rewindBytes` 的 128MB 以内。
+  - 副作用：`rewindPlan` 用的是裁剪后的长度，16MB 不再撑满 128MB 上限，PSX 从“8 条、
+    被字节上限卡住”变成“10 条、每段 200ms、正好 2 秒”——体积小下来之后历史够用了。
 - 退游戏时 `releaseGame()` 清 `savesOpen/slots/shots/slotSel` 并 `a.rew.reset()`；`launchGame` 开局前同样重置，
   回退行永远只属于当前这颗核心。
 - 测试：`rewind_test.go` 盯 `rewindPlan` 的三种核心（22KB / 16MB / 6ms 成本）、行的裁剪与 `−N 帧` 读数、

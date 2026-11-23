@@ -113,15 +113,41 @@ func (s *Session) SaveStateNow() ([]byte, error) {
 		s.stateBuf = make([]byte, n)
 	}
 	buf := s.stateBuf[:n]
+	// A core writes its state from the front of the block and leaves the rest
+	// however it finds it. Clearing it first makes what it did not write zero,
+	// which is what lets the state be cut down to the bytes it really used: a
+	// 16MB block that a PlayStation core fills 3MB of is filed as 3MB.
+	clear(buf)
 	// retro_serialize takes the buffer and its size: without the size the core
 	// reads whatever the register held, and answers "no" for some cores and a
 	// happy guess for others.
 	if s.call(s.serialize, uintptr(unsafe.Pointer(&buf[0])), uintptr(n)) == 0 {
 		return nil, errors.New("核心没有写出存档")
 	}
-	out := make([]byte, n)
-	copy(out, buf)
-	return out, nil
+	if out := trimState(buf); out != nil {
+		return out, nil
+	}
+	return nil, errors.New("核心没有写出存档")
+}
+
+// trimState cuts a state down to the last byte the core filled: a core declares
+// the block it could write — a PlayStation core says 16MB — and fills far less of
+// it, the rest staying zero because the block was cleared first. A state that is
+// all zero is no state at all.
+func trimState(buf []byte) []byte {
+	used := 0
+	for i := len(buf) - 1; i >= 0; i-- {
+		if buf[i] != 0 {
+			used = i + 1
+			break
+		}
+	}
+	if used == 0 {
+		return nil
+	}
+	out := make([]byte, used)
+	copy(out, buf[:used])
+	return out
 }
 
 // SaveState is the window's form of SaveStateNow: it answers at the next frame
@@ -139,7 +165,10 @@ func (s *Session) SaveState() ([]byte, error) {
 }
 
 // LoadStateNow puts a state back. Same rule as SaveStateNow: on the core's
-// thread, between two frames.
+// thread, between two frames. A state that was cut down to the bytes the core
+// filled is padded back out to the size the core declares, because a state on
+// disk is a shorter block than the one it came from and the core wants the whole
+// of it, zeroes and all.
 func (s *Session) LoadStateNow(data []byte) error {
 	if s == nil || s.unserialize == 0 {
 		return errors.New("这个核心不能读档")
@@ -147,9 +176,19 @@ func (s *Session) LoadStateNow(data []byte) error {
 	if len(data) == 0 {
 		return errors.New("这个存档是空的")
 	}
+	n := s.StateSizeNow()
+	if n < len(data) {
+		n = len(data)
+	}
+	if cap(s.stateBuf) < n {
+		s.stateBuf = make([]byte, n)
+	}
+	buf := s.stateBuf[:n]
+	clear(buf)
+	copy(buf, data)
 	// retro_unserialize wants the block and how long it is, the same as its save
 	// side — a core that is given no length cannot tell where the state ends.
-	if s.call(s.unserialize, uintptr(unsafe.Pointer(&data[0])), uintptr(len(data))) == 0 {
+	if s.call(s.unserialize, uintptr(unsafe.Pointer(&buf[0])), uintptr(n)) == 0 {
 		return errors.New("核心没有接受这个存档")
 	}
 	return nil

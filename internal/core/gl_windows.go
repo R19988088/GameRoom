@@ -157,10 +157,11 @@ var (
 )
 
 // glThreadStub builds, once per entry point, a stub that
-//   1. saves the four integer argument registers and xmm0..3,
-//   2. calls glStubHelper so this thread gets the context,
-//   3. restores them, and
-//   4. jumps to the driver's own function.
+//  1. saves the four integer argument registers and xmm0..3,
+//  2. calls glStubHelper so this thread gets the context,
+//  3. restores them, and
+//  4. jumps to the driver's own function.
+//
 // The arguments therefore reach OpenGL untouched, floats included.
 func glThreadStub(name string) uintptr {
 	real := gproc(name)

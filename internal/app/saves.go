@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bytes"
+	"compress/flate"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -202,7 +204,7 @@ func (a *App) saveInto(n int) {
 		return
 	}
 	state, shot, meta := a.slotPaths(n)
-	if err := os.WriteFile(state, data, 0o644); err != nil {
+	if err := writeStateFile(state, data); err != nil {
 		a.slotNote = err.Error()
 		return
 	}
@@ -228,7 +230,7 @@ func (a *App) loadFrom(n int) {
 		return
 	}
 	state, _, _ := a.slotPaths(n)
-	data, err := os.ReadFile(state)
+	data, err := readStateFile(state)
 	if err != nil {
 		a.slotNote = err.Error()
 		return
@@ -256,6 +258,52 @@ func (a *App) deleteSlot(n int) {
 	a.slotSel = 0
 	a.slotNote = ""
 	a.scanSaves()
+}
+
+// A slot's state file is the core's block, deflated. A PlayStation state is 3.6MB
+// of mostly zeroes and repeated memory that weighs 380KB once deflated, and a launcher should
+// not spend 16MB of disk on a moment of one game. Old files written before this are
+// still read: without the marker they are the block itself.
+const stateMark = "GRZ1"
+
+// writeStateFile files a state deflated, behind a marker that says so.
+func writeStateFile(path string, data []byte) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.WriteString(stateMark); err != nil {
+		return err
+	}
+	// BestSpeed: the block is written while the panel has the game paused, so a
+	// tenth of a second is fine, and 10x smaller is the point.
+	w, err := flate.NewWriter(f, flate.BestSpeed)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(data); err != nil {
+		return err
+	}
+	return w.Close()
+}
+
+// readStateFile answers the block a slot holds, deflated or not.
+func readStateFile(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) < 4 || string(b[:4]) != stateMark {
+		return b, nil
+	}
+	r := flate.NewReader(bytes.NewReader(b[4:]))
+	defer r.Close()
+	var out bytes.Buffer
+	if _, err := out.ReadFrom(r); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
 }
 
 // writeShot keeps a picture of the glass at the width a tile can use, as a PNG.

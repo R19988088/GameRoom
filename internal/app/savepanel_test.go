@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"os"
@@ -211,6 +212,47 @@ func TestSavable(t *testing.T) {
 	good.mu.Unlock()
 	if !savable(true, &good) {
 		t.Fatalf("a core whose capture worked is not savable")
+	}
+}
+
+// TestStateFileIsSmallAndReadsItsOlderSelf: a slot's state is filed deflated — a
+// block of mostly zeroes weighs a tenth of what it is — and a file written before
+// that (the raw block, no marker) is still read as what it is.
+func TestStateFileIsSmallAndReadsItsOlderSelf(t *testing.T) {
+	dir := t.TempDir()
+	raw := make([]byte, 3<<20)
+	for i := 0; i < 200000; i++ {
+		raw[i] = byte(i)
+	}
+	packed := filepath.Join(dir, "save-1.state")
+	if err := writeStateFile(packed, raw); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(packed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > int64(len(raw))/4 {
+		t.Fatalf("a %d byte state was filed as %d bytes, want a quarter of that", len(raw), info.Size())
+	}
+	back, err := readStateFile(packed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(back) != len(raw) || !bytes.Equal(back[:64], raw[:64]) {
+		t.Fatalf("the state read back is not the one that was written")
+	}
+
+	old := filepath.Join(dir, "save-2.state")
+	if err := os.WriteFile(old, raw[:16], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readStateFile(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 16 || !bytes.Equal(got, raw[:16]) {
+		t.Fatalf("an old unfiled state was not read as the block it is")
 	}
 }
 

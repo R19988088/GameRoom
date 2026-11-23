@@ -331,8 +331,28 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
   | `pcsx_rearmed` | 4.4MB | 1.5–7ms | 1.5ms | 18ms |
   | `duckstation` | — | 在本进程里 `retro_run` 直接崩（GL 上下文），所以 PSX 走 `mednafen_psx` | | |
 
-  PSX 的 16MB 一份意味着回退行只剩 128MB/16MB = 8 条（成本 10–15ms → `step` 5–8 帧），
-  也就是约 0.7 秒的历史——够“退一步”，不够长；要更长就抬 `rewindBytes`。
+  PSX 裁剪后一份 3.6MB，回退行是 24 条、覆盖 2 秒（`rewindBytes` 的 128MB 里只用 86MB）。
+- **快照的体积**（`state_windows.go` + `saves.go`）：
+  - **先裁掉核心没写的那截**。`retro_serialize_size` 是“最多可能写多大”，不是“写了多大”：
+    `mednafen_psx` 声明 16MB，实际只写 **3.75MB**。所以存档前 `clear(buf)`，写完后
+    `trimState()` 剥掉尾部全零的填充，状态就只留核心真的写过的那段；读档时按核心声明的
+    大小用零补齐再喂 `retro_unserialize`（补的是零 = 存的时候那截就是零，内容完全一致）。
+    实测“裁剪后的块直接喂进去也能读”（`load trimmed=<nil>`），但补齐更稳妥。
+  - **落盘再 deflate**（`writeStateFile`/`readStateFile`，前置标记 `GRZ1`，老的无标记文件
+    仍按裸块读）：`flate.BestSpeed` 就够，面板是暂停状态下写的。
+
+    | 核心 | 声明 | 裁完 | 落盘（deflate1） | 存/读耗时 |
+    | --- | --- | --- | --- | --- |
+    | `mednafen_psx` | 16MB | 3.75MB | **379KB（10%）** | 8ms / 12ms |
+    | `pcsx_rearmed` | 4.4MB | 4.38MB | 1.24MB（28%） | 18ms / 25ms |
+    | `fceumm` | 22KB | 22KB | 2.6KB（12%） | ~0 |
+    | `snes9x2010` | 826KB | 826KB | ~? | 225µs |
+
+    也就是 PSX 的一个存档从 16MB 变成 379KB（42 倍）。
+  - 回退行里的状态**不压**：那是每 `step` 帧一次的热路径，deflate 的 8ms 加在 10ms 的采集上
+    会把 PSX 拖慢；裁剪后的 3.6MB × 24 条 ≈ 86MB，仍在 `rewindBytes` 的 128MB 以内。
+  - 副作用：`rewindPlan` 用的是裁剪后的长度，所以 PSX 的回退行从 8 条（被 16MB 撑满上限）
+    变成 24 条、覆盖 2 秒——体积小下来之后历史反而长了。
 - 退游戏时 `releaseGame()` 清 `savesOpen/slots/shots/slotSel` 并 `a.rew.reset()`；`launchGame` 开局前同样重置，
   回退行永远只属于当前这颗核心。
 - 测试：`rewind_test.go` 盯 `rewindPlan` 的三种核心（22KB / 16MB / 6ms 成本）、行的裁剪与 `−N 帧` 读数、

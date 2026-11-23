@@ -572,11 +572,11 @@ func glMakeFBO(w, h int, depth, stencil bool) error {
 			rb := uint32(0)
 			syscall.SyscallN(genRB, 1, uintptr(unsafe.Pointer(&rb)))
 			syscall.SyscallN(bindRB, 0x8D41, uintptr(rb))
-			format := uintptr(0x81A6) // DEPTH24_STENCIL8
+			format := uintptr(0x88F0) // GL_DEPTH24_STENCIL8
 			if depth && !stencil {
-				format = 0x81A5 // DEPTH_COMPONENT24
+				format = 0x81A6 // GL_DEPTH_COMPONENT24
 			} else if !depth && stencil {
-				format = 0x8D48 // STENCIL_INDEX8
+				format = 0x8D48 // GL_STENCIL_INDEX8
 			}
 			syscall.SyscallN(rbStore, 0x8D41, format, uintptr(w), uintptr(h))
 			attach := uintptr(0x8D00) // DEPTH_ATTACHMENT
@@ -642,7 +642,7 @@ func glFramebufferForCurrentContext() uint32 {
 	syscall.SyscallN(genFB, 1, uintptr(unsafe.Pointer(&fb)))
 	syscall.SyscallN(bindFB, 0x8D40, uintptr(fb))
 	syscall.SyscallN(texFB, 0x8D40, 0x8CE0, 0x0DE1, uintptr(glTex), 0)
-	if glDepth || glStencil {
+	if (glDepth || glStencil) && os.Getenv("GAMEROOM_FBO_NODEPTH") == "" {
 		genRB := gproc("glGenRenderbuffers")
 		bindRB := gproc("glBindRenderbuffer")
 		rbStore := gproc("glRenderbufferStorage")
@@ -657,11 +657,11 @@ func glFramebufferForCurrentContext() uint32 {
 			rb := uint32(0)
 			syscall.SyscallN(genRB, 1, uintptr(unsafe.Pointer(&rb)))
 			syscall.SyscallN(bindRB, 0x8D41, uintptr(rb))
-			format := uintptr(0x81A6) // DEPTH24_STENCIL8
+			format := uintptr(0x88F0) // GL_DEPTH24_STENCIL8
 			if glDepth && !glStencil {
-				format = 0x81A5
+				format = 0x81A6 // GL_DEPTH_COMPONENT24
 			} else if !glDepth && glStencil {
-				format = 0x8D48
+				format = 0x8D48 // GL_STENCIL_INDEX8
 			}
 			syscall.SyscallN(rbStore, 0x8D41, format, uintptr(glWidth), uintptr(glHeight))
 			syscall.SyscallN(rbFB, 0x8D40, 0x8D00, 0x8D41, uintptr(rb))
@@ -673,7 +673,15 @@ func glFramebufferForCurrentContext() uint32 {
 	if st := gproc("glCheckFramebufferStatus"); st != 0 {
 		status, _, _ := syscall.SyscallN(st, 0x8D40)
 		if os.Getenv("GAMEROOM_DEBUG") != "" {
-			fmt.Fprintf(os.Stderr, "gl: thread framebuffer %d on ctx=%d status=0x%x\n", fb, cur, status)
+			istex := uintptr(0)
+			if isTex := gproc("glIsTexture"); isTex != 0 {
+				istex, _, _ = syscall.SyscallN(isTex, uintptr(glTex))
+			}
+			var tw int32
+			if gtlp := gproc("glGetTexLevelParameteriv"); gtlp != 0 {
+				syscall.SyscallN(gtlp, 0x0DE1, 0, 0x1000, uintptr(unsafe.Pointer(&tw)))
+			}
+			fmt.Fprintf(os.Stderr, "gl: thread framebuffer %d on ctx=%d status=0x%x tex=%d istex=%d texw=%d\n", fb, cur, status, glTex, istex, tw)
 		}
 	}
 	glFBOs[cur] = fb

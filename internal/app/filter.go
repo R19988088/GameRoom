@@ -40,7 +40,7 @@ func defaultCRT() crtParams {
 		"DIFFUSION": 0.05, "DIFF_OVEREXP": 0, "REFLECTION": 0.25, "REFLECTION_SWITCH": 1,
 		"E_OFFSET": 1.8, "REFLECT_GAP": 0.02, "FILLET_D": -0.5, "B_CORNER": 0.8, "BORDER_SIZE": 0,
 		"LINE_PITCH_COEF": 1, "LINE_THICKNESS": 0.95, "LINE_OPACITY": 0.95,
-		"PIC_SIZE": 0.5, "INT_TOL": 0.05, "INT_SCALE": 0, "GAMMA": 2.2,
+		"PIC_SIZE": 0.5, "INT_TOL": 0.05, "INT_SCALE": 0, "GAMMA": 2.2, "PAD_Y": 0,
 	}
 }
 
@@ -154,6 +154,7 @@ var knobs = []knob{
 	{"B_CORNER", "边框圆角大小", 0, 1, 0, 1, 0.1},
 	{"FILLET_D", "边框圆角曲率", -0.5, 0.5, 0, 1, 0.1},
 	{"PPOY", "图像位置 Y", -50, 50, 0, 1, 0.1},
+	{"PAD_Y", "上下间距 (%)", 0, 10, 0, 1, 0.5},
 }
 
 // value is the number the shader runs with: what the player set, or the preset's
@@ -246,6 +247,7 @@ var EXPOSURE float
 var CT float
 var CORNER float
 var PPOY float
+var PAD_Y float
 var PIC_SIZE float
 var BORDER_SIZE float
 var INT_TOL float
@@ -643,6 +645,17 @@ func LayerEffect(pos vec2) vec4 {
 		return vec4(pow(clamp(rcol*ii, vec3(0.0), vec3(1.0)), vec3(1.0/GAMMA)), 1.0)
 	}
 
+	// PAD_Y is the glass top and bottom: spacing above and below the picture, in
+	// percent of its height. It is the tube's bezel, not a zoom — the picture
+	// keeps its own pixels and its scanlines, and the band covers the rows at its
+	// two ends instead of drawing it smaller.
+	if PAD_Y > 0.0 {
+		band := hy * 0.02 * PAD_Y
+		if abs(c.y) > hy-band {
+			return vec4(0.0, 0.0, 0.0, 1.0)
+		}
+	}
+
 	suv := vec2(c.x/(2.0*hx), c.y/(2.0*hy)) + vec2(0.5, 0.5)
 	np := suv * isz
 	np.y = np.y + PPOY*0.01*isz.y
@@ -767,14 +780,19 @@ func filterName(level string) string {
 	return "标准"
 }
 
-// filterPanelW is the panel's glass. Two parameter columns sit side by side on
-// an 8px grid: 16 of padding either side and a 24 gap between them leaves 332
-// for each column — enough room for a label and its 120 control without either
-// being squeezed.
+// filterPanelW is the panel's glass. The two parameter columns are the whole of
+// its arithmetic: 720 wide, 48 of padding either side and a 120 gap between them
+// (five times the 24 the columns used to sit apart) leaves 252 for each column —
+// a 144 name and its 100 control, so the gap between a name and the number it
+// moves is a third narrower than the 204 it had. The panel keeps its 720: the
+// window it opens in is only that plus the two insets, so the padding and the
+// gutter are paid for by the name's side, not by a wider sheet of glass.
 const (
 	filterPanelW    = 720
-	filterPanelPad  = 16
-	filterColumnGap = 24
+	filterPanelPad  = 48
+	filterColumnGap = 120
+	filterLabelW    = 144
+	filterPillW     = 100
 	filterRowGap    = 8
 	filterRowH      = 26
 	filterHeaderH   = 28
@@ -812,7 +830,7 @@ func (a *App) filterBodyHeight(c *ui.Context) float32 {
 
 // filterPanel is the panel itself: one group of the preset's parameters in two
 // columns on one page, with a single on/off switch above it and 保存 / 切换
-// below. The columns are the whole of the layout standard: 16 of padding, 24
+// below. The columns are the whole of the layout standard: 48 of padding, 120
 // between them, and an 8px vertical rhythm. The two buttons are the whole of the
 // group management: 保存 writes the numbers being heard into the current
 // tune-<n>.json (or starts the next one), 切换 moves to the next saved group and
@@ -871,16 +889,17 @@ func (a *App) filterPanel(c *ui.Context, t *ui.Theme) {
 					}
 				})
 			})
-			// The two buttons the player asked for, and a line saying which
-			// group is heard and what the last click did.
+			// The two buttons the player asked for, and the group being heard. No
+			// line under them explaining the buttons: the words only appear for the
+			// moment after a click, when they say what that click did.
 			ui.Row(c).Height(filterFooterH).AlignItems(ui.Center).Gap(6).Children(func() {
 				ui.Text(c, a.tuneStatus()).FontSize(10).TextColor(t.TextMuted).SingleLine()
-				note := a.tuneNote
-				if note == "" {
-					note = "一组参数，保存后可切换"
+				if note := a.tuneNote; note != "" {
+					ui.Text(c, note).Grow(1).MinWidth(0).FontSize(9.5).
+						TextColor(t.TextMuted.Alpha(0.65)).SingleLine()
+				} else {
+					ui.Box(c).Grow(1)
 				}
-				ui.Text(c, note).Grow(1).MinWidth(0).FontSize(9.5).
-					TextColor(t.TextMuted.Alpha(0.65)).SingleLine()
 				save := ui.ButtonBase(c).Width(58).Height(24).Radius(12).Center().
 					Material(glass.Glass{Clarity: 0.7, Tint: ui.Hex("#e8763a33")}).
 					Border(1, ui.Hex("#e8763a66"))
@@ -927,10 +946,12 @@ func (a *App) filterSwitch(c *ui.Context, t *ui.Theme, on bool) {
 	}
 }
 
-// knobRow is one parameter: its name and its control.
+// knobRow is one parameter: its name and its control. The name is a fixed 144 so
+// every control starts at the same x, and the control is a fixed 100 so they all
+// end at the column's right edge.
 func (a *App) knobRow(c *ui.Context, t *ui.Theme, k knob) {
 	ui.Row(c).Height(filterRowH).AlignItems(ui.Center).Gap(8).Children(func() {
-		ui.Text(c, k.label).Grow(1).MinWidth(0).FontSize(10).
+		ui.Text(c, k.label).Width(filterLabelW).FontSize(10).
 			TextColor(t.TextMuted).SingleLine()
 		if k.kind == 1 {
 			a.knobSwitch(c, t, k)
@@ -943,6 +964,9 @@ func (a *App) knobRow(c *ui.Context, t *ui.Theme, k knob) {
 // knobSwitch is a parameter that is on or off, in the same glass as the bars.
 func (a *App) knobSwitch(c *ui.Context, t *ui.Theme, k knob) {
 	on := a.value(k.key) > 0.5
+	// A switch is narrower than a bar, so it takes the right edge the bars end on
+	// rather than starting where they do.
+	ui.Box(c).Grow(1)
 	// The switch of a phone's settings: a short track, a knob that sits at the
 	// end it is not, green once it is on.
 	track := ui.ButtonBase(c).Width(44).Height(26).Background(ui.Hex("#00000000"))
@@ -970,7 +994,7 @@ func (a *App) knobSwitch(c *ui.Context, t *ui.Theme, k knob) {
 // the number the shader runs with, scaled by k.mul.
 func (a *App) knobStepper(c *ui.Context, t *ui.Theme, k knob) {
 	v := float64(a.value(k.key)) * k.mul
-	pill := ui.Row(c).Width(120).Height(22).Radius(11).AlignItems(ui.Center).
+	pill := ui.Row(c).Width(filterPillW).Height(22).Radius(11).AlignItems(ui.Center).
 		Material(glass.Glass{Clarity: 0.78, Tint: ui.Hex("#ffffff10")}).
 		Border(1, ui.Hex("#ffffff24"))
 	pill.Children(func() {

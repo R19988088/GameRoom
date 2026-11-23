@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 
@@ -72,6 +73,14 @@ var (
 	glWidth  int
 	glHeight int
 	glFBO    uint32
+	// The colour texture is shared between every context the app makes; the
+	// framebuffer object that carries it is not, because framebuffer names are
+	// per context. Each core thread therefore gets a framebuffer of its own on
+	// the same texture, made the first time that thread asks for one.
+	glTex     uint32
+	glDepth   bool
+	glStencil bool
+	glFBOs    = map[uintptr]uint32{}
 
 	opengl32 = windows.NewLazySystemDLL("opengl32.dll")
 	gdi32    = windows.NewLazySystemDLL("gdi32.dll")
@@ -302,6 +311,10 @@ func glProcName(name uintptr) uintptr {
 var shimBindFB uintptr
 
 func glBindFramebufferShim(target, fb uint32) uintptr {
+	if os.Getenv("GAMEROOM_GLTRACE") != "" && traceCount.Load() < 60 {
+		n := traceCount.Add(1)
+		fmt.Fprintf(os.Stderr, "gltrace: bind target=0x%x fb=%d (ours=%d) #%d\n", target, fb, glFBO, n)
+	}
 	if fb == 0 {
 		// 0x8CA9 is GL_DRAW_FRAMEBUFFER: the one drawing goes to. The read side
 		// is left alone, so the app's own readback still looks at the same
@@ -314,6 +327,8 @@ func glBindFramebufferShim(target, fb uint32) uintptr {
 	}
 	return 0
 }
+
+var traceCount atomic.Int32
 
 // glPrepare creates the hidden window and a context matching what the core
 // asked for. It answers whether the request could be met.
@@ -575,6 +590,8 @@ func glMakeFBO(w, h int, depth, stencil bool) error {
 		}
 	}
 	glFBO = fb
+	glTex = tex
+	glDepth, glStencil = depth, stencil
 	glWidth, glHeight = w, h
 	if st := gproc("glCheckFramebufferStatus"); st != 0 {
 		status, _, _ := syscall.SyscallN(st, 0x8D40)
@@ -585,12 +602,82 @@ func glMakeFBO(w, h int, depth, stencil bool) error {
 	return nil
 }
 
-// glCurrentFramebuffer is what the core asks for to draw into.
+// glCurrentFramebuffer is what the core asks for to draw into. The framebuffer
+// is made in the context of the thread that asks: names of framebuffer objects
+// belong to one context, so the app's own framebuffer cannot be handed to a
+// thread drawing with its shared context. The colour texture inside is shared,
+// which is what makes the readback see the frame.
 func glCurrentFramebuffer() uintptr {
 	if s := active; s != nil {
 		s.fbAsked.Store(true)
 	}
-	return uintptr(glFBO)
+	glUseCurrent()
+	return uintptr(glFramebufferForCurrentContext())
+}
+
+var glFBOMu sync.Mutex
+
+func glFramebufferForCurrentContext() uint32 {
+	cur, _, _ := procWglGetCurrentContext.Call()
+	if cur == 0 {
+		return glFBO
+	}
+	glFBOMu.Lock()
+	defer glFBOMu.Unlock()
+	if fb, ok := glFBOs[cur]; ok {
+		return fb
+	}
+	if glTex == 0 {
+		return glFBO
+	}
+	genFB := gproc("glGenFramebuffers")
+	bindFB := gproc("glBindFramebuffer")
+	texFB := gproc("glFramebufferTexture2D")
+	if genFB == 0 {
+		genFB = gproc("glGenFramebuffersEXT")
+		bindFB = gproc("glBindFramebufferEXT")
+		texFB = gproc("glFramebufferTexture2DEXT")
+	}
+	fb := uint32(0)
+	syscall.SyscallN(genFB, 1, uintptr(unsafe.Pointer(&fb)))
+	syscall.SyscallN(bindFB, 0x8D40, uintptr(fb))
+	syscall.SyscallN(texFB, 0x8D40, 0x8CE0, 0x0DE1, uintptr(glTex), 0)
+	if glDepth || glStencil {
+		genRB := gproc("glGenRenderbuffers")
+		bindRB := gproc("glBindRenderbuffer")
+		rbStore := gproc("glRenderbufferStorage")
+		rbFB := gproc("glFramebufferRenderbuffer")
+		if genRB == 0 {
+			genRB = gproc("glGenRenderbuffersEXT")
+			bindRB = gproc("glBindRenderbufferEXT")
+			rbStore = gproc("glRenderbufferStorageEXT")
+			rbFB = gproc("glFramebufferRenderbufferEXT")
+		}
+		if genRB != 0 {
+			rb := uint32(0)
+			syscall.SyscallN(genRB, 1, uintptr(unsafe.Pointer(&rb)))
+			syscall.SyscallN(bindRB, 0x8D41, uintptr(rb))
+			format := uintptr(0x81A6) // DEPTH24_STENCIL8
+			if glDepth && !glStencil {
+				format = 0x81A5
+			} else if !glDepth && glStencil {
+				format = 0x8D48
+			}
+			syscall.SyscallN(rbStore, 0x8D41, format, uintptr(glWidth), uintptr(glHeight))
+			syscall.SyscallN(rbFB, 0x8D40, 0x8D00, 0x8D41, uintptr(rb))
+			if glDepth && glStencil {
+				syscall.SyscallN(rbFB, 0x8D40, 0x8D20, 0x8D41, uintptr(rb))
+			}
+		}
+	}
+	if st := gproc("glCheckFramebufferStatus"); st != 0 {
+		status, _, _ := syscall.SyscallN(st, 0x8D40)
+		if os.Getenv("GAMEROOM_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "gl: thread framebuffer %d on ctx=%d status=0x%x\n", fb, cur, status)
+		}
+	}
+	glFBOs[cur] = fb
+	return fb
 }
 
 // glUseCurrent makes the shared context current on the calling thread. A core
@@ -692,8 +779,18 @@ func glReadFrame(w, h, pitch int, bottomLeft bool) []byte {
 			syscall.SyscallN(geti, 0x8CA6, uintptr(unsafe.Pointer(&bound)))
 			var vp [4]int32
 			syscall.SyscallN(geti, 0x0BA2, uintptr(unsafe.Pointer(&vp[0])))
-			fmt.Fprintf(os.Stderr, "gl: drew into fb=%d viewport=%d,%d %dx%d (ours=%d) ask=%dx%d\n",
-				bound, vp[0], vp[1], vp[2], vp[3], glFBO, w, h)
+			status := int32(-1)
+			if chk := gproc("glCheckFramebufferStatus"); chk != 0 {
+				r, _, _ := syscall.SyscallN(chk, 0x8D40)
+				status = int32(r)
+			}
+			errv := int32(0)
+			if ge := gproc("glGetError"); ge != 0 {
+				r, _, _ := syscall.SyscallN(ge)
+				errv = int32(r)
+			}
+			fmt.Fprintf(os.Stderr, "gl: drew into fb=%d viewport=%d,%d %dx%d (ours=%d) ask=%dx%d status=0x%x err=%d\n",
+				bound, vp[0], vp[1], vp[2], vp[3], glFBO, w, h, status, errv)
 		}
 	}
 	// A core either draws into the framebuffer we hand out or straight into the

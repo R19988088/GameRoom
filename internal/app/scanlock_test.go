@@ -20,12 +20,18 @@ import (
 //     the scanline and the line never drift against each other.
 //  4. the phase is taken a hair inside the line, so a row exactly on an edge
 //     does not read as a different colour of the mask.
+//  5. the width is derived from the height and the game's own shape, so the
+//     picture stays its standard 4:3 however the box or the gaps are set.
+//     Square pixels (320×224 of k×k blocks) would widen it about 7%, and that
+//     is the one thing the frame must not do.
 func TestScanlineIsLockedToThePicture(t *testing.T) {
 	for _, want := range []struct{ src, why string }{
 		{"dp := vec2(suv.x*pw, suv.y*ph)",
 			"the scanline phase must be measured in the picture's own pixels"},
 		{"if k > 8.0 {",
 			"the picture's scale must be a whole 1..8 screen pixels per game pixel"},
+		{"rw = k * isz.y * ar / (size.x * ps)",
+			"the picture's width must come off its height and the game's own shape, so it stays 4:3 whatever the gaps are"},
 		{"pitch = sc\n",
 			"the pitch must start on the whole line, which divides even when k is odd"},
 		{"if mod(sc, d) < 0.001",

@@ -19,6 +19,7 @@ type AudioPipe struct {
 	rate    int
 	closed  bool
 	pushed  int64
+	dropped int64
 	reads   int64
 	loudest float32
 }
@@ -29,6 +30,15 @@ func (p *AudioPipe) Pushed() int64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.pushed
+}
+
+// Dropped is how many samples were thrown away because the output fell far
+// behind; a run where this keeps growing is one where the sound is being cut
+// short to keep up.
+func (p *AudioPipe) Dropped() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.dropped
 }
 
 // Reads is how often the output has asked for sound.
@@ -92,6 +102,7 @@ func (p *AudioPipe) push(samples []int16) {
 	// already late enough that the ear hears it as a lag behind the picture.
 	// Two values per frame, so a quarter second is rate/2 of them.
 	if max := p.rate / 2; len(p.samples) > max {
+		p.dropped += int64(len(p.samples) - max)
 		p.samples = p.samples[len(p.samples)-max:]
 	}
 }

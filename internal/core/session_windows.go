@@ -159,6 +159,17 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 	if coreName == "opera" && isArcadeDisc(romPath, systemDir) {
 		coreVars["opera"] = map[string]string{"opera_bios": "3do_arcade_saot.bin"}
 	}
+	// Flycast's emulator thread does not wait for its own picture unless it is
+	// told to: with vblank pacing off it runs the Dreamcast as fast as the host
+	// allows, and the frontend merely samples whatever frame is ready — the
+	// game's clock, its music and its notes all run fast. The core is asked to
+	// keep time itself, and the frontend's own wait then falls away.
+	if coreName == "flycast" {
+		if coreVars[coreName] == nil {
+			coreVars[coreName] = map[string]string{}
+		}
+		coreVars[coreName]["reicast_vblank_pacing"] = "enabled"
+	}
 	// The library is a shelf of loose romsets (arc/dino.zip), not a software
 	// list. MAME reads the folder above the zip as a *system* name and, with the
 	// software lists on, tries to boot that system instead of the driver named

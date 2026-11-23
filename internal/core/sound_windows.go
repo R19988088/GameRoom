@@ -50,9 +50,11 @@ const (
 	whdrDone   = 0x00000001
 
 	// The buffers are short, so that sound follows the picture closely, and
-	// there are several, so that one being refilled never leaves a gap.
-	soundFrames  = 512
-	soundBuffers = 5
+	// there are several, so that one being refilled never leaves a gap. A
+	// machine that stalls for a moment (a filter, a scene change) still has
+	// room to catch up before the output runs dry.
+	soundFrames  = 1024
+	soundBuffers = 8
 )
 
 // StartSound plays the core's sound until Close. A core that makes none plays
@@ -153,6 +155,7 @@ func (s *Session) soundLoop() {
 	// Every time a buffer has been heard, it is filled with the sound made
 	// since and queued behind the others: five always stand between the core
 	// and the speakers.
+	t0 := time.Now()
 	for i := 0; ; i = (i + 1) % soundBuffers {
 		for {
 			select {
@@ -174,7 +177,10 @@ func (s *Session) soundLoop() {
 		if debug {
 			played++
 			if played%200 == 0 {
-				fmt.Fprintf(os.Stderr, "sound: buffers played=%d\n", played)
+				el := time.Since(t0)
+				fmt.Fprintf(os.Stderr, "sound: buffers played=%d in %dms (%.1f/s, %.0f frames/s) dropped=%d\n",
+					played, el.Milliseconds(), float64(played)/el.Seconds(),
+					float64(played)*float64(soundFrames)/el.Seconds(), s.audio.Dropped())
 			}
 		}
 	}

@@ -1,6 +1,8 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -72,5 +74,88 @@ func TestFilterPanelUsesTwoWideColumns(t *testing.T) {
 	}
 	if _, ok := short.Find("一组参数，保存后可切换"); ok {
 		t.Fatalf("the description line is still drawn under the buttons")
+	}
+}
+
+// TestFilterPanelFitsANarrowWindow: the glass never runs past the window's
+// edges. A window too narrow for the 720 leaves the panel what is between the two
+// insets, and the columns give way instead — the bars get narrower rather than
+// being cut off at the right side.
+func TestFilterPanelFitsANarrowWindow(t *testing.T) {
+	a := &App{root: t.TempDir(), theme: buildTheme(), crt: defaultCRT()}
+	a.cfg.FilterLevel = "normal"
+	var got float32
+	tt := ui.NewTester(func(c *ui.Context) {
+		got = a.filterPanelWidth(c)
+		a.filterPanel(c, &a.theme)
+	}, 700, 800)
+	tt.Frame()
+	if got > 700-2*edgeInset {
+		t.Fatalf("the panel is %.0f wide on a 700 window, want at most %d", got, 700-2*edgeInset)
+	}
+	if last, ok := tt.Find("上下间距 (%)"); !ok {
+		t.Fatalf("the last knob is missing on a narrow window")
+	} else if right := last.X + filterLabelW + 8 + 60; right > 700-edgeInset-filterPanelPad {
+		t.Fatalf("the right column ends at %.0f, past the glass at %d", right, 700-edgeInset-filterPanelPad)
+	}
+}
+
+// TestFilterPanelFooterCards: the saved groups are cards on the footer's left.
+// With nothing saved the footer offers one 保存; with a card lit it offers 更新 /
+// 另存 / 删除 and no 保存, and the cards sit to the left of those buttons.
+func TestFilterPanelFooterCards(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "数据", "filters")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"tune-1.json", "tune-2.json"} {
+		if err := os.WriteFile(filepath.Join(dir, name),
+			[]byte(`{"level":"normal","tune":{"scan":0.4}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := &App{root: root, theme: buildTheme(), crt: defaultCRT()}
+	a.cfg.FilterLevel = "normal"
+	a.cfg.FilterTune = "tune-1.json"
+	a.scanTunes()
+	tt := ui.NewTester(func(c *ui.Context) { a.filterPanel(c, &a.theme) }, 1200, 720)
+	tt.Frame()
+
+	if _, ok := tt.Find("保存"); ok {
+		t.Fatalf("保存 is drawn beside a lit card, want 更新 / 另存 / 删除")
+	}
+	update, ok := tt.Find("更新")
+	if !ok {
+		t.Fatalf("更新 is missing from the footer of a lit card")
+	}
+	for _, label := range []string{"另存", "删除"} {
+		if _, ok := tt.Find(label); !ok {
+			t.Fatalf("%s is missing from the footer of a lit card", label)
+		}
+	}
+	card, ok := tt.Find("2")
+	if !ok {
+		t.Fatalf("the second saved group has no card")
+	}
+	if card.X >= update.X {
+		t.Fatalf("the cards start at %.0f, not left of the buttons at %.0f", card.X, update.X)
+	}
+
+	// Deleting the last card leaves nothing to update, so 保存 comes back.
+	if err := a.deleteTune(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.deleteTune(); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if _, ok := tt.Find("保存"); !ok {
+		t.Fatalf("保存 is missing with no saved group")
+	}
+	for _, label := range []string{"更新", "另存", "删除"} {
+		if _, ok := tt.Find(label); ok {
+			t.Fatalf("%s is still drawn with no lit card", label)
+		}
 	}
 }

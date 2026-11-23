@@ -12,8 +12,8 @@ import (
 )
 
 // tunePreset is one saved group under 数据/filters: the look it was saved at,
-// and the numbers the player had moved. A group is a whole look, so switching
-// to it brings back both the preset and the sliders.
+// and the numbers the player had moved. A group is a whole look, so selecting
+// it brings back both the preset and the sliders.
 type tunePreset struct {
 	Level string             `json:"level,omitempty"`
 	Tune  map[string]float32 `json:"tune"`
@@ -66,29 +66,26 @@ func (a *App) scanTunes() {
 	}
 }
 
-// saveCurrentTune writes the numbers the player has now into the group they
-// are hearing; when none has been picked it starts a new tune-<n>.json after
-// the last one. Saving twice in a row overwrites the same group instead of
-// piling up copies.
-func (a *App) saveCurrentTune() error {
+// tuneMax is the highest number the saved groups reach.
+func (a *App) tuneMax() int {
+	max := 0
+	for _, name := range a.tuneFiles {
+		if n := tuneNumber(name); n > max {
+			max = n
+		}
+	}
+	return max
+}
+
+// writeTune puts the numbers being heard into the named group's file and makes
+// it the one the config remembers, so the card stays lit after a restart.
+func (a *App) writeTune(name string) error {
 	if a.root == "" {
 		return errors.New("没有数据目录")
 	}
 	if err := os.MkdirAll(a.tuneDir(), 0o755); err != nil {
 		return err
 	}
-	if a.tuneIdx < 0 || a.tuneIdx >= len(a.tuneFiles) {
-		max := 0
-		for _, name := range a.tuneFiles {
-			if n := tuneNumber(name); n > max {
-				max = n
-			}
-		}
-		name := fmt.Sprintf("tune-%d.json", max+1)
-		a.tuneFiles = append(a.tuneFiles, name)
-		a.tuneIdx = len(a.tuneFiles) - 1
-	}
-	name := a.tuneFiles[a.tuneIdx]
 	tune := a.cfg.CRTTune
 	if tune == nil {
 		tune = map[string]float32{}
@@ -102,24 +99,41 @@ func (a *App) saveCurrentTune() error {
 	}
 	a.cfg.FilterTune = name
 	a.saveConfig()
-	a.tuneNote = "已保存 " + name
 	return nil
 }
 
-// cycleTune moves to the next saved group, wrapping at the end, and takes both
-// its preset and its numbers. With nothing saved it says so rather than
-// pretending to switch.
-func (a *App) cycleTune() error {
-	if len(a.tuneFiles) == 0 {
-		return errors.New("还没有保存的组")
+// newTune starts a group after the last one out of the numbers being heard and
+// leaves its card lit: 保存 does it when no card is lit, 另存 when one is. A card
+// is only added once its file has landed, so a failed write leaves no empty card.
+func (a *App) newTune() error {
+	if a.root == "" {
+		return errors.New("没有数据目录")
 	}
-	idx := a.tuneIdx
-	if idx < 0 || idx >= len(a.tuneFiles) {
-		idx = 0
-	} else {
-		idx = (idx + 1) % len(a.tuneFiles)
+	idx := len(a.tuneFiles)
+	name := fmt.Sprintf("tune-%d.json", a.tuneMax()+1)
+	if err := a.writeTune(name); err != nil {
+		return err
 	}
-	name := a.tuneFiles[idx]
+	a.tuneFiles = append(a.tuneFiles, name)
+	a.tuneIdx = idx
+	return nil
+}
+
+// updateTune writes the numbers being heard back into the card that is lit.
+func (a *App) updateTune() error {
+	if a.tuneIdx < 0 || a.tuneIdx >= len(a.tuneFiles) {
+		return errors.New("还没有选中卡片")
+	}
+	return a.writeTune(a.tuneFiles[a.tuneIdx])
+}
+
+// selectTune takes the group the card at i stands for: its preset and its
+// numbers, so the panel shows what is heard.
+func (a *App) selectTune(i int) error {
+	if i < 0 || i >= len(a.tuneFiles) {
+		return errors.New("没有这张卡片")
+	}
+	name := a.tuneFiles[i]
 	data, err := os.ReadFile(filepath.Join(a.tuneDir(), name))
 	if err != nil {
 		return err
@@ -134,23 +148,35 @@ func (a *App) cycleTune() error {
 	a.cfg.FilterLevel = p.Level
 	a.cfg.CRTTune = p.Tune
 	a.cfg.FilterTune = name
-	a.tuneIdx = idx
+	a.tuneIdx = i
 	a.dragKey = ""
 	a.saveConfig()
-	a.tuneNote = "切到 " + name
 	return nil
 }
 
-// tuneStatus is the panel's small line: which group is heard and how many are
-// saved, or that none is.
-func (a *App) tuneStatus() string {
-	if a.tuneIdx >= 0 && a.tuneIdx < len(a.tuneFiles) {
-		return fmt.Sprintf("%d/%d 组", a.tuneIdx+1, len(a.tuneFiles))
+// deleteTune removes the lit card and takes the one that slides into its place,
+// so the panel keeps showing a saved group while any is left. With none left the
+// numbers stay on the sliders as they are, and 保存 comes back.
+func (a *App) deleteTune() error {
+	if a.tuneIdx < 0 || a.tuneIdx >= len(a.tuneFiles) {
+		return errors.New("还没有选中卡片")
 	}
-	if len(a.tuneFiles) > 0 {
-		return fmt.Sprintf("%d 组", len(a.tuneFiles))
+	idx := a.tuneIdx
+	name := a.tuneFiles[idx]
+	if err := os.Remove(filepath.Join(a.tuneDir(), name)); err != nil {
+		return err
 	}
-	return "未保存"
+	a.tuneFiles = append(a.tuneFiles[:idx], a.tuneFiles[idx+1:]...)
+	a.tuneIdx = -1
+	a.cfg.FilterTune = ""
+	if len(a.tuneFiles) == 0 {
+		a.saveConfig()
+		return nil
+	}
+	if idx >= len(a.tuneFiles) {
+		idx = len(a.tuneFiles) - 1
+	}
+	return a.selectTune(idx)
 }
 
 // setFilterOn turns the look on or off without throwing the numbers away: off

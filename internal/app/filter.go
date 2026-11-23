@@ -787,6 +787,9 @@ func filterName(level string) string {
 // gutter are paid for by the name's side, not by a wider sheet of glass.
 // The top and bottom take 16, not 48: the title and its ✕ belong to the glass's
 // own edge, and only the columns sit in from the sides.
+// The 100 is what the arithmetic leaves a control; the control itself fills that,
+// so a column that comes out a pixel narrow shrinks its own bar rather than
+// pushing the right column's bar under the scroller's clip.
 const (
 	filterPanelW    = 720
 	filterPanelPad  = 48
@@ -801,7 +804,25 @@ const (
 	filterFooterH   = 26
 	filterPanelGap  = 8
 	filterMinBodyH  = 240
+	filterMinPanelW = 520
 )
+
+// filterPanelWidth is the glass's width: the 720 whenever the window has room
+// for it, and whatever is left between the two insets when it does not. The
+// columns are what give way, so a window that is a little too narrow shortens
+// the bars instead of cutting the panel's right side off at the window's edge.
+func (a *App) filterPanelWidth(c *ui.Context) float32 {
+	w := float32(filterPanelW)
+	if pageW, _ := c.Size(); pageW > 0 {
+		if room := pageW - 2*edgeInset; room < w {
+			w = room
+		}
+	}
+	if w < filterMinPanelW {
+		w = filterMinPanelW
+	}
+	return w
+}
 
 // filterBodyContentH is the two columns at full height: the longer column's
 // rows plus the gap between them, so the panel can hug the list instead of
@@ -830,16 +851,15 @@ func (a *App) filterBodyHeight(c *ui.Context) float32 {
 }
 
 // filterPanel is the panel itself: one group of the preset's parameters in two
-// columns on one page, with a single on/off switch above it and 保存 / 切换
+// columns on one page, with a single on/off switch above it and the saved groups
 // below. The columns are the whole of the layout standard: 48 in from the sides,
-// 120 between them, 16 above the title and below the buttons, and an 8px
-// vertical rhythm. The two buttons are the whole of the group management: 保存
-// writes the numbers being heard into the current tune-<n>.json (or starts the
-// next one), 切换 moves to the next saved group and takes both its preset and
-// its numbers.
+// 120 between them, 16 above the title and below the footer, and an 8px vertical
+// rhythm. The footer is the group management: the cards on its left are the
+// saved tune-<n>.json files, 保存 writes the numbers being heard into a new card,
+// and the card under the hand can be 更新 / 另存 / 删除.
 func (a *App) filterPanel(c *ui.Context, t *ui.Theme) {
 	ui.Box(c).Absolute().Left(0).Right(0).Top(0).Bottom(0).Children(func() {
-		col := ui.Column(c).Absolute().Right(edgeInset).Top(edgeInset).Width(filterPanelW).
+		col := ui.Column(c).Absolute().Right(edgeInset).Top(edgeInset).Width(a.filterPanelWidth(c)).
 			Padding(filterPanelEdge, filterPanelPad, filterPanelEdge, filterPanelPad).Radius(18).Gap(filterPanelGap).
 			Material(glass.Glass{Clarity: 0.62, Tint: ui.Hex("#14161ee6")}).
 			Border(1, ui.Hex("#ffffff1f")).
@@ -891,42 +911,91 @@ func (a *App) filterPanel(c *ui.Context, t *ui.Theme) {
 					}
 				})
 			})
-			// The two buttons the player asked for, and the group being heard. No
-			// line under them explaining the buttons: the words only appear for the
-			// moment after a click, when they say what that click did.
+			// The saved groups as cards on the left, and what the panel can do with
+			// the lit one on the right: 保存 makes the first card out of the numbers
+			// being heard, and once a card is lit 更新 writes back into it, 另存
+			// puts another card beside it, 删除 takes it away.
 			ui.Row(c).Height(filterFooterH).AlignItems(ui.Center).Gap(6).Children(func() {
-				ui.Text(c, a.tuneStatus()).FontSize(10).TextColor(t.TextMuted).SingleLine()
 				if note := a.tuneNote; note != "" {
-					ui.Text(c, note).Grow(1).MinWidth(0).FontSize(9.5).
+					ui.Text(c, note).Width(150).FontSize(9.5).
 						TextColor(t.TextMuted.Alpha(0.65)).SingleLine()
-				} else {
-					ui.Box(c).Grow(1)
 				}
-				save := ui.ButtonBase(c).Width(58).Height(24).Radius(12).Center().
-					Material(glass.Glass{Clarity: 0.7, Tint: ui.Hex("#e8763a33")}).
-					Border(1, ui.Hex("#e8763a66"))
-				save.Children(func() {
-					ui.Text(c, "保存").FontSize(10.5).TextColor(t.Text.Alpha(0.9))
+				// A strip, not a box: with more groups saved than fit, the cards slide
+				// instead of pushing the buttons off the glass.
+				ui.ScrollHorizontal(c).Grow(1).MinWidth(0).Height(filterFooterH).ClipX().Children(func() {
+					ui.Row(c).Height(filterFooterH).AlignItems(ui.Center).Gap(6).Children(func() {
+						for i := range a.tuneFiles {
+							i := i
+							a.tuneCard(c, t, i)
+						}
+					})
 				})
-				if save.Clicked() {
-					if err := a.saveCurrentTune(); err != nil {
-						a.tuneNote = err.Error()
-					}
+				if a.tuneIdx >= 0 && a.tuneIdx < len(a.tuneFiles) {
+					a.tuneButton(c, "更新", ui.Hex("#e8763a33"), ui.Hex("#e8763a66"), t.Text.Alpha(0.9), func() {
+						a.tuneAction(a.updateTune)
+					})
+					a.tuneButton(c, "另存", ui.Hex("#ffffff14"), ui.Hex("#ffffff1f"), t.Text.Alpha(0.85), func() {
+						a.tuneAction(a.newTune)
+					})
+					a.tuneButton(c, "删除", ui.Hex("#ff453a1a"), ui.Hex("#ff453a55"), t.Text.Alpha(0.85), func() {
+						a.tuneAction(a.deleteTune)
+					})
+					return
 				}
-				next := ui.ButtonBase(c).Width(58).Height(24).Radius(12).Center().
-					Material(glass.Glass{Clarity: 0.7, Tint: ui.Hex("#ffffff14")}).
-					Border(1, ui.Hex("#ffffff1f"))
-				next.Children(func() {
-					ui.Text(c, "切换").FontSize(10.5).TextColor(t.Text.Alpha(0.85))
+				a.tuneButton(c, "保存", ui.Hex("#e8763a33"), ui.Hex("#e8763a66"), t.Text.Alpha(0.9), func() {
+					a.tuneAction(a.newTune)
 				})
-				if next.Clicked() {
-					if err := a.cycleTune(); err != nil {
-						a.tuneNote = err.Error()
-					}
-				}
 			})
 		})
 	})
+}
+
+// tuneCard is one saved group in the footer's strip: a small plate of glass with
+// the group's number, in the accent once it is the one being heard. A click on it
+// brings back that group's look and its numbers.
+func (a *App) tuneCard(c *ui.Context, t *ui.Theme, i int) {
+	on := i == a.tuneIdx
+	card := ui.ButtonBase(c).Width(30).Height(22).Radius(11).Center().
+		Material(glass.Glass{Clarity: 0.78, Tint: ui.Hex("#ffffff10")}).
+		Border(1, ui.Hex("#ffffff24"))
+	if on {
+		card.Material(glass.Glass{Clarity: 0.78, Tint: ui.Hex("#e8763a2e")}).
+			Border(1, ui.Hex("#e8763aa6"))
+	} else if card.Hovered() {
+		card.Border(1, ui.Hex("#ffffff4d"))
+	}
+	card.Children(func() {
+		ui.Text(c, strconv.Itoa(tuneNumber(a.tuneFiles[i]))).FontSize(10).
+			TextColor(t.Text.Alpha(0.9)).SingleLine()
+	})
+	if card.Clicked() {
+		i := i
+		a.tuneAction(func() error { return a.selectTune(i) })
+	}
+}
+
+// tuneButton is one of the footer's buttons: the accent one is what the panel
+// does with the numbers being heard, the plain ones what it does with the cards.
+func (a *App) tuneButton(c *ui.Context, label string, tint, border, ink ui.Color, act func()) {
+	b := ui.ButtonBase(c).Width(58).Height(24).Radius(12).Center().
+		Material(glass.Glass{Clarity: 0.7, Tint: tint}).Border(1, border)
+	b.Children(func() {
+		ui.Text(c, label).FontSize(10.5).TextColor(ink).SingleLine()
+	})
+	if b.Clicked() {
+		act()
+	}
+}
+
+// tuneAction runs one of the footer's buttons: a failure is written in the strip
+// beside the cards, a clean one clears that line, so the cards are the answer
+// unless something went wrong.
+func (a *App) tuneAction(f func() error) {
+	if err := f(); err != nil {
+		a.tuneNote = err.Error()
+		return
+	}
+	a.tuneNote = ""
 }
 
 // filterSwitch is the one on/off control above the group: the look on keeps the
@@ -949,8 +1018,10 @@ func (a *App) filterSwitch(c *ui.Context, t *ui.Theme, on bool) {
 }
 
 // knobRow is one parameter: its name and its control. The name is a fixed 144 so
-// every control starts at the same x, and the control is a fixed 100 so they all
-// end at the column's right edge.
+// every control starts at the same x, and the control takes whatever the column
+// has left — the 100 the arithmetic leaves it — so it ends on the column's right
+// edge instead of running past it when the scroller's inner width comes out a
+// hair narrower than the panel's own sums.
 func (a *App) knobRow(c *ui.Context, t *ui.Theme, k knob) {
 	ui.Row(c).Height(filterRowH).AlignItems(ui.Center).Gap(8).Children(func() {
 		ui.Text(c, k.label).Width(filterLabelW).FontSize(10).
@@ -996,7 +1067,7 @@ func (a *App) knobSwitch(c *ui.Context, t *ui.Theme, k knob) {
 // the number the shader runs with, scaled by k.mul.
 func (a *App) knobStepper(c *ui.Context, t *ui.Theme, k knob) {
 	v := float64(a.value(k.key)) * k.mul
-	pill := ui.Row(c).Width(filterPillW).Height(22).Radius(11).AlignItems(ui.Center).
+	pill := ui.Row(c).Grow(1).MinWidth(60).Height(22).Radius(11).AlignItems(ui.Center).
 		Material(glass.Glass{Clarity: 0.78, Tint: ui.Hex("#ffffff10")}).
 		Border(1, ui.Hex("#ffffff24"))
 	pill.Children(func() {

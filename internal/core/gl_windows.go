@@ -804,6 +804,24 @@ func glBindDrawFBO() {
 	}
 }
 
+// glReadBuffer hands out the buffer a frame is read into, keeping one around.
+// A fresh buffer per frame is a megabyte of garbage at 60 Hz, and the collector
+// pausing to reclaim it is time the game's clock loses every few frames.
+var (
+	glReadMu  sync.Mutex
+	glReadMem []byte
+)
+
+func glReadBuffer(n int) []byte {
+	glReadMu.Lock()
+	defer glReadMu.Unlock()
+	if cap(glReadMem) < n {
+		glReadMem = make([]byte, n)
+	}
+	buf := glReadMem[:n]
+	return buf
+}
+
 // glReadFrame reads the colour target back as RGBA rows, top row first. The core
 // draws bottom-up (OpenGL's own orientation) unless it said otherwise, so the
 // rows are flipped here once rather than twice further up.
@@ -849,7 +867,7 @@ func glReadFrame(w, h, pitch int, bottomLeft bool) []byte {
 	// name the core was given.
 	if os.Getenv("GAMEROOM_TEXREAD") != "" && glTex != 0 {
 		if gti := gproc("glGetTexImage"); gti != 0 {
-			buf := make([]byte, w*h*4)
+			buf := glReadBuffer(w * h * 4)
 			syscall.SyscallN(gti, 0x0DE1, 0, 0x1908, 0x1401, uintptr(unsafe.Pointer(&buf[0])))
 			if bottomLeft {
 				row := make([]byte, w*4)
@@ -885,7 +903,7 @@ func glReadFrame(w, h, pitch int, bottomLeft bool) []byte {
 	if finish := gproc("glFinish"); finish != 0 {
 		syscall.SyscallN(finish)
 	}
-	buf := make([]byte, w*h*4)
+	buf := glReadBuffer(w * h * 4)
 	syscall.SyscallN(readPix, 0, 0, uintptr(w), uintptr(h), 0x1908, 0x1401, uintptr(unsafe.Pointer(&buf[0])))
 	// The context stays where the core left it: a core that resolves GL entry
 	// points once and then calls them from this thread expects the context to

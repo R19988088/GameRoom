@@ -67,6 +67,7 @@ type Session struct {
 	// the run loop: those calls land on a thread without a context and fault.
 	softFrames atomic.Bool
 	fbAsked    atomic.Bool
+	cbNanos    atomic.Int64
 	hwFail     error
 
 	// A core that presents after the frame callback has the picture ready only
@@ -363,9 +364,22 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 
 var active *Session
 
+// A frame has to land within a hundredth of a second of its slot, and the
+// system timer wakes a sleeper late by up to a whole tick. Asking for the
+// finest tick and spinning out the last millisecond keeps a 60 Hz game at 60.
+var procTimeBeginPeriod = syscall.NewLazyDLL("winmm.dll").NewProc("timeBeginPeriod")
+
+func waitUntil(t time.Time) {
+	// Occupied until the slot: time.Sleep on this machine wakes late by more
+	// than the frame budget allows, so the last stretch is held here.
+	for time.Now().Before(t) {
+	}
+}
+
 // Run steps the core until Close. Frames are published as they come.
 func (s *Session) Run() {
 	defer close(s.done)
+	procTimeBeginPeriod.Call(1)
 	// OpenGL is bound to a thread, and the cores call it straight from here.
 	// A goroutine that migrates to another thread leaves its context behind,
 	// so this one stays where it is for the whole game.
@@ -373,24 +387,39 @@ func (s *Session) Run() {
 	defer runtime.UnlockOSThread()
 	glUseCurrent()
 	period := time.Duration(float64(time.Second) / s.fps)
-	next := time.Now()
+	// Wake-up jitter is trimmed frame by frame: the overshoot measured on the
+	// last frames is taken off the next slot, so the rate settles onto the
+	// core's own rate instead of staying a fixed few percent slow.
+	adj := time.Duration(0)
+	// The speed is measured rather than assumed: a core that waits for its own
+	// vblank and a frontend that also waits add up to half speed, and only a
+	// measurement tells the two apart.
+	coreSum, keysSum, prepSum, waitSum, uiSum, frameCount := time.Duration(0), time.Duration(0), time.Duration(0), time.Duration(0), time.Duration(0), 0
+	lastT, lastN := time.Now(), 0
 	for {
 		select {
 		case <-s.quit:
 			return
 		default:
 		}
+		frameStart := time.Now()
+		tk := time.Now()
 		s.SetKeys(pollKeys())
+		keysDur := time.Since(tk)
 		if os.Getenv("GAMEROOM_DEBUG") != "" && s.frames < 40 {
 			fmt.Fprintf(os.Stderr, "run: enter frame %d fps=%v\n", s.frames, s.fps)
 		}
 		t0 := time.Now()
+		prep := time.Duration(0)
 		if s.hwOn && s.fbAsked.Load() && !s.softFrames.Load() {
 			// A core that asked for our framebuffer draws into it, so it is bound
 			// again for every frame.
+			prep = time.Since(t0)
 			glBindDrawFBO()
+			prep = time.Since(t0) - prep
 		}
 		s.call(s.run)
+		runDur := time.Since(t0)
 		if s.pendOn {
 			// The core finished its whole frame, present included, by now.
 			if buf := glReadFrame(s.pendW, s.pendH, s.pendPitch, s.pendBL); buf != nil {
@@ -407,14 +436,42 @@ func (s *Session) Run() {
 		if os.Getenv("GAMEROOM_DEBUG") != "" && s.frames < 40 {
 			fmt.Fprintf(os.Stderr, "run: frame %d done after %v\n", s.frames, time.Since(t0))
 		}
+		coreSum += runDur
+		keysSum += keysDur
+		prepSum += prep
+		frameCount++
+		if os.Getenv("GAMEROOM_DEBUG") != "" && frameCount%120 == 0 && frameCount >= 120 {
+			winN := frameCount - lastN
+			winT := time.Since(lastT)
+			fmt.Fprintf(os.Stderr, "speed: fps=%.2f target=%.2f win=%.2fms prep=%.2fms core=%.2fms cb=%.2fms key=%.2fms wait=%.2fms ui=%.2fms frames=%d\n",
+				float64(winN)/winT.Seconds(), s.fps, float64(winT.Microseconds())/float64(winN)/1000,
+				float64(prepSum.Microseconds())/float64(frameCount)/1000,
+				float64(coreSum.Microseconds())/float64(frameCount)/1000,
+				float64(s.cbNanos.Load())/float64(frameCount)/1e6,
+				float64(keysSum.Microseconds())/float64(frameCount)/1000,
+				float64(waitSum.Microseconds())/float64(frameCount)/1000,
+				float64(uiSum.Microseconds())/float64(frameCount)/1000, frameCount)
+			lastT, lastN = time.Now(), frameCount
+		}
+		tu := time.Now()
 		if f, ok := s.onFrame.Load().(func()); ok && f != nil {
 			f()
 		}
-		next = next.Add(period)
-		if d := time.Until(next); d > 0 {
-			time.Sleep(d)
-		} else if d < -period {
-			next = time.Now()
+		uiSum += time.Since(tu)
+		// Each frame gets one period counted from its own start: work that fits
+		// waits out the rest, work that does not simply runs on without an
+		// added wait. That makes the long-run rate exactly the core's rate.
+		if target := frameStart.Add(period - adj); time.Until(target) > 0 {
+			tw := time.Now()
+			waitUntil(target)
+			waitSum += time.Since(tw)
+			over := time.Since(frameStart) - period
+			if over > 2*time.Millisecond {
+				over = 2 * time.Millisecond
+			} else if over < -2*time.Millisecond {
+				over = -2 * time.Millisecond
+			}
+			adj += (over - adj) / 8
 		}
 	}
 }
@@ -1228,7 +1285,9 @@ func videoCallback(data, w, h, pitch uintptr) uintptr {
 			s.pendW, s.pendH, s.pendPitch, s.pendBL = width, height, int(pitch), s.hwBL
 			return 0
 		}
+		tr := time.Now()
 		buf := glReadFrame(width, height, int(pitch), s.hwBL)
+		s.cbNanos.Add(int64(time.Since(tr)))
 		if buf == nil {
 			return 0
 		}

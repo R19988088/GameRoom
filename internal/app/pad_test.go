@@ -137,6 +137,20 @@ func TestSecondPlayerKeepsItsOwnButtons(t *testing.T) {
 	}
 }
 
+// TestSecondPlayerKeyboardReachesItsPort: player two can play on the keyboard
+// alone; the key lands in player one's mask only if player one bound it too.
+func TestSecondPlayerKeyboardReachesItsPort(t *testing.T) {
+	a := &App{root: t.TempDir(), pads: map[string]map[string]padBind{}, padLive: "fc"}
+	a.bindPad("fc", 1, "a", "key", 0x50, 0, 0) // P
+	keys := map[int]bool{0x50: true}
+	if held := a.padMask(1, keys, nil); !held[padA] {
+		t.Errorf("player two did not read its key: %v", held)
+	}
+	if held := a.padMask(0, keys, nil); held[padA] {
+		t.Errorf("player one read player two's key: %v", held)
+	}
+}
+
 // TestPlayersReadTheirOwnPads: two pads press the same button numbers at the
 // same time; each player's mask reads only the controller its binding names.
 func TestPlayersReadTheirOwnPads(t *testing.T) {

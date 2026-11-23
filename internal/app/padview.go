@@ -7,6 +7,10 @@ import (
 
 // controllerButton is the pill beside the filter's: which machine's pad the
 // game reads, and the way into the model of its buttons.
+// panelW is the width of the pad panel's glass: both players, side by side,
+// 496 each with an 8 gap between them.
+const panelW = 1000
+
 func (a *App) controllerButton(c *ui.Context, t *ui.Theme) {
 	b := ui.ButtonBase(c).Width(controllerButtonWidth).Height(backButtonSize).PaddingX(14).
 		Radius(backButtonSize/2).AlignItems(ui.Center).Gap(8).
@@ -67,7 +71,7 @@ func padShort(id string) string {
 // plays the same way.
 func (a *App) padPanel(c *ui.Context, t *ui.Theme) {
 	ui.Box(c).Absolute().Left(0).Right(0).Top(0).Bottom(0).Children(func() {
-		col := ui.Column(c).Absolute().Right(edgeInset).Top(edgeInset).Width(508).
+		col := ui.Column(c).Absolute().Right(edgeInset).Top(edgeInset).Width(panelW).
 			Padding(12).Radius(18).Gap(10).
 			Material(glass.Glass{Clarity: 0.62, Tint: ui.Hex("#14161ee6")}).
 			Border(1, ui.Hex("#ffffff1f")).
@@ -318,3 +322,5 @@ func (a *App) padFooter(c *ui.Context, t *ui.Theme) {
 		}
 	})
 }
+
+

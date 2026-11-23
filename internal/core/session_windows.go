@@ -298,6 +298,10 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 		}
 		glUseCurrent()
 		syscall.SyscallN(s.hw.ContextReset)
+		// The reset is over; the context goes back so a core that starts its
+		// shader threads now can share it (Dolphin does exactly that, and
+		// without a share its shader compiler fails and takes the core down).
+		procWglMakeCurrent.Call(0, 0)
 		if os.Getenv("GAMEROOM_DEBUG") != "" {
 			fmt.Fprintf(os.Stderr, "ctx: reset done\n")
 		}
@@ -346,6 +350,14 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 		}
 	}
 	s.audio = NewAudioPipe(int(s.sample))
+	// Loading is done, and the context is handed back before the first frame.
+	// A core that draws through threads of its own (Dolphin) shares our objects
+	// while loading; it can only do that while the context is current nowhere,
+	// and holding it on this thread for the whole run would lock those threads
+	// out of their own picture.
+	if cur, _, _ := procWglGetCurrentContext.Call(); cur != 0 {
+		procWglMakeCurrent.Call(0, 0)
+	}
 	return s, nil
 }
 

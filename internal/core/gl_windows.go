@@ -887,9 +887,14 @@ func glReadFrame(w, h, pitch int, bottomLeft bool) []byte {
 	}
 	buf := make([]byte, w*h*4)
 	syscall.SyscallN(readPix, 0, 0, uintptr(w), uintptr(h), 0x1908, 0x1401, uintptr(unsafe.Pointer(&buf[0])))
-	// The context goes back to nobody afterwards: a thread that needs a share
-	// of it can only get one while it is current nowhere.
-	procWglMakeCurrent.Call(0, 0)
+	// The context stays where the core left it: a core that resolves GL entry
+	// points once and then calls them from this thread expects the context to
+	// still be current (Dolphin takes the process down otherwise). A core whose
+	// own threads need a share of the context while it runs is given the release
+	// with GAMEROOM_RELEASE_CTX.
+	if os.Getenv("GAMEROOM_RELEASE_CTX") != "" {
+		procWglMakeCurrent.Call(0, 0)
+	}
 	// The rows are flipped when the core said its picture is bottom-up, which
 	// is what a framebuffer straight from the driver looks like.
 	if bottomLeft {

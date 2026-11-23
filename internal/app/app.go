@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -1058,11 +1059,42 @@ func (a *App) launchGame(g library.Game) {
 		a.status = "启动失败：rom 不是文件"
 		return
 	}
-	sess, err := core.Start(corePath, rom, a.asciiSystem(dir))
-	if err != nil {
-		a.status = "启动失败：" + err.Error()
+	// The core is loaded and stepped on one thread of its own. Creating the
+	// OpenGL context on the window's thread and running the core on another is
+	// what left the Dreamcast core drawing into a framebuffer nobody read: the
+	// numbers meant different objects in the two contexts. One thread owns the
+	// context, the load, the run loop and the readback.
+	type loadedCore struct {
+		sess *core.Session
+		err  error
+	}
+	loadedCh := make(chan loadedCore, 1)
+	runGate := make(chan struct{})
+	go func() {
+		runtime.LockOSThread()
+		sess, err := core.Start(corePath, rom, a.asciiSystem(dir))
+		loadedCh <- loadedCore{sess, err}
+		if err != nil {
+			return
+		}
+		sess.OnFrame(func() { a.win.Update(func() {}) })
+		<-runGate
+		sess.Run()
+		a.win.Update(func() {
+			if a.core != sess {
+				return // a newer game, or the user, already took the window back
+			}
+			a.releaseGame()
+			launch.SetWindowTitle(a.win.NativeHandle(), "GameRoom")
+			a.status = g.Title + " 已退出"
+		})
+	}()
+	lc := <-loadedCh
+	if lc.err != nil {
+		a.status = "启动失败：" + lc.err.Error()
 		return
 	}
+	sess := lc.sess
 	a.core = sess
 	a.gameBmp = nil
 	a.gameFrames = 0
@@ -1089,18 +1121,9 @@ func (a *App) launchGame(g library.Game) {
 	// page carries only the picture and the two controls over it.
 	launch.SetWindowTitle(a.win.NativeHandle(), g.Title)
 	a.status = g.Title
-	sess.OnFrame(func() { a.win.Update(func() {}) })
-	go func() {
-		sess.Run()
-		a.win.Update(func() {
-			if a.core != sess {
-				return // a newer game, or the user, already took the window back
-			}
-			a.releaseGame()
-			launch.SetWindowTitle(a.win.NativeHandle(), "GameRoom")
-			a.status = g.Title + " 已退出"
-		})
-	}()
+	// Everything the window needs from the session is in place, so the thread
+	// that owns the context may start stepping the game.
+	close(runGate)
 }
 
 // stopPlayer ends the game on screen and gives the library its window back.

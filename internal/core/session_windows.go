@@ -414,9 +414,6 @@ func (s *Session) Run() {
 		default:
 		}
 		frameStart := time.Now()
-		tk := time.Now()
-		s.SetKeys(pollKeys())
-		keysDur := time.Since(tk)
 		if os.Getenv("GAMEROOM_DEBUG") != "" && s.frames < 40 {
 			fmt.Fprintf(os.Stderr, "run: enter frame %d fps=%v\n", s.frames, s.fps)
 		}
@@ -429,6 +426,11 @@ func (s *Session) Run() {
 			glBindDrawFBO()
 			prep = time.Since(t0) - prep
 		}
+		// The keyboard is read right before the core steps, not a frame earlier:
+		// one press then reaches one emulated frame, not two.
+		tk := time.Now()
+		s.SetKeys(pollKeys())
+		keysDur := time.Since(tk)
 		s.call(s.run)
 		runDur := time.Since(t0)
 		if s.pendOn {
@@ -487,8 +489,20 @@ func (s *Session) Run() {
 	}
 }
 
-// SetKeys takes the keyboard keys held down, as retrok codes.
-func (s *Session) SetKeys(keys map[int]bool) { s.keys.Store(keys) }
+// SetKeys takes the keyboard keys held down, as retrok codes. A change of
+// state is logged so a menu that moves twice can be told apart: two presses
+// here, or one press the core read on two frames.
+func (s *Session) SetKeys(keys map[int]bool) {
+	if os.Getenv("GAMEROOM_INPUT_LOG") != "" {
+		old, _ := s.keys.Load().(map[int]bool)
+		for k, v := range keys {
+			if v && !old[k] {
+				fmt.Fprintf(os.Stderr, "input: frame=%d down=%d\n", s.Frames(), k)
+			}
+		}
+	}
+	s.keys.Store(keys)
+}
 
 // SetPad takes the gamepad's buttons held down, as RETRO_DEVICE_ID_JOYPAD ids:
 // which physical button drives which id is the frontend's business, the core
@@ -1400,3 +1414,4 @@ func CorePath(dir, name string) string {
 	}
 	return p
 }
+

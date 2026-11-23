@@ -524,6 +524,18 @@ func LayerEffect(pos vec2) vec4 {
 			ar = GAME_ASPECT
 		}
 	}
+	// PAD_Y is the spacing above and below the picture, in percent of its height on
+	// each side. It shrinks the picture as a whole — both axes by the same factor —
+	// so the content keeps its own proportions; the row scale below is then read
+	// from that smaller height, so the scanlines keep theirs too and never inherit
+	// the window's shape.
+	padY := 1.0
+	if PAD_Y > 0.0 {
+		padY = 1.0 - PAD_Y*0.02
+		if padY < 0.6 {
+			padY = 0.6
+		}
+	}
 	ratio := size.x / size.y
 	rw := 1.0
 	rh := 1.0
@@ -534,8 +546,8 @@ func LayerEffect(pos vec2) vec4 {
 		rw = 1.0
 		rh = ratio / ar
 	}
-	rw = rw * PIC_SIZE * (1.0 - BORDER_SIZE)
-	rh = rh * PIC_SIZE * (1.0 - BORDER_SIZE)
+	rw = rw * PIC_SIZE * (1.0 - BORDER_SIZE) * padY
+	rh = rh * PIC_SIZE * (1.0 - BORDER_SIZE) * padY
 	if rw < 0.03 {
 		rw = 0.03
 	}
@@ -645,16 +657,8 @@ func LayerEffect(pos vec2) vec4 {
 		return vec4(pow(clamp(rcol*ii, vec3(0.0), vec3(1.0)), vec3(1.0/GAMMA)), 1.0)
 	}
 
-	// PAD_Y is the glass top and bottom: spacing above and below the picture, in
-	// percent of its height. It is the tube's bezel, not a zoom — the picture
-	// keeps its own pixels and its scanlines, and the band covers the rows at its
-	// two ends instead of drawing it smaller.
-	if PAD_Y > 0.0 {
-		band := hy * 0.02 * PAD_Y
-		if abs(c.y) > hy-band {
-			return vec4(0.0, 0.0, 0.0, 1.0)
-		}
-	}
+	// PAD_Y shrank the picture above, before its frame was measured, so the
+	// picture, its scanlines and the glass all read the same, smaller shape.
 
 	suv := vec2(c.x/(2.0*hx), c.y/(2.0*hy)) + vec2(0.5, 0.5)
 	np := suv * isz

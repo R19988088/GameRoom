@@ -46,6 +46,7 @@ type Session struct {
 	setPort uintptr
 
 	keys  atomic.Value // map[int]bool, RETROK codes held down
+	binds atomic.Value // map[int]int, the player's VK to RETROK table
 	pads  atomic.Value // map[int]bool, RETRO_DEVICE_ID_JOYPAD ids held down
 	mouse atomic.Value // MouseState, the pointer as a core reads it
 
@@ -489,6 +490,15 @@ func (s *Session) Run() {
 	}
 }
 
+// SetKeyBinds is the player's keyboard, as virtual-key codes to RETROK codes.
+// It takes effect on the next frame: a binding changed while a game runs is
+// read by the very next poll.
+func (s *Session) SetKeyBinds(m map[int]int) { s.binds.Store(m) }
+
+// RetroKey is the RETROK code a virtual-key code stands for, or 0 if this
+// keyboard has no such key. The app builds its binding table with it.
+func RetroKey(vk int) int { return keyMap[vk] }
+
 // SetKeys takes the keyboard keys held down, as retrok codes. A change of
 // state is logged so a menu that moves twice can be told apart: two presses
 // here, or one press the core read on two frames.
@@ -590,7 +600,13 @@ func init() {
 // the keyboard whether or not the page is looking at it.
 func pollKeys() map[int]bool {
 	held := make(map[int]bool, 8)
-	for vk, rk := range keyMap {
+	table := keyMap
+	if active != nil {
+		if m, ok := active.binds.Load().(map[int]int); ok && len(m) > 0 {
+			table = m
+		}
+	}
+	for vk, rk := range table {
 		if st, _, _ := procGetAsyncKey.Call(uintptr(vk)); st&0x8000 != 0 {
 			held[rk] = true
 		}
@@ -1414,4 +1430,5 @@ func CorePath(dir, name string) string {
 	}
 	return p
 }
+
 

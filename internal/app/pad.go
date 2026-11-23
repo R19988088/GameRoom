@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/R19988088/GameRoom/internal/core"
 	"github.com/R19988088/GameRoom/internal/library"
 )
 
@@ -583,6 +584,28 @@ type padFile struct {
 
 func (a *App) controlsPath() string { return filepath.Join(a.root, "数据", "controls.json") }
 
+// keyBinds turns the player's keyboard bindings for a layout into the table a
+// running core reads: virtual-key code to RETROK code.
+func (a *App) keyBinds(layout string) map[int]int {
+	m := map[int]int{}
+	for _, b := range a.padProfile(layout) {
+		if b.VK != 0 {
+			if rk := core.RetroKey(b.VK); rk != 0 {
+				m[b.VK] = rk
+			}
+		}
+	}
+	return m
+}
+
+// pushKeyBinds hands the current bindings to a game already running, so a
+// change is felt on the next frame rather than at the next launch.
+func (a *App) pushKeyBinds() {
+	if a.core != nil {
+		a.core.SetKeyBinds(a.keyBinds(a.padLive))
+	}
+}
+
 // loadPads reads the bindings the player made. A missing file is the defaults.
 func (a *App) loadPads() {
 	a.pads = map[string]map[string]padBind{}
@@ -599,6 +622,7 @@ func (a *App) loadPads() {
 
 // savePads keeps them: one entry per machine, shared by every game of it.
 func (a *App) savePads() {
+	defer a.pushKeyBinds()
 	f := padFile{Version: 1, Layouts: a.pads}
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
@@ -947,3 +971,4 @@ func (a *App) captureTick(keys, pads map[int]bool) {
 		}
 	}
 }
+

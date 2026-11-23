@@ -1102,6 +1102,7 @@ func (a *App) launchGame(g library.Game) {
 	a.playerGame = g
 	a.padsOpen = false
 	a.padLive = a.padLayoutOf(g)
+	sess.SetKeyBinds(a.keyBinds(a.padLive))
 	a.filtersOpen = false
 	a.cap = ""
 	a.holdOn, a.holdDown = "", false
@@ -1345,3 +1346,4 @@ func buildTheme() ui.Theme {
 	t.Spacing = 8
 	return t
 }
+

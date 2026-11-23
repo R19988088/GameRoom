@@ -50,6 +50,19 @@ type Session struct {
 	pads  atomic.Value // padMasks, RETRO_DEVICE_ID_JOYPAD ids held down, by port
 	mouse atomic.Value // MouseState, the pointer as a core reads it
 
+	// The core's own save state: retro_serialize_size, retro_serialize and
+	// retro_unserialize, the scratch buffer a state is written into, and the
+	// queue of work the window's thread hands to this one. Those three are only
+	// called between frames, where the state is whole.
+	serSize, serialize, unserialize uintptr
+	stateBuf                        []byte
+	tasks                           chan *coreTask
+	// A paused core does not step: a panel opened over the picture keeps the
+	// frame, the state and the sound as they were. Step lets exactly one frame
+	// through, so a state that was just put back can be seen.
+	paused   atomic.Bool
+	stepOnce atomic.Bool
+
 	mu     sync.RWMutex
 	frame  *image.RGBA
 	frames int
@@ -134,7 +147,8 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{dll: h, quit: make(chan struct{}), done: make(chan struct{}), sndDone: make(chan struct{}), fps: 60}
+	s := &Session{dll: h, quit: make(chan struct{}), done: make(chan struct{}), sndDone: make(chan struct{}), fps: 60,
+		tasks: make(chan *coreTask, 16)}
 	coreName = strings.TrimSuffix(filepath.Base(corePath), "_libretro.dll")
 	// The options saved beside the core are what RetroArch would have answered;
 	// a core that reads them expects the same answers here, or it runs on values
@@ -219,6 +233,11 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 	s.deinit = proc("retro_deinit")
 	s.getAVInfo = proc("retro_get_system_av_info")
 	s.getSystemInfo = proc("retro_get_system_info")
+	// Save states are optional in libretro: a core that does not export these
+	// simply has none, and the panel offers no slot for it.
+	s.serSize = proc("retro_serialize_size")
+	s.serialize = proc("retro_serialize")
+	s.unserialize = proc("retro_unserialize")
 	if s.init == 0 || s.loadGame == 0 || s.run == 0 {
 		return nil, fmt.Errorf("不是可用的模拟核心：%s", corePath)
 	}
@@ -415,41 +434,54 @@ func (s *Session) Run() {
 			return
 		default:
 		}
+		// What the window handed over — a save, a load, a rewind — runs here,
+		// between two frames, where the core's state is whole.
+		s.runTasks()
+		// A paused game still turns the page and still answers those tasks, it
+		// just does not step. Step lets one frame through, so a state that was
+		// put back shows on the glass.
+		stepping := true
+		if s.paused.Load() {
+			stepping = s.stepOnce.CompareAndSwap(true, false)
+		}
 		frameStart := time.Now()
 		if os.Getenv("GAMEROOM_DEBUG") != "" && s.frames < 40 {
 			fmt.Fprintf(os.Stderr, "run: enter frame %d fps=%v\n", s.frames, s.fps)
 		}
 		t0 := time.Now()
 		prep := time.Duration(0)
-		if s.hwOn && s.fbAsked.Load() && !s.softFrames.Load() {
-			// A core that asked for our framebuffer draws into it, so it is bound
-			// again for every frame.
-			prep = time.Since(t0)
-			glBindDrawFBO()
-			prep = time.Since(t0) - prep
-		}
-		// The keyboard is read right before the core steps, not a frame earlier:
-		// one press then reaches one emulated frame, not two.
-		tk := time.Now()
-		s.SetKeys(pollKeys())
-		keysDur := time.Since(tk)
-		s.call(s.run)
-		runDur := time.Since(t0)
-		if s.pendOn {
-			// The core finished its whole frame, present included, by now.
-			if buf := glReadFrame(s.pendW, s.pendH, s.pendPitch, s.pendBL); buf != nil {
-				s.mu.Lock()
-				if s.frame == nil || s.w != s.pendW || s.h != s.pendH {
-					s.frame = image.NewRGBA(image.Rect(0, 0, s.pendW, s.pendH))
-					s.w, s.h = s.pendW, s.pendH
-				}
-				s.frames++
-				copy(s.frame.Pix, buf)
-				s.mu.Unlock()
+		runDur, keysDur := time.Duration(0), time.Duration(0)
+		if stepping {
+			if s.hwOn && s.fbAsked.Load() && !s.softFrames.Load() {
+				// A core that asked for our framebuffer draws into it, so it is bound
+				// again for every frame.
+				prep = time.Since(t0)
+				glBindDrawFBO()
+				prep = time.Since(t0) - prep
 			}
-		}
-		if os.Getenv("GAMEROOM_DEBUG") != "" && s.frames < 40 {
-			fmt.Fprintf(os.Stderr, "run: frame %d done after %v\n", s.frames, time.Since(t0))
+			// The keyboard is read right before the core steps, not a frame earlier:
+			// one press then reaches one emulated frame, not two.
+			tk := time.Now()
+			s.SetKeys(pollKeys())
+			keysDur = time.Since(tk)
+			s.call(s.run)
+			runDur = time.Since(t0)
+			if s.pendOn {
+				// The core finished its whole frame, present included, by now.
+				if buf := glReadFrame(s.pendW, s.pendH, s.pendPitch, s.pendBL); buf != nil {
+					s.mu.Lock()
+					if s.frame == nil || s.w != s.pendW || s.h != s.pendH {
+						s.frame = image.NewRGBA(image.Rect(0, 0, s.pendW, s.pendH))
+						s.w, s.h = s.pendW, s.pendH
+					}
+					s.frames++
+					copy(s.frame.Pix, buf)
+					s.mu.Unlock()
+				}
+			}
+			if os.Getenv("GAMEROOM_DEBUG") != "" && s.frames < 40 {
+				fmt.Fprintf(os.Stderr, "run: frame %d done after %v\n", s.frames, time.Since(t0))
+			}
 		}
 		coreSum += runDur
 		keysSum += keysDur
@@ -554,6 +586,24 @@ func (s *Session) PixelFormat() int { return s.format }
 
 // OnFrame sets what runs after each stepped frame, on the core's own clock.
 func (s *Session) OnFrame(f func()) { s.onFrame.Store(f) }
+
+// Pause stops the core from stepping. A panel opened over the picture keeps the
+// frame, the state and the sound as they were, while the page still turns and
+// tasks still reach the core between frames.
+func (s *Session) Pause(on bool) {
+	s.paused.Store(on)
+	if !on {
+		// A step asked for while the game played belongs to nothing.
+		s.stepOnce.Store(false)
+	}
+}
+
+// Paused reports whether the core is stopped.
+func (s *Session) Paused() bool { return s.paused.Load() }
+
+// Step lets one frame through while the core is paused: enough to show a state
+// that was just put back. It does nothing while the game runs.
+func (s *Session) Step() { s.stepOnce.Store(true) }
 
 // Close ends the game and lets the core free what it held.
 func (s *Session) Close() {

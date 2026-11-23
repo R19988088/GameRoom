@@ -56,6 +56,9 @@ func (a *App) playerView(c *ui.Context, t *ui.Theme) {
 	a.pumpMouse()
 	a.pushPad()
 	a.padTick()
+	if a.savesOpen {
+		a.saveTick()
+	}
 	w, h := c.Size()
 	ui.Box(c).Fill().Background(ui.Hex("#000000")).Children(func() {
 		a.gamePicture(c, w, h)
@@ -65,6 +68,9 @@ func (a *App) playerView(c *ui.Context, t *ui.Theme) {
 		}
 		if a.padsOpen {
 			a.padPanel(c, t)
+		}
+		if a.savesOpen {
+			a.savePanel(c, t)
 		}
 	})
 }
@@ -141,6 +147,7 @@ func (a *App) floatControls(c *ui.Context, t *ui.Theme) {
 	ui.Row(c).Absolute().Left(edgeInset).Right(edgeInset).Top(edgeInset).Height(backButtonSize).Gap(8).Children(func() {
 		a.backButton(c, t)
 		ui.Box(c).Grow(1)
+		a.saveButton(c, t)
 		a.controllerButton(c, t)
 		a.filterButton(c, t)
 	})
@@ -183,7 +190,7 @@ func (a *App) backButton(c *ui.Context, t *ui.Theme) {
 	}
 	// Escape leaves the game from the keyboard — but while a panel is open it
 	// belongs to the panel, which closes on it, so the button stays quiet.
-	if !a.filtersOpen && !a.padsOpen {
+	if !a.filtersOpen && !a.padsOpen && !a.savesOpen {
 		b.Shortcut(0, ui.KeyEscape)
 	}
 }

@@ -35,6 +35,30 @@ func (s *Session) Frame() any { return nil }
 // OnFrame does nothing.
 func (s *Session) OnFrame(f func()) {}
 
+// Pause does nothing.
+func (s *Session) Pause(on bool) {}
+
+// Paused is never paused.
+func (s *Session) Paused() bool { return false }
+
+// Step does nothing.
+func (s *Session) Step() {}
+
+// Do runs nothing here.
+func (s *Session) Do(f func() error) error { return nil }
+
+// CanState reports no save state.
+func (s *Session) CanState() bool { return false }
+
+// StateSize is 0.
+func (s *Session) StateSize() int { return 0 }
+
+// SaveState has no state to give.
+func (s *Session) SaveState() ([]byte, error) { return nil, ErrUnsupported }
+
+// LoadState has no state to take.
+func (s *Session) LoadState(data []byte) error { return ErrUnsupported }
+
 // Close does nothing.
 func (s *Session) Close() {}
 

@@ -291,6 +291,38 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
   （`上下间距 (%)`）仍在窗内、底部不再有说明文字、有卡片时是 `更新/另存/删除` 且卡片在按钮左边、
   700 宽窗口下面板不越界，并钉住 720 / 48 / 120 / 144 / 100 / 26 / 8 这组版式数字。
 
+### 存档面板与按帧回退（2026-11-23）
+
+- 播放界面右上角多一颗 `存档` 胶囊（`saveButton`，在 `控制器` 和 `滤镜` 之间；只在进程内跑核心的游戏上出现，
+  交给 RetroArch 自己窗口的游戏没有状态可存）。点开是同一套玻璃面板（`savepanel.go`，宽 596、内边距 24），
+  上半是 **3×3 九格截图票位**，下半是 **时间轴 + 读取/删除**。
+- **打开面板 = 暂停**：`toggleSaves()` 与 `filtersOpen`/`padsOpen` 互斥，并 `a.core.Pause(true)`；关闭
+  （✕ / Esc / `继续` / 再点胶囊）走 `closeSaves()`：清空回退行、`Pause(false)`。暂停由核心自己实现
+  （`session_windows.go` 的 `paused`/`stepOnce`）：暂停时仍走 timing 和 `onFrame`，所以页面照常重绘、
+  任务队列照常被吃掉；`Step()` 只放一帧。
+- **票位**（`saves.go`）：一个槽 = 三个文件，落在 `数据/存档/<平台>-<rom名>/` 下，文件名 `save-<n>.state`
+  （核心的整份序列化）、`save-<n>.png`（拍照，`shrink` 按块取均值缩到 ≤320 宽，不引 `x/image`）、
+  `save-<n>.json`（`{"at":"RFC3339","frames":n}`）。`scanSaves()` 在面板打开时重读，手工丢进来的档也能用；
+  缩略图按路径缓存在 `a.shots`，点 `删除` 时释放。空位显示 `＋ 建档`，**点空位 = 立刻存档**；
+  有图的位置点一下只是**选中**（`slotSel`），读取/删除要再按按钮——一次点击不会既存档又覆盖。
+  `读取` = `loadFrom()`：`LoadState` 进去 + `Step()` 一帧让玻璃显示那一瞬，并把回退行重置。
+- **回退行**（`rewind.go`）：`OnFrame` 里每帧调 `captureRewind()`，在核心线程、`retro_run` 之后调
+  `SaveStateNow()` 存一份；**节奏按成本算**，不按时间算：`rewindPlan(size,fps,cost)` 用一个 2ms 的预算推 `step`
+  （`step = ceil(cost/2ms)`，最少 1 帧），`max` 取 2 秒 / step，再被 128MB 与 240 条夹住。
+  实测：`fceumm` 22KB → 每帧一份；`snes9x2010` 826KB → 每帧一份（raw 写 225µs / 读 456µs）；
+  `mednafen_psx` 16MB → 8 份（128MB/16MB）。注意 `Do()` 一次往返固定 ≈16ms（一个帧边界的延迟），
+  所以预算只看核心线程内的 raw 成本，不看 `Do` 的往返。
+- 时间轴（`rewindTrack`）：一条与条目等距的条，`已回退 N 帧` 的读数、`继续` 回到实时。**拖动就是回退**：
+  按住轨道往左拖，按 `dx / (轨宽/(条数-1))` 映射到条目（`scrubDrag` 记起点条目与累计位移），
+  每落到一条就 `rewindTo(i)` = `LoadState` + `Step()`。往回拖到底是最早的一条，往右拖到底回到最新。
+- **限制**：核心说 `CanState()` 但 `retro_serialize` 返回 0 的（PSX 的 `mednafen_psx` 实测如此）存不了，
+  面板底部的 `slotNote` 直接写核心给的话（"核心没有写出存档"），不会写出半份文件。
+- 退游戏时 `releaseGame()` 清 `savesOpen/slots/shots/slotSel` 并 `a.rew.reset()`；`launchGame` 开局前同样重置，
+  回退行永远只属于当前这颗核心。
+- 测试：`rewind_test.go` 盯 `rewindPlan` 的三种核心（22KB / 16MB / 6ms 成本）、行的裁剪与 `−N 帧` 读数、
+  `freeze` 与 `reset`；`savepanel_test.go` 盯九格布局（`建档` 数 = 9 − 已存档、槽位时间、`时间轴/继续/读取/删除`
+  都在窗内、✕ 不越过玻璃）、点存档位选不建档、无游戏时点空位只说原因不落文件，以及 `fileSafe`/`shrink`。
+
 ## 跨平台核对（2026-11 查 buildbot.libretro.com）
 
 | 核心 | Windows x64 | Linux x64 | macOS arm64 | macOS x64 |

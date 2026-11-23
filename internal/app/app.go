@@ -213,6 +213,21 @@ type App struct {
 	// keeping on ("" for none), down whether the key itself is down, so only the
 	// press counts and not the repeat.
 	hold [2]padHold
+
+	// The save panel and its two halves: slots is the shelf read off 数据/存档
+	// (the picture and the line beside it), shots the decoded pictures, kept so a
+	// tile does not decode a PNG every frame, and slotSel the tile a click left
+	// selected. rew is the row of states the timeline steps back through, scrub
+	// the drag of that timeline, trackW how wide it was drawn.
+	savesOpen bool
+	slots     []*saveSlot
+	shots     map[string]*ui.Bitmap
+	slotSel   int
+	slotNote  string
+	escSaves  bool
+	rew       rewind
+	scrub     scrubDrag
+	trackW    float32
 }
 
 // padHold is one player's stick hold: the direction kept on, and whether the
@@ -1105,7 +1120,13 @@ func (a *App) launchGame(g library.Game) {
 		if err != nil {
 			return
 		}
-		sess.OnFrame(func() { a.win.Update(func() {}) })
+		// Every frame the core has drawn is also a chance to file it in the row
+		// the timeline steps back through. The capture runs on the core's own
+		// thread, right after the frame, which is the one moment its state is whole.
+		sess.OnFrame(func() {
+			a.captureRewind(sess)
+			a.win.Update(func() {})
+		})
 		<-runGate
 		sess.Run()
 		a.win.Update(func() {
@@ -1135,6 +1156,12 @@ func (a *App) launchGame(g library.Game) {
 	a.filtersOpen = false
 	a.cap = ""
 	a.hold = [2]padHold{}
+	// A new game starts with an empty shelf view and an empty row: the slots are
+	// read when the panel opens, and the row is planned from this core's own state.
+	a.savesOpen = false
+	a.slots, a.shots, a.slotSel, a.slotNote = nil, nil, 0, ""
+	a.scrub = scrubDrag{}
+	a.rew.reset()
 	// The core's sound plays through the machine's own wave output, queued a
 	// few frames ahead: the game is the only thing making noise.
 	sess.StartSound()
@@ -1192,6 +1219,10 @@ func (a *App) releaseGame() {
 	a.padsOpen = false
 	a.padLive = ""
 	a.cap = ""
+	a.savesOpen = false
+	a.slots, a.shots, a.slotSel, a.slotNote = nil, nil, 0, ""
+	a.scrub = scrubDrag{}
+	a.rew.reset()
 }
 
 // setFilter records a look and applies it to the running game. RetroArch reads

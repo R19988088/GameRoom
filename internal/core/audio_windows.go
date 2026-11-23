@@ -15,6 +15,7 @@ import (
 // mixer plays it like any other sound an app generates.
 type AudioPipe struct {
 	mu      sync.Mutex
+	cond    *sync.Cond
 	samples []float32 // interleaved left, right
 	rate    int
 	closed  bool
@@ -63,7 +64,9 @@ func NewAudioPipe(rate int) *AudioPipe {
 	if rate < 8000 || rate > 192000 {
 		rate = 44100
 	}
-	return &AudioPipe{rate: rate}
+	p := &AudioPipe{rate: rate}
+	p.cond = sync.NewCond(&p.mu)
+	return p
 }
 
 // SampleRate is the frames per second the core plays at.
@@ -97,13 +100,13 @@ func (p *AudioPipe) push(samples []int16) {
 		}
 	}
 	p.pushed += int64(len(samples))
-	// A slow output must not let the queue grow without bound: a quarter of a
-	// second of sound rides out a stutter, and anything older than that is
-	// already late enough that the ear hears it as a lag behind the picture.
-	// Two values per frame, so a quarter second is rate/2 of them.
-	if max := p.rate / 2; len(p.samples) > max {
-		p.dropped += int64(len(p.samples) - max)
-		p.samples = p.samples[len(p.samples)-max:]
+	// Two values per frame, so a fifth of a second is rate/5 of them. When the
+	// queue is full the core waits for the device: the sound becomes the clock
+	// the emulation keeps, and no sample is ever thrown away.
+	if limit := p.rate / 5; len(p.samples) > limit {
+		for !p.closed && len(p.samples) > limit {
+			p.cond.Wait()
+		}
 	}
 }
 
@@ -119,6 +122,9 @@ func (p *AudioPipe) Read(buf []float32) (int, error) {
 		if n := len(p.samples); n > 0 {
 			copied := copy(buf, p.samples)
 			p.samples = p.samples[copied:]
+			if p.cond != nil {
+				p.cond.Broadcast()
+			}
 			p.mu.Unlock()
 			return copied, nil
 		}
@@ -139,6 +145,9 @@ func (p *AudioPipe) Read(buf []float32) (int, error) {
 func (p *AudioPipe) close() {
 	p.mu.Lock()
 	p.closed = true
+	if p.cond != nil {
+		p.cond.Broadcast()
+	}
 	p.samples = nil
 	p.mu.Unlock()
 }

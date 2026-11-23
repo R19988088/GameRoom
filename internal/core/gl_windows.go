@@ -726,6 +726,14 @@ func glUseCurrent() bool {
 	if cur, _, _ := procWglGetCurrentContext.Call(); cur == uintptr(glRC) {
 		return true
 	}
+	// A core that draws on the thread that loaded it expects the context it was
+	// given, not a share of it: Flycast's synchronous path talks to the driver
+	// through that context's state and faults in a share.
+	if os.Getenv("GAMEROOM_MAIN_CTX") != "" {
+		procWglMakeCurrent.Call(uintptr(glHDC), uintptr(glRC))
+		c, _, _ := procWglGetCurrentContext.Call()
+		return c == uintptr(glRC)
+	}
 	// A context is current in one thread at a time, and two of them cannot be
 	// current at once. Cores such as PCSX2 and Flycast draw from a thread of
 	// their own, so that thread gets its own context sharing our objects: the

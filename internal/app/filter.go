@@ -767,31 +767,68 @@ func filterName(level string) string {
 	return "标准"
 }
 
-// filterPanelW is the panel's glass, and filterScrollH the height of the one
-// group of controls: tall enough for a dozen rows at a time, short enough that
-// the whole panel fits a 720p window.
+// filterPanelW is the panel's glass. Two parameter columns sit side by side on
+// an 8px grid: 16 of padding either side and a 24 gap between them leaves 332
+// for each column — enough room for a label and its 120 control without either
+// being squeezed.
 const (
-	filterPanelW  = 472
-	filterScrollH = 420
+	filterPanelW    = 720
+	filterPanelPad  = 16
+	filterColumnGap = 24
+	filterRowGap    = 8
+	filterRowH      = 26
+	filterHeaderH   = 28
+	filterSwitchH   = 24
+	filterFooterH   = 26
+	filterPanelGap  = 8
+	filterMinBodyH  = 240
 )
 
-// filterPanel is the panel itself: one group of the preset's parameters in a
-// scroll, with a single on/off switch above it and 保存 / 切换 below. The two
-// buttons are the whole of the group management: 保存 writes the numbers being
-// heard into the current tune-<n>.json (or starts the next one), 切换 moves to
-// the next saved group and takes both its preset and its numbers.
+// filterBodyContentH is the two columns at full height: the longer column's
+// rows plus the gap between them, so the panel can hug the list instead of
+// leaving an empty scroll area on a tall window.
+func filterBodyContentH() float32 {
+	rows := (len(knobs) + 1) / 2
+	return float32(rows*filterRowH + (rows-1)*filterRowGap)
+}
+
+// filterBodyHeight is the part of the window the columns may use. On a 720p
+// window the whole list fits; on a shorter one the same two columns scroll
+// together rather than being clipped or split into separate scrollers.
+func (a *App) filterBodyHeight(c *ui.Context) float32 {
+	h := filterBodyContentH()
+	if _, pageH := c.Size(); pageH > 0 {
+		avail := pageH - 2*edgeInset - 2*filterPanelPad -
+			filterHeaderH - filterSwitchH - filterFooterH - 3*filterPanelGap
+		if avail < h {
+			h = avail
+		}
+	}
+	if h < filterMinBodyH {
+		h = filterMinBodyH
+	}
+	return h
+}
+
+// filterPanel is the panel itself: one group of the preset's parameters in two
+// columns on one page, with a single on/off switch above it and 保存 / 切换
+// below. The columns are the whole of the layout standard: 16 of padding, 24
+// between them, and an 8px vertical rhythm. The two buttons are the whole of the
+// group management: 保存 writes the numbers being heard into the current
+// tune-<n>.json (or starts the next one), 切换 moves to the next saved group and
+// takes both its preset and its numbers.
 func (a *App) filterPanel(c *ui.Context, t *ui.Theme) {
 	ui.Box(c).Absolute().Left(0).Right(0).Top(0).Bottom(0).Children(func() {
 		col := ui.Column(c).Absolute().Right(edgeInset).Top(edgeInset).Width(filterPanelW).
-			Padding(12).Radius(18).Gap(8).
+			Padding(filterPanelPad).Radius(18).Gap(filterPanelGap).
 			Material(glass.Glass{Clarity: 0.62, Tint: ui.Hex("#14161ee6")}).
 			Border(1, ui.Hex("#ffffff1f")).
 			Shadow(0, 26, 60, 0, ui.Hex("#000000cc"))
 		col.Children(func() {
-			ui.Row(c).Height(28).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).Height(filterHeaderH).AlignItems(ui.Center).Children(func() {
 				// The title is the panel's own handle: a double click drops every
 				// number the player moved and puts the preset back.
-				title := ui.ButtonBase(c).Grow(1).Height(28).AlignItems(ui.Center)
+				title := ui.ButtonBase(c).Grow(1).Height(filterHeaderH).AlignItems(ui.Center)
 				title.Children(func() {
 					ui.Text(c, "脑浆油条 参数").FontSize(12).FontWeight(700).
 						TextColor(t.Text.Alpha(0.92)).SingleLine()
@@ -812,7 +849,7 @@ func (a *App) filterPanel(c *ui.Context, t *ui.Theme) {
 			// One look on or off, not a row of preset groups: the switch is the
 			// only thing above the parameters.
 			on := a.cfg.FilterLevel != "off"
-			ui.Row(c).Height(24).AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Row(c).Height(filterSwitchH).AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Text(c, "滤镜").FontSize(11).FontWeight(600).
 					TextColor(t.Text.Alpha(0.9)).SingleLine()
 				ui.Text(c, filterName(a.cfg.FilterLevel)).FontSize(10).
@@ -820,17 +857,23 @@ func (a *App) filterPanel(c *ui.Context, t *ui.Theme) {
 				ui.Box(c).Grow(1)
 				a.filterSwitch(c, t, on)
 			})
-			ui.Scroll(c).Height(filterScrollH).TrackScroll(&a.filterScroll).Children(func() {
-				ui.Column(c).Gap(4).Children(func() {
-					for _, k := range knobs {
-						k := k
-						a.knobRow(c, t, k)
+			ui.Scroll(c).Height(a.filterBodyHeight(c)).TrackScroll(&a.filterScroll).Children(func() {
+				half := (len(knobs) + 1) / 2
+				ui.Row(c).Gap(filterColumnGap).AlignItems(ui.Start).Children(func() {
+					for _, list := range [][]knob{knobs[:half], knobs[half:]} {
+						list := list
+						ui.Column(c).Grow(1).Gap(filterRowGap).Children(func() {
+							for _, k := range list {
+								k := k
+								a.knobRow(c, t, k)
+							}
+						})
 					}
 				})
 			})
 			// The two buttons the player asked for, and a line saying which
 			// group is heard and what the last click did.
-			ui.Row(c).Height(26).AlignItems(ui.Center).Gap(6).Children(func() {
+			ui.Row(c).Height(filterFooterH).AlignItems(ui.Center).Gap(6).Children(func() {
 				ui.Text(c, a.tuneStatus()).FontSize(10).TextColor(t.TextMuted).SingleLine()
 				note := a.tuneNote
 				if note == "" {
@@ -886,7 +929,7 @@ func (a *App) filterSwitch(c *ui.Context, t *ui.Theme, on bool) {
 
 // knobRow is one parameter: its name and its control.
 func (a *App) knobRow(c *ui.Context, t *ui.Theme, k knob) {
-	ui.Row(c).Height(26).AlignItems(ui.Center).Gap(8).Children(func() {
+	ui.Row(c).Height(filterRowH).AlignItems(ui.Center).Gap(8).Children(func() {
 		ui.Text(c, k.label).Grow(1).MinWidth(0).FontSize(10).
 			TextColor(t.TextMuted).SingleLine()
 		if k.kind == 1 {

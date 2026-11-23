@@ -251,10 +251,13 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
 `数据/config.json` 的 `crtShader` 只是预设名（`202603.slangp`），换滤镜就把新 `.slangp` 丢进
 `shaders/` 并改这里；留空则不套滤镜。
 
-### 滤镜面板：一组参数，保存 / 切换（2026-11-23）
+### 滤镜面板：两组参数并排，一组保存 / 切换（2026-11-23）
 
-- `filterPanel` 不再按预设分四颗胶囊、也不再把 `knobs` 切两列：**一组参数**在 `ui.Scroll` 里单列排，
-  上面只有一个滤镜开关，底部只有 `保存` / `切换` 两颗按钮。默认面板宽 472、滚动区高 420，720p 也放得下。
+- `filterPanel` 不再按预设分四颗胶囊：**一组参数**按原来的左右双列排（`knobs` 对半切），
+  上面只有一个滤镜开关，底部只有 `保存` / `切换` 两颗按钮。
+- 版式按 8px 栅格：面板宽 `filterPanelW=720`，内边距 `filterPanelPad=16`，两列间距 `filterColumnGap=24`，
+  行高 `filterRowH=26`、行距 `filterRowGap=8`；两列各 332 宽，标签和 120 宽的控件都不挤。
+  720p 窗口整张表放得下；更矮的窗口用**一个** `ui.Scroll` 让两列一起滚，不拆成两个滚动区。
 - 开关只改 `FilterLevel` 的 `off` 与 `normal`：关掉不丢 `CRTTune`，再打开参数还在；`crtEffect` 每帧读
   uniform，所以开关、拖动、切换都在下一帧生效，不用重启游戏。
 - 保存：把当前 `CRTTune` 写进 `数据/filters/tune-<n>.json`，格式 `{"level": "...", "tune": {...}}`。
@@ -264,7 +267,8 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
   同时套用该组的 `level` 与全部参数；没有保存组时按钮只写一行“还没有保存的组”，不假装切换。
 - 面板一打开会重新 `scanTunes()`，手工丢进 `数据/filters` 的文件不用重启就能被切到。
 - 测试：`tune_test.go` 盯“连续保存只一个文件、后写的覆盖前写的”“两组按编号循环并带 level/参数”
-  “开关关再开不丢参数”。
+  “开关关再开不丢参数”；`filter_test.go` 在 720p 里量两列起点距离 ≥300、最后一颗参数仍在窗内，
+  并钉住 720 / 16 / 24 / 26 / 8 这组版式数字。
 
 ## 跨平台核对（2026-11 查 buildbot.libretro.com）
 

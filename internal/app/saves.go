@@ -40,14 +40,14 @@ type saveSlot struct {
 
 // savable says whether a core that answers canState has slots to fill: one that
 // declares no state has none, and neither has one whose first capture came back
-// empty — the row remembers that as a plan with no step.
+// empty. A core whose state is just too heavy for the timeline keeps its slots.
 func savable(canState bool, r *rewind) bool {
 	if !canState {
 		return false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return !(r.planned && r.step <= 0)
+	return !r.noState
 }
 
 // canSave is savable for the game on screen. With no game there is nothing to

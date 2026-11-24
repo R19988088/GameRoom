@@ -78,10 +78,34 @@ type Game struct {
 	// source ("snk/neogeo.cpp"): the 基板 the 街机 shelf files games by.
 	Board    string
 	Favorite bool
+	// Family is the game this dump is shown under, 0 to let the title decide.
+	// A 改版 dragged onto a card stays under that card even when its own title
+	// would file it somewhere else.
+	Family int
+	// Solo keeps a dump on a card of its own even when its title matches another
+	// game's: 取消合并.
+	Solo bool
+	// IPS is the patch groups of 数据/ips switched on for this dump, "|"-joined:
+	// the card's menu ticks them and the launch hands the core a patched copy.
+	IPS string
 	// Core overrides the sim's core for this game alone, "" to use the
 	// sim's. Old frontends kept this in a JSON blob per game.
 	Core  string
 	SimID int
+}
+
+// IPSGroups are the patch groups this dump plays with, in the order the menu
+// switched them on.
+func (g Game) IPSGroups() []string { return splitList(g.IPS) }
+
+// IPSOn reports whether a patch group is switched on for this dump.
+func (g Game) IPSOn(name string) bool {
+	for _, n := range g.IPSGroups() {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Sim is an emulator that runs a platform's games.

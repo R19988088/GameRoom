@@ -39,8 +39,25 @@ func TestRewindPlanCutsInTenthsOfASecond(t *testing.T) {
 		t.Fatalf("a state that costs 15ms stepped %d frames for %d captures, want 12 and 10", step, max)
 	}
 
+	// A heavy core (PSP: 37MB, 73ms) cannot fill two seconds at any usable
+	// cadence, but the row still keeps as many captures as its bytes allow —
+	// three, not the bare two that a two-second span would leave.
+	if step, max = rewindPlan(37<<20, 60, 73*time.Millisecond); step != 42 || max != 3 {
+		t.Fatalf("a 37MB state costing 73ms stepped %d frames for %d captures, want 42 and 3", step, max)
+	}
+
 	if step, max = rewindPlan(0, 60, 0); step != 0 || max != 0 {
 		t.Fatalf("a core with no state plans %d/%d, want 0/0", step, max)
+	}
+
+	// A state that cannot give a row anyone would step through is refused whole:
+	// Dolphin's 107MB takes over a second to write, so it gets the save slots and
+	// no timeline rather than a row of two that stops the game each capture.
+	if step, max = rewindPlan(107<<20, 60, 1232*time.Millisecond); step != 0 || max != 0 {
+		t.Fatalf("a 107MB state costing 1.2s planned %d/%d, want no row", step, max)
+	}
+	if step, max = rewindPlan(50<<20, 60, 128*time.Millisecond); step == 0 || max < 2 {
+		t.Fatalf("a 50MB state costing 128ms planned %d/%d, want a row of at least two", step, max)
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/R19988088/GameRoom/internal/core"
 
+	"github.com/R19988088/GameRoom/internal/ips"
 	"github.com/R19988088/GameRoom/internal/launch"
 	"github.com/R19988088/GameRoom/internal/library"
 )
@@ -74,9 +76,13 @@ type App struct {
 	axis     string // how the shelf files its games: board, maker, machine, year
 	platform string // the chosen platform's key, "" when the axis has no machine
 	menu     string // "" shows every game of the shelf
-	query    string
-	chosen   int // the card chosen in the body: an index into shown
-	scroll   ui.ScrollState
+	// The bar lists five categories and folds the rest under 其他, with 收藏
+	// before them when the shelf has starred cards. special says which of the
+	// two is standing in for a chip's name: "" for a chip (or 全部).
+	special string
+	query   string
+	chosen  int // the card chosen in the body: an index into shown
+	scroll  ui.ScrollState
 
 	// A second click on the same card within this long starts the game. The
 	// window's own double-click counting is not relied on: a card is built
@@ -107,15 +113,17 @@ type App struct {
 
 	// The version picker under a card: which family every game belongs to, the
 	// dumps of each family, the one chosen to play, and the popup the card
-	// opened — one open flag per game, like the card's own menu.
+	// opened — one open flag per game, like the card's own menu. vmenu is the
+	// right-click menu of one of those rows (取消合并), with its own flags so
+	// that the card's menu and a row's never light each other up.
 	verFam     map[int]string
 	verMembers map[string][]library.Game
 	verDefault map[string]int
 	verOpen    map[int]*bool
 	verGame    int
 	verSel     int
-	verClick   int
-	verClickAt time.Time
+	vmenu      map[int]*bool
+	vmenuGame  int
 
 	shown []library.Game
 	// The body, filed by the standard the bar shows: sections with their
@@ -132,11 +140,19 @@ type App struct {
 	chips         []library.Chip // the axis' values, in bar order
 	platformTotal int            // games of the chosen platform
 	shelfTotal    int            // games of the whole shelf
+	favTotal      int            // starred games of the whole shelf
+	otherTotal    int            // games of the shelf that 其他 holds
 	status        string
 
 	covers  map[string]*ui.Bitmap // by path; nil once known missing
 	icons   map[string]*ui.Bitmap
 	pending map[string]bool
+	// imgMu guards the three maps and the queue above: a decoder finishes on
+	// its own goroutine and, with no window to post to (the headless tester),
+	// writes the finished picture straight from there while the frame is being
+	// built. Go's maps die on that — "fatal error: concurrent map read and map
+	// write" — and a fatal error takes the whole launcher down with it.
+	imgMu sync.Mutex
 
 	// The decode queue: pictures wait here and are decoded one at a time.
 	jobs    []imageJob
@@ -198,6 +214,25 @@ type App struct {
 	pads     map[string]map[string]padBind
 	padsOpen bool
 	padLive  string
+	// padIDs is what the running core calls each button of the panel in use
+	// (padIDsFor): the core announces its own names for the machine's buttons,
+	// and those decide which retropad id a spot presses. nil means the panel's
+	// drawn ids are the ones the core reads (MAME, or a core that says nothing).
+	padIDs map[string][]int
+	// padNow is the panel drawn while a game runs, when the core reads more
+	// buttons than the board's model was written with (padPanelFor). nil means
+	// the model padLive names is the one on screen.
+	padNow *padLayout
+	// padLogHead is the sheet 数据/按键自检.txt opens with — the core's own button
+	// names, the panel, and what each key presses — and padLog the last press written
+	// to it, so a line only lands when the pressed keys change. padGame/padCore are
+	// what the sheet is about, kept so it can be written again when the core speaks
+	// late (padLate); padIDsDone says whether that second read already happened.
+	padLogHead string
+	padLog     string
+	padGame    library.Game
+	padCore    string
+	padIDsDone bool
 	// Game-specific pad profiles: bindings filed under a game's own key, and
 	// whether that game still reads the platform-wide profile beside it. A game
 	// with no own entries follows its platform, exactly as before.
@@ -243,8 +278,26 @@ func Run() error {
 		return nil
 	}
 	mygo.App.SetName("GameRoom")
+	// 再点一次图标时，第二个实例会把命令行交给已经开着的这个：把它提到前面，
+	// 否则什么都不发生，看着就是「点了没反应、没有窗口」。
+	mygo.App.OnSecondInstance(func([]string, string) { raiseWindow() })
 	mygo.App.WhenReady(boot)
 	return mygo.App.Run()
+}
+
+// running is the launcher's own App, for the second instance to raise its
+// window: boot sets it once the window exists.
+var running *App
+
+// raiseWindow brings the launcher's window back: restored if it was minimized,
+// shown if it was hidden, and focused.
+func raiseWindow() {
+	if running == nil || running.win == nil {
+		return
+	}
+	running.win.Restore()
+	running.win.Show()
+	running.win.Focus()
 }
 
 // autoPlay is a game to start as soon as the window is up, named by -play.
@@ -319,6 +372,7 @@ func boot() {
 		MinHeight: 660,
 		Content:   ui.View(a.view),
 	})
+	running = a
 	a.autoplay()
 }
 
@@ -469,6 +523,10 @@ func (a *App) fetchCovers() {
 
 // reload rereads the library after a write, keeping the shelf and menu shown.
 func (a *App) reload() {
+	if a.db == nil {
+		a.status = "读库失败：没有可读的库"
+		return
+	}
 	lib, err := library.Load(a.db)
 	if err != nil {
 		a.status = "读库失败：" + err.Error()
@@ -476,8 +534,10 @@ func (a *App) reload() {
 	}
 	a.lib = lib
 	a.counts = lib.Counts()
+	a.imgMu.Lock()
 	a.covers = map[string]*ui.Bitmap{}
 	a.pending = map[string]bool{}
+	a.imgMu.Unlock()
 	// Load put every shelf back on its default standard; restore the one the
 	// user was looking at.
 	if a.axis != "" {
@@ -508,6 +568,13 @@ func (a *App) runQueue() {
 	}
 }
 
+// The two pages the bar stands for besides a chip: the starred cards, and the
+// categories the bar's five chips left out.
+const (
+	specialFav   = "fav"
+	specialOther = "other"
+)
+
 // refilter rebuilds the grid's games: those of the shelf, of the axis and of
 // the search.
 func (a *App) refilter() {
@@ -515,6 +582,18 @@ func (a *App) refilter() {
 	if a.lib != nil {
 		q := strings.ToLower(strings.TrimSpace(a.query))
 		machine := a.axis == library.AxisMachine || a.axis == ""
+		// 其他 is the shelf minus the bar's five: on a shelf whose machine is
+		// its platform that is the machines left out, otherwise the axis' values
+		// left out.
+		var topNames map[string]bool
+		var topPlats map[string]bool
+		if a.special == specialOther {
+			if machine && len(a.chips) == 0 {
+				topPlats = a.topPlatformKeys()
+			} else {
+				topNames = a.topNames()
+			}
+		}
 		// A family is one card: whichever member matches the shelf, the menu or
 		// the search is the same game, and the card is its base dump. The other
 		// dumps are reached from the card's version button, not as cards of
@@ -525,12 +604,30 @@ func (a *App) refilter() {
 			if p == nil || p.Group != a.group {
 				continue
 			}
-			if machine {
-				if g.PlatformKey != a.platform {
+			switch a.special {
+			case specialFav:
+				if !g.Favorite {
 					continue
 				}
-			} else if a.menu != "" && g.Menu != a.menu {
-				continue
+			case specialOther:
+				if machine && g.PlatformKey != a.platform && len(a.chips) > 0 {
+					continue
+				}
+				if topPlats != nil {
+					if topPlats[g.PlatformKey] {
+						continue
+					}
+				} else if topNames != nil && topNames[g.Menu] {
+					continue
+				}
+			default:
+				if machine {
+					if g.PlatformKey != a.platform {
+						continue
+					}
+				} else if a.menu != "" && g.Menu != a.menu {
+					continue
+				}
 			}
 			if q != "" && !a.versionMatches(g, q) {
 				continue
@@ -549,10 +646,15 @@ func (a *App) refilter() {
 }
 
 // versionMatches reports whether the game or any dump of its family has the
-// searched text, so looking for "真侍魂 X" still finds the one card.
+// searched text, so looking for "真侍魂 X" still finds the one card. A rom's own
+// name is searched too — "hsf2" or "mjelctrn" is what is written on the file
+// that was copied in, before anyone typed a title for it.
 func (a *App) versionMatches(g library.Game, query string) bool {
 	matches := func(m library.Game) bool {
-		return strings.Contains(strings.ToLower(m.Title), query)
+		if strings.Contains(strings.ToLower(m.Title), query) {
+			return true
+		}
+		return strings.Contains(strings.ToLower(romFile(m.RomPath)), query)
 	}
 	if matches(g) {
 		return true
@@ -587,6 +689,12 @@ type line struct {
 func (a *App) file() {
 	a.sections, a.stale = a.sections[:0], true
 	if len(a.shown) == 0 {
+		return
+	}
+	// 收藏 and 其他 mix several categories, so their headers name the machine (or
+	// the arcade's board) instead of a category the bar never listed.
+	if a.special != "" {
+		a.fileByMachine()
 		return
 	}
 	if len(a.chips) == 0 {
@@ -627,6 +735,84 @@ func (a *App) file() {
 		a.sections = append(a.sections, section{name: a.shown[i].Menu, from: i, count: j - i})
 		i = j
 	}
+}
+
+// fileByMachine files 收藏 and 其他 by the hardware: a console's machine, a
+// handheld's, an arcade game's 基板 — the names the card's own menu shows. The
+// busiest hardware comes first, unknown last, and the cards inside it by name.
+func (a *App) fileByMachine() {
+	hw := func(g library.Game) string { return a.hardware(g) }
+	counts := map[string]int{}
+	for _, g := range a.shown {
+		counts[hw(g)]++
+	}
+	sort.SliceStable(a.shown, func(i, j int) bool {
+		mi, mj := hw(a.shown[i]), hw(a.shown[j])
+		if mi != mj {
+			if counts[mi] != counts[mj] {
+				return counts[mi] > counts[mj]
+			}
+			return mi < mj
+		}
+		return titleLess(a.shown[i].Title, a.shown[j].Title)
+	})
+	for i := 0; i < len(a.shown); {
+		j := i + 1
+		for j < len(a.shown) && hw(a.shown[j]) == hw(a.shown[i]) {
+			j++
+		}
+		a.sections = append(a.sections, section{name: hw(a.shown[i]), from: i, count: j - i})
+		i = j
+	}
+}
+
+// hardware names the machine a card belongs to on 收藏 and 其他: an arcade game
+// or a mahjong table files under its 基板 once the board is known, and under
+// its platform otherwise — on a console the platform is the machine, a
+// handheld's machine comes from its core.
+func (a *App) hardware(g library.Game) string {
+	p := a.lib.Platform(g.PlatformKey)
+	if p == nil {
+		return "未知机种"
+	}
+	switch p.Group {
+	case "handheld":
+		return a.lib.MachineNameOf(g)
+	case "arcade", "mahjong":
+		if b := library.BoardNameOf(g); b != "未标注基板" {
+			return b
+		}
+	}
+	return p.Name
+}
+
+// topChips are the values the bar lists: the axis' first five.
+func (a *App) topChips() []library.Chip {
+	if len(a.chips) <= 5 {
+		return a.chips
+	}
+	return a.chips[:5]
+}
+
+// topNames are those values, by name, so 其他 can hold the rest.
+func (a *App) topNames() map[string]bool {
+	top := a.topChips()
+	out := make(map[string]bool, len(top))
+	for _, c := range top {
+		out[c.Name] = true
+	}
+	return out
+}
+
+// topPlatformKeys are the five machines the bar lists on a shelf whose machine
+// is its platform: the ones 其他 leaves out.
+func (a *App) topPlatformKeys() map[string]bool {
+	top := a.topPlatforms(5)
+	out := make(map[string]bool, len(top))
+	for _, p := range top {
+		out[p.Key] = true
+	}
+	return out
 }
 
 // menuOpen is the open flag of one card's menu, made the first time the card
@@ -693,6 +879,41 @@ func (a *App) shutMenu() {
 		*p = false
 	}
 	a.menuGame, a.cardField, a.cardEdit, a.cardText = 0, "", false, ""
+}
+
+// vmenuOpen is the open flag of one version row's menu, made the first time the
+// row is built: the row owns it, as a card owns its own.
+func (a *App) vmenuOpen(id int) *bool {
+	if a.vmenu == nil {
+		a.vmenu = map[int]*bool{}
+	}
+	p, ok := a.vmenu[id]
+	if !ok {
+		p = new(bool)
+		a.vmenu[id] = p
+	}
+	return p
+}
+
+// vmenuFor makes this row the one the open menu belongs to, closing the others.
+func (a *App) vmenuFor(id int) {
+	if a.vmenuGame == id {
+		return
+	}
+	for k, p := range a.vmenu {
+		if k != id {
+			*p = false
+		}
+	}
+	a.vmenuGame = id
+}
+
+// shutVMenu closes the version rows' menus.
+func (a *App) shutVMenu() {
+	for _, p := range a.vmenu {
+		*p = false
+	}
+	a.vmenuGame = 0
 }
 
 // values is what a field could be set to: the values the shelf already
@@ -848,6 +1069,48 @@ func (a *App) write(id int, field, value string) error {
 	return library.SetField(a.db, id, field, value)
 }
 
+// toggleFavorite stars the card the menu was opened on, or takes the star
+// away. The write waits for the next frame like any other change of the body:
+// taking a star away from a card on 收藏 removes it from that page.
+func (a *App) toggleFavorite(id int) {
+	g := a.lib.Game(id)
+	if g == nil {
+		return
+	}
+	on := !g.Favorite
+	a.shutMenu()
+	a.later(func() { a.setFavorite(id, on) })
+}
+
+// setFavorite is the work toggleFavorite queued: the row, the library, and the
+// body, all up to date before the next frame is laid out.
+func (a *App) setFavorite(id int, on bool) {
+	g := a.lib.Game(id)
+	if g == nil {
+		return
+	}
+	g.Favorite = on
+	var err error
+	if a.db != nil {
+		err = library.SetFavorite(a.db, id, on)
+	}
+	name := strings.ToUpper(g.Title)
+	switch {
+	case err != nil:
+		g.Favorite = !on
+		a.status = fmt.Sprintf("%s 没能收藏：%v", name, err)
+		return
+	case on:
+		a.status = name + " 已加入收藏"
+	default:
+		a.status = name + " 已取消收藏"
+	}
+	at := a.scroll.Y
+	a.recount()
+	a.refilter()
+	a.scroll.Y = at
+}
+
 // titleLess files a group by its games' names: a run of digits compares as a
 // number, so 街霸2 comes before 街霸10, and everything else compares as text,
 // which keeps the Chinese titles in a stable order.
@@ -894,10 +1157,10 @@ func naturalKey(s string) []string {
 
 // choosePlatform shows one platform of the shelf.
 func (a *App) choosePlatform(key string) {
-	if a.platform == key {
+	if a.platform == key && a.special == "" {
 		return
 	}
-	a.platform, a.menu, a.query = key, "", ""
+	a.platform, a.menu, a.query, a.special = key, "", "", ""
 	a.moreOpen = false
 	a.recount()
 	a.refilter()
@@ -919,7 +1182,7 @@ func (a *App) chooseAxis(axis string) {
 	if a.axis == axis {
 		return
 	}
-	a.axis, a.menu, a.moreOpen = axis, "", false
+	a.axis, a.menu, a.moreOpen, a.special = axis, "", false, ""
 	if a.lib != nil {
 		a.lib.SplitGroup(a.group, axis)
 		if axis == library.AxisMachine {
@@ -969,7 +1232,7 @@ func (a *App) chooseGroup(group string) {
 	if a.group == group || a.lib == nil {
 		return
 	}
-	a.group, a.menu, a.query = group, "", ""
+	a.group, a.menu, a.query, a.special = group, "", "", ""
 	a.axis = a.defaultAxis()
 	a.shelfOpen, a.moreOpen = false, false
 	a.lib.SplitGroup(group, a.axis)
@@ -982,7 +1245,7 @@ func (a *App) chooseGroup(group string) {
 // shelf, and of each value of the axis.
 func (a *App) recount() {
 	a.menuCounts = map[string]int{}
-	a.platformTotal, a.shelfTotal = 0, 0
+	a.platformTotal, a.shelfTotal, a.favTotal, a.otherTotal = 0, 0, 0, 0
 	if a.lib == nil {
 		return
 	}
@@ -992,6 +1255,9 @@ func (a *App) recount() {
 			continue
 		}
 		a.shelfTotal++
+		if g.Favorite {
+			a.favTotal++
+		}
 		if g.PlatformKey == a.platform {
 			a.platformTotal++
 		}
@@ -1000,13 +1266,39 @@ func (a *App) recount() {
 		}
 	}
 	a.chips = a.lib.Chips(a.group, a.axis)
+	// 其他 is everything the bar's five chips do not hold — the axis' values left
+	// out, or, on a shelf whose machine is its platform, the machines left out.
+	top := 0
+	if (a.axis == library.AxisMachine || a.axis == "") && len(a.chips) == 0 {
+		for _, p := range a.topPlatforms(5) {
+			top += a.counts[p.Key]
+		}
+	} else {
+		for _, c := range a.topChips() {
+			top += c.Count
+		}
+	}
+	a.otherTotal = max(0, a.shelfTotal-top)
 }
 
 func (a *App) chooseMenu(name string) {
-	if a.menu == name {
+	if a.special == "" && a.menu == name {
 		return
 	}
-	a.menu = name
+	a.special, a.menu = "", name
+	a.refilter()
+}
+
+// chooseSpecial opens one of the bar's two pages: 收藏, the shelf's starred
+// cards, or 其他, the categories the five chips left out. A click on the page
+// already showing one closes it again — on a shelf whose chips are its
+// machines there is no 全部 to go back to.
+func (a *App) chooseSpecial(kind string) {
+	if a.special == kind {
+		kind = ""
+	}
+	a.special, a.menu = kind, ""
+	a.moreOpen, a.shelfOpen = false, false
 	a.refilter()
 }
 
@@ -1024,7 +1316,7 @@ func (a *App) platformName() string {
 // when the shelf is filed by machine, otherwise the shelf and the value
 // chosen on it.
 func (a *App) scopeName() string {
-	if a.axis == library.AxisMachine || a.axis == "" {
+	if a.special == "" && (a.axis == library.AxisMachine || a.axis == "") {
 		return a.platformName()
 	}
 	name := ""
@@ -1034,7 +1326,12 @@ func (a *App) scopeName() string {
 		}
 	}
 	value := a.menu
-	if value == "" {
+	switch {
+	case a.special == specialFav:
+		value = "收藏"
+	case a.special == specialOther:
+		value = "其他"
+	case value == "":
 		value = "全部"
 	}
 	return name + " · " + value
@@ -1102,6 +1399,36 @@ func (a *App) launchGame(g library.Game) {
 		a.status = "启动失败：rom 不是文件"
 		return
 	}
+	// IPS 补丁：这个 rom 打开的补丁组会套到它的一份副本上，rom/ 里的文件一个字节都
+	// 不动。副本按（rom + 补丁组）落在缓存里，同一套补丁只构建一次。
+	//
+	// 副本怎么交给核心分两条路。FBNeo 拿着打过补丁的 zip 当 rom 会被它按校验和退回
+	// （"ROM … is missing"），但它自己会去 <system>\fbneo\patched\<set>.zip 找一份
+	// 覆盖用的 set，那份放过校验、只查名字和大小：所以对 FBNeo 是把副本放进去、原
+	// rom 照给，并告诉它允许打过补丁的 set；别的核心（MAME）没有这个目录，直接吃副本。
+	systemDir := a.asciiSystem(dir)
+	playRom := rom
+	patches := a.ipsEnabled(g)
+	var options []string
+	if len(patches) > 0 {
+		patched, err := ips.Prepare(rom, patches, filepath.Join(a.root, "模拟器", "RetroArch", "cache", "ips"))
+		if err != nil {
+			a.status = "ips 补丁失败：" + err.Error()
+			return
+		}
+		if isFBNeoCore(sim.Core) {
+			if err := stagePatchedSet(systemDir, rom, patched); err != nil {
+				a.status = "ips 补丁失败：" + err.Error()
+				return
+			}
+			options = append(options, "fbneo-allow-patched-romsets=enabled")
+		} else {
+			playRom = patched
+		}
+	} else {
+		// 这一份没开补丁：上一次留下的同名 patched set 不能盖过它。
+		clearPatchedSet(systemDir, rom)
+	}
 	// The core is loaded and stepped on one thread of its own. Creating the
 	// OpenGL context on the window's thread and running the core on another is
 	// what left the Dreamcast core drawing into a framebuffer nobody read: the
@@ -1115,7 +1442,7 @@ func (a *App) launchGame(g library.Game) {
 	runGate := make(chan struct{})
 	go func() {
 		runtime.LockOSThread()
-		sess, err := core.Start(corePath, rom, a.asciiSystem(dir))
+		sess, err := core.Start(corePath, playRom, systemDir, options...)
 		loadedCh <- loadedCore{sess, err}
 		if err != nil {
 			return
@@ -1125,6 +1452,7 @@ func (a *App) launchGame(g library.Game) {
 		// thread, right after the frame, which is the one moment its state is whole.
 		sess.OnFrame(func() {
 			a.captureRewind(sess)
+			a.padLate(sess)
 			a.win.Update(func() {})
 		})
 		<-runGate
@@ -1151,6 +1479,20 @@ func (a *App) launchGame(g library.Game) {
 	a.playerGame = g
 	a.padsOpen = false
 	a.padLive = a.padLayoutOf(g)
+	// The core's own names for the machine's buttons decide how many the panel
+	// draws and which id each of them presses: FBNeo reads its Button 1 from B
+	// and its Button 2 from A, a Street Fighter cabinet puts the punches on
+	// Y/X/L, and a six-button game on a three-button board still gets six
+	// buttons. Read here, from the core itself, once per game.
+	a.padNow = padPanelFor(padLayoutFor(a.padLive), sess.InputDescs())
+	a.padIDs = padIDsFor(a.padNow, sess.InputDescs())
+	// FBNeo announces its buttons after the first frame rather than during load, so
+	// the read above can come back empty there; the frame hook asks again (padLate).
+	a.padGame, a.padCore = g, corePath
+	a.padIDsDone = len(sess.InputDescs()) > 0
+	// What the launcher believes the core's buttons are goes into 数据/按键自检.txt,
+	// where a wrong button can be read off instead of guessed at.
+	a.padCheckStart(g, corePath, a.padNow, a.padProfile(a.padLive), sess.InputDescs(), a.padIDs)
 	sess.SetKeyBinds(0, a.keyBinds(a.padLive))
 	sess.SetKeyBinds(1, a.keyBinds2(a.padLive))
 	a.filtersOpen = false
@@ -1174,9 +1516,10 @@ func (a *App) launchGame(g library.Game) {
 			}
 		}()
 	}
-	// The window is the game's window now: its caption carries the game, and the
-	// page carries only the picture and the two controls over it.
-	launch.SetWindowTitle(a.win.NativeHandle(), g.Title)
+	// The window is the game's window now: its caption carries the game — and,
+	// on the right, how many ips patch groups it is running with — and the page
+	// carries only the picture and the two controls over it.
+	launch.SetWindowTitle(a.win.NativeHandle(), ipsTitle(g.Title, len(patches)))
 	a.status = g.Title
 	// Everything the window needs from the session is in place, so the thread
 	// that owns the context may start stepping the game.
@@ -1218,6 +1561,8 @@ func (a *App) releaseGame() {
 	a.filtersOpen = false
 	a.padsOpen = false
 	a.padLive = ""
+	a.padIDs = nil
+	a.padNow = nil
 	a.cap = ""
 	a.savesOpen = false
 	a.slots, a.shots, a.slotSel, a.slotNote = nil, nil, 0, ""
@@ -1335,6 +1680,8 @@ func (a *App) image(path string, max int, icon bool) *ui.Bitmap {
 	if path == "" {
 		return nil
 	}
+	a.imgMu.Lock()
+	defer a.imgMu.Unlock()
 	var have map[string]*ui.Bitmap
 	if icon {
 		have = a.icons
@@ -1349,7 +1696,7 @@ func (a *App) image(path string, max int, icon bool) *ui.Bitmap {
 	}
 	a.pending[path] = true
 	a.jobs = append(a.jobs, imageJob{path: path, max: max, icon: icon})
-	a.pumpImages()
+	a.pumpImagesLocked()
 	return nil
 }
 
@@ -1357,6 +1704,12 @@ func (a *App) image(path string, max int, icon bool) *ui.Bitmap {
 // must not open a decoder per visible card. Each finished picture asks for the
 // next, so the order the grid asked in is the order they arrive.
 func (a *App) pumpImages() {
+	a.imgMu.Lock()
+	defer a.imgMu.Unlock()
+	a.pumpImagesLocked()
+}
+
+func (a *App) pumpImagesLocked() {
 	if a.loading || len(a.jobs) == 0 {
 		return
 	}
@@ -1369,13 +1722,15 @@ func (a *App) pumpImages() {
 			b, _ = ui.DecodeBitmapScaled(data, job.max)
 		}
 		done := func() {
+			a.imgMu.Lock()
 			if job.icon {
 				a.icons[job.path] = b
 			} else {
 				a.covers[job.path] = b
 			}
 			a.loading = false
-			a.pumpImages()
+			a.pumpImagesLocked()
+			a.imgMu.Unlock()
 		}
 		if a.win == nil {
 			done()

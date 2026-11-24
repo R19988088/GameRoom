@@ -55,14 +55,14 @@ func TestMaskOfReadsBothSources(t *testing.T) {
 	prof := defaultPadBinds()
 
 	keys := map[int]bool{prof["a"].VK: true}
-	if held := maskOf(l, prof, keys, nil); !held[padA] || held[padB] {
+	if held := maskOf(l, prof, nil, keys, nil); !held[padA] || held[padB] {
 		t.Fatalf("key A: held = %v, want only pad A", held)
 	}
 	pads := map[int]map[int]bool{0: {prof["b"].Pad - 1: true}}
-	if held := maskOf(l, prof, nil, pads); !held[padB] || held[padA] {
+	if held := maskOf(l, prof, nil, nil, pads); !held[padB] || held[padA] {
 		t.Fatalf("pad B: held = %v, want only pad B", held)
 	}
-	if held := maskOf(nil, prof, keys, pads); held != nil {
+	if held := maskOf(nil, prof, nil, keys, pads); held != nil {
 		t.Fatalf("no layout: held = %v, want nil", held)
 	}
 }
@@ -163,8 +163,8 @@ func TestPlayersReadTheirOwnPads(t *testing.T) {
 		0: {p1["a"].Pad - 1: true},
 		1: {p2["b"].Pad - 1: true},
 	}
-	h1 := maskOf(l, p1, nil, pads)
-	h2 := maskOf(l, p2, nil, pads)
+	h1 := maskOf(l, p1, nil, nil, pads)
+	h2 := maskOf(l, p2, nil, nil, pads)
 	if !h1[padA] || h1[padB] {
 		t.Errorf("player one read %v, want only A", h1)
 	}
@@ -181,10 +181,10 @@ func TestSameKeyCanDriveBothPlayers(t *testing.T) {
 	a.bindPad("fc", 1, "a", "key", 0x50, 0, 0) // P again
 	l := padLayoutFor("fc")
 	keys := map[int]bool{0x50: true}
-	if h := maskOf(l, a.padProfile("fc"), keys, nil); !h[padA] {
+	if h := maskOf(l, a.padProfile("fc"), nil, keys, nil); !h[padA] {
 		t.Errorf("player one did not read the shared key: %v", h)
 	}
-	if h := maskOf(l, a.padProfile2("fc"), keys, nil); !h[padA] {
+	if h := maskOf(l, a.padProfile2("fc"), nil, keys, nil); !h[padA] {
 		t.Errorf("player two did not read the shared key: %v", h)
 	}
 }
@@ -362,7 +362,7 @@ func TestMacroPressesEveryButton(t *testing.T) {
 	for _, c := range cases {
 		a := &App{root: t.TempDir(), pads: map[string]map[string]padBind{}}
 		a.bindPad(c.layout, 0, c.macro, "key", 0x50, 0, 0) // P
-		held := maskOf(padLayoutFor(c.layout), a.padProfile(c.layout), map[int]bool{0x50: true}, nil)
+		held := maskOf(padLayoutFor(c.layout), a.padProfile(c.layout), nil, map[int]bool{0x50: true}, nil)
 		if len(held) != len(c.want) {
 			t.Errorf("%s %s presses %v, want %v", c.layout, c.macro, held, c.want)
 			continue
@@ -385,7 +385,7 @@ func TestBoardNamesAreNormalised(t *testing.T) {
 	}{
 		{"CPS3", "cps3", "CPSIII", 6},
 		{"CPS2", "cps2", "CPS2", 6},
-		{"CPS1", "cps1", "CPS1", 3},
+		{"CPS1", "cps1", "CPS1", 6},
 		{"ST-V", "st-v", "ST-V", 6},
 		{"NAOMI GD", "naomi-gd", "NAOMI GD", 6},
 		{"TAITO F2", "taito-f2", "TAITO F2", 6},
@@ -449,7 +449,7 @@ func TestPlayStationButtonsFollowTheCore(t *testing.T) {
 			}
 			a := &App{root: t.TempDir(), pads: map[string]map[string]padBind{}}
 			a.bindPad(c.layout, 0, s.ID, "key", 0x50, 0, 0)
-			held := maskOf(l, a.padProfile(c.layout), map[int]bool{0x50: true}, nil)
+			held := maskOf(l, a.padProfile(c.layout), nil, map[int]bool{0x50: true}, nil)
 			if !held[c.id] {
 				t.Errorf("%s %s does not press the core's id %d", c.layout, c.label, c.id)
 			}

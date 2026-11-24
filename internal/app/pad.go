@@ -13,6 +13,146 @@ import (
 	"github.com/R19988088/GameRoom/internal/library"
 )
 
+// padPanelNow is the panel the running game is played on: the one the board or
+// machine brings, as the core describes it (padPanelFor). "" padLive means no
+// game is running, and there is no panel to show.
+func (a *App) padPanelNow() *padLayout {
+	if a.padNow != nil {
+		return a.padNow
+	}
+	return padLayoutFor(a.padLive)
+}
+
+// padPanelFor is the panel of a machine as the core reads it. A board's model is
+// written down by name (CPS1 carries six-button games, a NeoGeo four), but the
+// shelf's 基板 is a guess until the page of a romset has been read, and a wrong
+// guess used to leave a four-button cabinet wearing six keys. The core says how
+// many buttons it actually reads, so the button count of the panel follows the
+// core's announcement in both directions — more keys for a six-button game, fewer
+// for a NeoGeo — and a core that names its buttons A…D gets the four-button
+// NeoGeo panel by its names. The board's id and name stay, so the bindings saved
+// for that board are the ones in use.
+func padPanelFor(l *padLayout, descs []core.InputDesc) *padLayout {
+	if l == nil || len(descs) == 0 {
+		return l
+	}
+	// A NeoGeo cartridge names its four buttons A to D, and no board of the shelf
+	// says so as plainly as the core does: it is a four-button machine whatever
+	// the romset was filed under.
+	if letteredButtons(descs) {
+		if l.ID == "mvs" {
+			return l
+		}
+		return &padLayout{ID: l.ID, Name: "MVS / NEOGEO", Spots: padModel(dirSpots(), arcadeFour(),
+			padBars("投币", "Start"), mvsMacros())}
+	}
+	if l.ID == "mvs" {
+		return l
+	}
+	n := fireButtons(descs)
+	if n < 2 || n > 6 || n == buttonsOf(l) {
+		return l
+	}
+	if n == 6 {
+		return &padLayout{ID: l.ID, Name: l.Name, Spots: arcadeSix()}
+	}
+	return &padLayout{ID: l.ID, Name: l.Name, Spots: arcadeNumbered(n)}
+}
+
+// letteredButtons says whether the core names its buttons A, B, C… rather than
+// numbers them — the way a NeoGeo cartridge does. FBNeo says "Button A"…"Button
+// D"; the NeoGeo CD core (geolith) says plainly "A", "B", "C", "D", and C and D
+// are letters the retropad itself never uses. A six-button console — a Mega Drive
+// announcing A B C X Y Z — is not a NeoGeo, so a retropad letter (X, Y, Z, L, R)
+// beside them rules the machine out.
+func letteredButtons(descs []core.InputDesc) bool {
+	letters := map[string]bool{}
+	for _, d := range descs {
+		if d.Port != 0 || d.Device != 1 || d.Index != 0 {
+			continue
+		}
+		n := strings.ToLower(strings.TrimSpace(d.Name))
+		if n == "" {
+			continue
+		}
+		n = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(n, "button "), "fire "))
+		if buttonNumberOf(n) > 0 {
+			continue // a numbered button is not a letter
+		}
+		if len(n) != 1 {
+			continue
+		}
+		switch n {
+		case "a", "b", "c", "d":
+			letters[n] = true
+		case "x", "y", "z", "l", "r":
+			return false // the retropad's own letters: a console pad, not a NeoGeo
+		}
+	}
+	// One lettered button alone proves nothing (a driver may call a lone action
+	// "Button A"); three of them, with a letter the retropad does not have, do.
+	return len(letters) >= 3 && (letters["c"] || letters["d"])
+}
+
+// mvsMacros are the two combinations a NeoGeo panel plays with.
+func mvsMacros() []padSpot {
+	return []padSpot{
+		macro("ab", "A+B", macroX1, "b", "y"),
+		macro("cd", "C+D", macroX2, "a", "x"),
+	}
+}
+
+// attackIDs are the retro ids a machine's attack buttons are filed under; the
+// directions and the coin/start bars are not buttons of the panel.
+var attackIDs = map[string]bool{
+	"a": true, "b": true, "x": true, "y": true,
+	"l": true, "r": true, "l2": true, "r2": true, "l3": true, "r3": true,
+}
+
+// buttonsOf is how many attack buttons a panel draws. A macro is a combination
+// of drawn buttons, not a button of its own.
+func buttonsOf(l *padLayout) int {
+	n := 0
+	for _, s := range l.Spots {
+		if len(s.Drives) <= 1 && attackIDs[targetsOf(s)[0]] {
+			n++
+		}
+	}
+	return n
+}
+
+// fireButtons is how many attack buttons the core announced: the numbered ones,
+// and the six of a Street Fighter cabinet. A core that names its buttons after
+// the retropad (MAME), or only announces auxiliary controls (FCEUmm's insert coin
+// and disk change), announces no attack button and leaves the panel as drawn.
+func fireButtons(descs []core.InputDesc) int {
+	seen := map[int]bool{}
+	for _, d := range descs {
+		if d.Port != 0 || d.Device != 1 || d.Index != 0 {
+			continue
+		}
+		if isFireName(strings.ToLower(strings.TrimSpace(d.Name))) ||
+			buttonNumberOf(strings.ToLower(strings.TrimSpace(d.Name))) > 0 {
+			seen[d.ID] = true
+		}
+	}
+	return len(seen)
+}
+
+// isFireName says whether a name is one of the machine's attack buttons rather
+// than some auxiliary control (a service switch, a volume button).
+func isFireName(n string) bool {
+	if strings.HasPrefix(n, "button ") || strings.HasPrefix(n, "fire ") {
+		return true
+	}
+	switch n {
+	case "weak punch", "medium punch", "strong punch",
+		"weak kick", "medium kick", "strong kick":
+		return true
+	}
+	return false
+}
+
 // --- the buttons of a pad, as the cores read them ---
 
 // RetroPad ids (RETRO_DEVICE_ID_JOYPAD_*), the one language every core speaks:
@@ -358,14 +498,45 @@ var padLayouts = []padLayout{
 	{"arcade", "街机", arcadeSix()},
 }
 
-// arcadeFour is the MVS panel's buttons: A B along the bottom, C D over them.
+// arcadeFour is the MVS panel's buttons, laid out the way a real MVS cabinet lays
+// them out: a staircase climbing to the right — A lowest at the left, then B, then
+// C, with D beside C at the same height (2026-11-24 玩家画的正是这个排法)。整组靠左
+// 一点，D 才不贴面板右沿。
 func arcadeFour() []padSpot {
-	return faces(
-		faceAt("b", "A", col1, row2),
-		faceAt("y", "B", col2, row2),
-		faceAt("a", "C", col1, row1),
-		faceAt("x", "D", col2, row1),
-	)
+	const rise, run, left = 23, 40, 32 // 每级 x+run / y-rise，整组左移 left
+	x, y := float32(col1-left), float32(row2)
+	a := faceAt("b", "A", x, y)
+	x, y = x+run, y-rise
+	b := faceAt("y", "B", x, y)
+	x, y = x+run, y-rise
+	c := faceAt("a", "C", x, y)
+	d := faceAt("x", "D", x+run+4, y)
+	return faces(a, b, c, d)
+}
+
+// arcadeNumbered is a cabinet panel of n buttons, numbered the way a cabinet
+// numbers them: 1 2 3 along the bottom, 4 5 6 over them. The core says how many
+// buttons a machine reads, so the panel is drawn at that number — a four-button
+// cabinet gets four, not the six of a Capcom board it happened to be filed under.
+func arcadeNumbered(n int) []padSpot {
+	if n < 2 {
+		n = 2
+	}
+	if n > 6 {
+		n = 6
+	}
+	ids := []string{"b", "y", "a", "x", "l", "r"}
+	cols := []float32{col1, col2, col3}
+	spots := make([]padSpot, 0, n)
+	for i := 0; i < n; i++ {
+		label := strconv.Itoa(i + 1)
+		if i < 3 {
+			spots = append(spots, faceAt(ids[i], label, cols[i], row2))
+			continue
+		}
+		spots = append(spots, faceAt(ids[i], label, cols[i-3], row1))
+	}
+	return padModel(dirSpots(), spots, padBars("投币", "Start"))
 }
 
 // arcadeThree is a CPS1 panel: the three buttons a CPS1 board reads.
@@ -410,14 +581,13 @@ func arcadeName(id string) string {
 }
 
 // boardLayout builds the panel of a board the shelf names, at the moment a game
-// of it starts: the board decides how many buttons it reads, so CPS1 gets three
-// and everything above it the six of a Capcom cabinet.
+// of it starts. Every Capcom board gets the six of a cabinet, CPS1 included: CPS1
+// carries six-button games too (街头霸王 II is three punches and three kicks),
+// and a three-button panel leaves half of them with nothing to press. A game
+// that reads fewer simply has the extra keys dead, which is what a real cabinet
+// does with the unused buttons of its panel.
 func boardLayout(id string) *padLayout {
-	spots := arcadeSix()
-	if id == "cps1" {
-		spots = arcadeThree()
-	}
-	return &padLayout{ID: id, Name: arcadeName(id), Spots: spots}
+	return &padLayout{ID: id, Name: arcadeName(id), Spots: arcadeSix()}
 }
 
 // layoutID is a board's name written as an id: lowercase, one dash where the
@@ -1056,19 +1226,28 @@ func bindDown(b padBind, keys map[int]bool, pads map[int]map[int]bool) bool {
 
 // maskOf is the RetroPad held this frame for a profile: a button counts when
 // its key is down, or its gamepad button is. A macro counts as all the buttons
-// it presses.
-func maskOf(l *padLayout, prof map[string]padBind, keys map[int]bool, pads map[int]map[int]bool) map[int]bool {
+// it presses. ids is what the running core calls each spot (padIDsFor): a press
+// goes to the id the core gave that button, which is not the same order on every
+// core. Without it the drawn ids are used.
+func maskOf(l *padLayout, prof map[string]padBind, ids map[string][]int, keys map[int]bool, pads map[int]map[int]bool) map[int]bool {
 	if l == nil {
 		return nil
 	}
 	held := make(map[int]bool, 8)
 	for _, s := range l.Spots {
 		b := prof[s.ID]
-		if bindDown(b, keys, pads) {
-			for _, t := range targetsOf(s) {
-				if id, ok := padRetroIds[t]; ok && id >= 0 {
-					held[id] = true
-				}
+		if !bindDown(b, keys, pads) {
+			continue
+		}
+		if one := ids[s.ID]; len(one) > 0 {
+			for _, id := range one {
+				held[id] = true
+			}
+			continue
+		}
+		for _, t := range targetsOf(s) {
+			if id, ok := padRetroIds[t]; ok && id >= 0 {
+				held[id] = true
 			}
 		}
 	}
@@ -1087,12 +1266,13 @@ func (a *App) pushPad() {
 	masks[0] = a.padMask(0, keys, pads)
 	masks[1] = a.padMask(1, keys, pads)
 	a.core.SetPads(masks)
+	a.padCheckKeys(a.padPanelNow(), a.padProfile(a.padLive), keys, pads, masks[0])
 }
 
 // padMask is the RetroPad one player's port reads this frame: the model's
 // buttons, plus the direction that player's stick hold key is keeping on.
 func (a *App) padMask(player int, keys map[int]bool, pads map[int]map[int]bool) map[int]bool {
-	l := padLayoutFor(a.padLive)
+	l := a.padPanelNow()
 	if l == nil {
 		return nil
 	}
@@ -1100,7 +1280,7 @@ func (a *App) padMask(player int, keys map[int]bool, pads map[int]map[int]bool) 
 	if player == 1 {
 		prof = a.padProfile2(a.padLive)
 	}
-	held := maskOf(l, prof, keys, pads)
+	held := maskOf(l, prof, a.padIDs, keys, pads)
 	// The hold key is a button of its own: pressed while the stick is tilted it
 	// keeps that direction on; pressed with nothing tilted it lets it go.
 	hb := prof["lshold"]

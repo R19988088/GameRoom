@@ -9,6 +9,7 @@ package core
 import (
 	"fmt"
 	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -44,6 +45,13 @@ type Session struct {
 	// setPort plugs a controller into a port: a core that reads the device
 	// type leaves its input uninitialised until one is announced.
 	setPort uintptr
+
+	// descs is what the core said about its own buttons (SET_INPUT_DESCRIPTORS),
+	// the machine's names for the retropad's ids. It is the only place the button
+	// order can be read from: FBNeo reads Button 1 from B and Button 2 from A,
+	// MAME reads Button 2 from Y, and a Street Fighter cabinet puts the punches
+	// on Y/X/L. Written once at load, before any frame runs.
+	descs []InputDesc
 
 	keys  atomic.Value // keyMasks, RETROK codes held down, by port
 	binds atomic.Value // bindTables, each player's VK to RETROK table
@@ -92,6 +100,11 @@ type Session struct {
 	pendPitch int
 	pendBL    bool
 
+	// turn is the rotation the core asked for in SET_ROTATION, in degrees
+	// clockwise: a mahjong table's screen is mounted upside down, and MAME says
+	// so instead of turning the picture itself when it runs in libretro mode.
+	turn atomic.Int32
+
 	closed int32
 	quit   chan struct{}
 	done   chan struct{}
@@ -137,7 +150,7 @@ var (
 )
 
 // Start loads a core and its content and leaves it ready to be stepped.
-func Start(corePath, romPath, systemDir string) (*Session, error) {
+func Start(corePath, romPath, systemDir string, options ...string) (*Session, error) {
 	installExceptionFilter()
 	if os.Getenv("GAMEROOM_DEBUG") != "" {
 		fmt.Fprintf(os.Stderr, "start: core=%q rom=%q sys=%q\n", corePath, romPath, systemDir)
@@ -149,6 +162,7 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 	}
 	s := &Session{dll: h, quit: make(chan struct{}), done: make(chan struct{}), sndDone: make(chan struct{}), fps: 60,
 		tasks: make(chan *coreTask, 16)}
+	dumpPath = os.Getenv("GAMEROOM_DUMP")
 	coreName = strings.TrimSuffix(filepath.Base(corePath), "_libretro.dll")
 	// The options saved beside the core are what RetroArch would have answered;
 	// a core that reads them expects the same answers here, or it runs on values
@@ -156,6 +170,24 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 	// black screen. The config folder sits beside the cores folder, not in the
 	// system folder a caller may have swapped for an ASCII mirror.
 	loadCoreOptions(coreName, filepath.Dir(filepath.Dir(corePath)))
+	// Options the caller decides for this launch only, as "key=value": a game
+	// running with ips patches has to tell FBNeo that its set may differ from the
+	// one the driver's checksums expect. They are applied on top of the saved
+	// options and the launcher's own choices, and they last this session.
+	for _, opt := range options {
+		k, v, ok := strings.Cut(opt, "=")
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if k == "" {
+			continue
+		}
+		if coreVars[coreName] == nil {
+			coreVars[coreName] = map[string]string{}
+		}
+		coreVars[coreName][k] = v
+	}
 	// Geolith boots from a BIOS zip it finds in the system folder. A home
 	// (AES) cartridge needs aes.zip; without one, every cartridge here runs
 	// on the MVS board the library ships.
@@ -281,21 +313,27 @@ func Start(corePath, romPath, systemDir string) (*Session, error) {
 	// itself, while a console core wants the rom inside it — the file when it
 	// insists on a path, the bytes when it can take them in memory. Doing this
 	// here is what lets a library of zipped console roms run at all.
-	loadPath := romPath
+	// MAME-family cores read the path as command line text and open files through
+	// the ANSI code page: the launcher's Chinese folder names ("rom\majiang\80年")
+	// reach it as a system name and a stray option, and the game never starts.
+	// Such a rom is hard linked under an ASCII folder first; the bytes are the
+	// same file, only the name the core sees changes.
+	playPath := asciiRomPath(coreName, romPath)
+	loadPath := playPath
 	var romData []byte
-	if isZip(romPath) && !si.blockExtract {
+	if isZip(playPath) && !si.blockExtract {
 		if si.needFullPath {
-			if p, ok := romFromZip(romPath, cacheRoot(workDir)); ok {
+			if p, ok := romFromZip(playPath, cacheRoot(workDir)); ok {
 				loadPath = p
 			}
-		} else if b, ok := romBytesFromZip(romPath); ok {
+		} else if b, ok := romBytesFromZip(playPath); ok {
 			romData = b
 		}
 	} else if !si.needFullPath {
 		// A core that does not ask for the path expects the frontend to hand it
 		// the rom's bytes, the way RetroArch does; one that only gets a path may
 		// come up with an empty board.
-		if b, err := os.ReadFile(romPath); err == nil && len(b) < 256<<20 {
+		if b, err := os.ReadFile(playPath); err == nil && len(b) < 256<<20 {
 			romData = b
 		}
 	}
@@ -477,6 +515,7 @@ func (s *Session) Run() {
 					s.frames++
 					copy(s.frame.Pix, buf)
 					s.mu.Unlock()
+					s.turnFrame()
 				}
 			}
 			if os.Getenv("GAMEROOM_DEBUG") != "" && s.frames < 40 {
@@ -487,6 +526,7 @@ func (s *Session) Run() {
 		keysSum += keysDur
 		prepSum += prep
 		frameCount++
+		s.dumpFrame()
 		if os.Getenv("GAMEROOM_DEBUG") != "" && frameCount%120 == 0 && frameCount >= 120 {
 			winN := frameCount - lastN
 			winT := time.Since(lastT)
@@ -581,6 +621,121 @@ func (s *Session) Frames() int {
 	return s.frames
 }
 
+// Rotation is the spin the core asked the frontend for, in degrees clockwise.
+func (s *Session) Rotation() int { return int(s.turn.Load()) }
+
+// turnDegrees turns the core's quarter-turn count into the clockwise degrees
+// turnRGBA understands. The count runs the other way round: MAME reports
+// "Screen rotation: 180deg" and hands over 2, while a Psikyo vertical shooter
+// hands over 1 — a frame whose text reads sideways until the picture is turned
+// anti-clockwise, i.e. 270 degrees of the clockwise sense used here.
+func turnDegrees(quarters int) int {
+	switch quarters {
+	case 1:
+		return 270
+	case 2:
+		return 180
+	case 3:
+		return 90
+	}
+	return 0
+}
+
+// dumpPath is where GAMEROOM_DUMP asks one settled frame to be written, so a
+// picture can be looked at without someone sitting at the window — the way a
+// board whose games may all be mounted upside down is checked.
+var (
+	dumpPath string
+	dumped   atomic.Bool
+)
+
+// dumpFrame writes the first settled frame to GAMEROOM_DUMP once per process,
+// after the spin the core asked for has been applied, so the file is what the
+// window shows.
+func (s *Session) dumpFrame() {
+	if dumpPath == "" || dumped.Load() || s.Frames() < 90 {
+		return
+	}
+	if !dumped.CompareAndSwap(false, true) {
+		return
+	}
+	f := s.Frame()
+	if f == nil {
+		return
+	}
+	out, err := os.Create(dumpPath)
+	if err != nil {
+		return
+	}
+	defer out.Close()
+	_ = png.Encode(out, f)
+}
+
+// turnFrame turns the frame the core just drew into the orientation it asked
+// for in SET_ROTATION. A mahjong table's tube is mounted upside down, and MAME
+// running in libretro rotation mode says so rather than turning the picture
+// itself; 180 is that case, and it is done in place. 90 and 270 swap the
+// picture's sides, so they are laid into a fresh image.
+func (s *Session) turnFrame() {
+	deg := s.Rotation()
+	if deg == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.frame == nil || s.w <= 1 || s.h <= 1 {
+		return
+	}
+	img := turnRGBA(s.frame, deg)
+	s.frame = img
+	s.w, s.h = img.Bounds().Dx(), img.Bounds().Dy()
+}
+
+// turnRGBA turns a picture by 90, 180 or 270 degrees clockwise. 180 is the
+// mahjong table's case: the rows are swapped in place and every row is
+// reversed, which is what makes it a turn rather than a mirror. 90 and 270
+// swap the picture's sides, so they are laid into a fresh image.
+func turnRGBA(img *image.RGBA, deg int) *image.RGBA {
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	pix, stride := img.Pix, img.Stride
+	if deg == 180 {
+		row := make([]byte, w*4)
+		for y := 0; y < h/2; y++ {
+			top, bot := y*stride, (h-1-y)*stride
+			copy(row, pix[top:top+w*4])
+			copy(pix[top:top+w*4], pix[bot:bot+w*4])
+			copy(pix[bot:bot+w*4], row)
+		}
+		for y := 0; y < h; y++ {
+			off := y * stride
+			for x := 0; x < w/2; x++ {
+				a, b := off+x*4, off+(w-1-x)*4
+				pix[a], pix[b] = pix[b], pix[a]
+				pix[a+1], pix[b+1] = pix[b+1], pix[a+1]
+				pix[a+2], pix[b+2] = pix[b+2], pix[a+2]
+				pix[a+3], pix[b+3] = pix[b+3], pix[a+3]
+			}
+		}
+		return img
+	}
+	out := image.NewRGBA(image.Rect(0, 0, h, w))
+	for y := 0; y < h; y++ {
+		line := pix[y*stride : y*stride+w*4]
+		for x := 0; x < w; x++ {
+			var nx, ny int
+			if deg == 90 { // clockwise: the top row becomes the right column
+				nx, ny = h-1-y, x
+			} else { // 270: the top row becomes the left column
+				nx, ny = y, w-1-x
+			}
+			o, p := ny*out.Stride+nx*4, x*4
+			copy(out.Pix[o:o+4], line[p:p+4])
+		}
+	}
+	return out
+}
+
 // PixelFormat is the buffer format the core asked for, for diagnostics.
 func (s *Session) PixelFormat() int { return s.format }
 
@@ -606,17 +761,35 @@ func (s *Session) Paused() bool { return s.paused.Load() }
 func (s *Session) Step() { s.stepOnce.Store(true) }
 
 // Close ends the game and lets the core free what it held.
+//
+// The teardown is not allowed to hold the window: Flycast and MAME 2010 can
+// spend tens of seconds in retro_unload_game (a Dreamcast game waiting on its
+// own threads), and the launcher used to sit on that call with the library
+// hidden behind a black page. It runs on its own goroutine now, and after a
+// few seconds the window is handed back regardless — a stuck core leaks its
+// thread instead of freezing the app.
 func (s *Session) Close() {
 	if !atomic.CompareAndSwapInt32(&s.closed, 0, 1) {
 		return
 	}
 	close(s.quit)
-	<-s.done
-	if s.audio != nil {
-		s.audio.close()
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		<-s.done
+		if s.audio != nil {
+			s.audio.close()
+		}
+		s.call(s.unload)
+		s.call(s.deinit)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(4 * time.Second):
+		if os.Getenv("GAMEROOM_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "close: core did not return in 4s, leaving it\n")
+		}
 	}
-	s.call(s.unload)
-	s.call(s.deinit)
 	// The library stays loaded: a core that is unloaded and loaded again in the
 	// same process does not always come back, and a game may well be followed
 	// by another one on the same core.
@@ -772,6 +945,24 @@ func envCallback(cmd, data uintptr) uintptr {
 		return 0
 	}
 	switch int(cmd) & 0xffff {
+	case 1: // SET_ROTATION: the picture is to be turned
+		// A mahjong table's tube is mounted upside down, and other boards are
+		// mounted sideways: MAME in "libretro" rotation mode does not turn the
+		// picture itself, it asks the frontend to. Whoever ignores this draws a
+		// mahjong screen head over heels and a vertical shooter lying on its side.
+		//
+		// The payload is a quarter-turn count, not degrees: 1 is 90, 2 is 180, 3
+		// is 270. MAME logs "Screen rotation: 180deg" for 电子基盘 and hands over 2.
+		quarters := 0
+		if data != 0 && readable(data) {
+			quarters = int(*(*uint32)(ptr(data)))
+		}
+		deg := turnDegrees(quarters)
+		active.turn.Store(int32(deg))
+		if os.Getenv("GAMEROOM_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "rotation: core asked for %d quarters = %d degrees\n", quarters, deg)
+		}
+		return 1
 	case 3: // GET_CAN_DUPE
 		if data != 0 {
 			*(*bool)(ptr(data)) = true
@@ -780,6 +971,26 @@ func envCallback(cmd, data uintptr) uintptr {
 	case 10: // SET_PIXEL_FORMAT
 		if data != 0 {
 			active.format = int(*(*uint32)(ptr(data)))
+		}
+		return 1
+	case 11: // SET_INPUT_DESCRIPTORS: the core's own names for the retropad's buttons
+		// Kept, and asked for again with GAMEROOM_PADMAP set: the button order
+		// differs between cores (FBNeo reads Button 1 from B and 2 from A, MAME
+		// reads 2 from Y), and this list is the only place a core says so itself.
+		if data != 0 {
+			descs := make([]InputDesc, 0, 24)
+			for d := (*retroInputDescriptor)(ptr(data)); d.Description != nil; d = (*retroInputDescriptor)(unsafe.Pointer(uintptr(unsafe.Pointer(d)) + unsafe.Sizeof(*d))) {
+				desc := InputDesc{
+					Port: int(d.Port), Device: int(d.Device), Index: int(d.Index),
+					ID: int(d.ID), Name: cstrp(d.Description),
+				}
+				descs = append(descs, desc)
+				if os.Getenv("GAMEROOM_PADMAP") != "" {
+					fmt.Fprintf(os.Stderr, "padmap port=%d device=%d index=%d id=%d %s\n",
+						desc.Port, desc.Device, desc.Index, desc.ID, desc.Name)
+				}
+			}
+			active.descs = descs
 		}
 		return 1
 	case 9, 30, 31: // system, core assets, save directory
@@ -926,6 +1137,32 @@ type retroCoreOptionDefinition struct {
 type retroCoreOptionsIntl struct {
 	US    *retroCoreOptionDefinition
 	Local *retroCoreOptionDefinition
+}
+
+// retroInputDescriptor is one entry of the list a core hands over with
+// SET_INPUT_DESCRIPTORS: which button of the retropad it reads for which input
+// of the machine, by the machine's own name ("P1 Button 1", "P1 Weak Punch",
+// "B"). It is what settles the order of the buttons per core instead of
+// guessing: FBNeo reads Button 1 from B and Button 2 from A, MAME the other way
+// round, and a panel that draws the machine's buttons has to know which is which.
+type retroInputDescriptor struct {
+	Port, Device, Index, ID uint32
+	Description             *byte
+}
+
+// InputDesc is one button of a core's pad, as the core named it.
+type InputDesc struct {
+	Port, Device, Index, ID int
+	Name                    string
+}
+
+// InputDescs is the list a core announced, for the panel to read the button
+// order from. Empty for a core that announces nothing.
+func (s *Session) InputDescs() []InputDesc {
+	if s == nil {
+		return nil
+	}
+	return s.descs
 }
 
 // keepOptions reads the list a core hands over and remembers each key's
@@ -1418,6 +1655,7 @@ func videoCallback(data, w, h, pitch uintptr) uintptr {
 		s.frames++
 		copy(s.frame.Pix, buf)
 		s.mu.Unlock()
+		s.turnFrame()
 		return 0
 	}
 	if s.hwOn {
@@ -1452,6 +1690,7 @@ func videoCallback(data, w, h, pitch uintptr) uintptr {
 			fmt.Fprintf(os.Stderr, "hw: frame %d %dx%d mean=%.1f lit=%d ctx=%d\n", s.frames, width, height, float64(sum)/float64(len(buf)/4*3), nz, glContextID())
 		}
 		s.mu.Unlock()
+		s.turnFrame()
 		return 0
 	}
 	if data == 0 {
@@ -1517,6 +1756,7 @@ func videoCallback(data, w, h, pitch uintptr) uintptr {
 			}
 		}
 	}
+	s.turnFrame()
 	return 0
 }
 

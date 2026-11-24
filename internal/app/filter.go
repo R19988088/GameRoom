@@ -1126,8 +1126,21 @@ func (a *App) knobSwitch(c *ui.Context, t *ui.Theme, k knob) {
 	// A switch is narrower than a bar, so it takes the right edge the bars end on
 	// rather than starting where they do.
 	ui.Box(c).Grow(1)
-	// The switch of a phone's settings: a short track, a knob that sits at the
-	// end it is not, green once it is on.
+	if switchTrack(c, on) {
+		if on {
+			a.setKnob(k, 0.0)
+		} else {
+			a.setKnob(k, 1.0)
+		}
+	}
+}
+
+// switchTrack is the settings switch of the panels: a 44×26 track, a knob at the
+// end it is not, green once it is on — the switch of a phone's settings. The
+// filter panel and the ips rows of the card menu draw the same one at the same
+// size, so a switch looks and clicks the same wherever it appears. It reports
+// whether it was clicked.
+func switchTrack(c *ui.Context, on bool) bool {
 	track := ui.ButtonBase(c).Width(44).Height(26).Background(ui.Hex("#00000000"))
 	track.Draw(func(p *ui.Painter, r ui.Rect) {
 		trackColor := ui.Hex("#ffffff2b")
@@ -1139,13 +1152,7 @@ func (a *App) knobSwitch(c *ui.Context, t *ui.Theme, k knob) {
 		p.Fill(ui.Rect{X: r.X, Y: r.Y + 2, W: 44, H: 22}, trackColor, 11)
 		p.Fill(ui.Rect{X: knobX, Y: r.Y + 4, W: 18, H: 18}, ui.Hex("#f7f8fa"), 9)
 	})
-	if track.Clicked() {
-		if on {
-			a.setKnob(k, 0.0)
-		} else {
-			a.setKnob(k, 1.0)
-		}
-	}
+	return track.Clicked()
 }
 
 // knobStepper is the glass control of a parameter: the arrows at its ends take a

@@ -78,7 +78,7 @@ func (a *App) padPanel(c *ui.Context, t *ui.Theme) {
 			Shadow(0, 26, 60, 0, ui.Hex("#000000cc"))
 		col.Children(func() {
 			a.padHeader(c, t)
-			if l := padLayoutFor(a.padLive); l != nil {
+			if l := a.padPanelNow(); l != nil {
 				a.padConfigRow(c, t)
 				ui.Row(c).Gap(8).AlignItems(ui.Start).Children(func() {
 					a.padColumn(c, t, l, 0)
@@ -150,7 +150,7 @@ func (a *App) padHeader(c *ui.Context, t *ui.Theme) {
 				return
 			}
 			name := "键盘"
-			if l := padLayoutFor(a.padLive); l != nil {
+			if l := a.padPanelNow(); l != nil {
 				name = l.Name
 			}
 			ui.Text(c, name).FontSize(12).FontWeight(700).

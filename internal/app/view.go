@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -210,8 +213,45 @@ func (a *App) toolbar(c *ui.Context, t *ui.Theme) {
 				a.contentRow(c, t)
 			})
 		})
-		a.searchField(c, t)
+		// The refresh pill and the search belong together: they are what asks
+		// the shelf what it holds, so they sit as one pair at the bar's right
+		// end instead of among the chips.
+		ui.Row(c).Height(46).Gap(6).AlignItems(ui.Center).Children(func() {
+			a.refreshPill(c, t)
+			a.searchField(c, t)
+		})
 	})
+}
+
+// refreshPill rereads the library from the database: a rom copied in, a cover
+// fetched or an edit made outside the shelf shows up without restarting it.
+func (a *App) refreshPill(c *ui.Context, t *ui.Theme) {
+	p := a.chipBase(c, 32, false).PaddingX(11)
+	if p.Hovered() {
+		p.Border(1, ui.Hex("#ffffff4d"))
+	}
+	p.Children(func() {
+		ui.Text(c, "刷新").FontSize(12).FontWeight(500).TextColor(t.TextMuted).SingleLine()
+	})
+	p.Label("刷新列表")
+	if p.Clicked() {
+		// The rom folder is read again first, so a dump copied in beside the
+		// others arrives as a card of its own, then the library is reread at the
+		// top of the next frame, before the lines are cut from its games.
+		a.later(func() {
+			n, err := 0, error(nil)
+			if a.db != nil {
+				n, err = library.Rescan(a.db, a.root)
+			}
+			a.reload()
+			switch {
+			case err != nil:
+				a.status = "扫描 rom 失败：" + err.Error()
+			case n > 0:
+				a.status = fmt.Sprintf("刷新完成：新增 %d 个", n)
+			}
+		})
+	}
 }
 
 // glass is one pill of the top row: a plate of glass the covers show through,
@@ -310,36 +350,59 @@ func (a *App) contentRow(c *ui.Context, t *ui.Theme) {
 	// PC: one platform per machine) or, when a platform runs several systems
 	// (掌机: GBA / PSP / NGP), the chips built from the cores. The split says
 	// which: splitGroup leaves no menus when the machine is the platform.
-	if a.axis == library.AxisMachine || a.axis == "" {
-		if len(a.chips) == 0 {
-			top := a.topPlatforms(5)
-			if len(top) < 2 {
-				return
-			}
-			for _, p := range top {
+	machine := a.axis == library.AxisMachine || a.axis == ""
+	platforms := machine && len(a.chips) == 0
+	if platforms && len(a.topPlatforms(5)) < 2 {
+		return
+	}
+
+	// 收藏 stands before the five, on this shelf only.
+	if a.favTotal > 0 || a.special == specialFav {
+		a.chip(c, t, "收藏", a.favTotal, a.special == specialFav, func() {
+			a.chooseSpecial(specialFav)
+		})
+	}
+	// 全部 is the way back from a value on the axis. A shelf whose machine is
+	// its platform has no such value — the chips below are the machines — so
+	// there it is only drawn while 收藏 or 其他 is showing, as the way back.
+	if !platforms || a.special != "" {
+		count := a.shelfTotal
+		if platforms {
+			count = a.platformTotal
+		}
+		a.chip(c, t, "全部", count, a.special == "" && a.menu == "", func() { a.chooseMenu("") })
+	}
+
+	// 其他's own page lists no single category on top: the body's headers say
+	// which machine (or board) each run of cards belongs to.
+	if a.special != specialOther {
+		if platforms {
+			for _, p := range a.topPlatforms(5) {
 				p := p
 				a.chip(c, t, p.Name, a.counts[p.Key], p.Key == a.platform, func() {
 					a.choosePlatform(p.Key)
 				})
 			}
-			if rest := a.restPlatforms(5); len(rest) > 0 {
-				a.morePlatforms(c, t, rest)
+		} else {
+			for _, m := range a.topChips() {
+				m := m
+				a.chip(c, t, m.Name, m.Count, a.menu == m.Name, func() { a.chooseMenu(m.Name) })
 			}
-			return
 		}
-		a.chip(c, t, "全部", a.shelfTotal, a.menu == "", func() { a.chooseMenu("") })
-		for _, m := range a.chips {
-			m := m
-			a.chip(c, t, m.Name, m.Count, a.menu == m.Name, func() { a.chooseMenu(m.Name) })
-		}
+	}
+	a.otherChip(c, t)
+}
+
+// otherChip is 其他: the categories the bar's five had no room for. It only
+// appears when there is something in it, and on its own page it is the chip
+// that is lit.
+func (a *App) otherChip(c *ui.Context, t *ui.Theme) {
+	if a.otherTotal <= 0 && a.special != specialOther {
 		return
 	}
-
-	a.chip(c, t, "全部", a.shelfTotal, a.menu == "", func() { a.chooseMenu("") })
-	for _, m := range a.chips {
-		m := m
-		a.chip(c, t, m.Name, m.Count, a.menu == m.Name, func() { a.chooseMenu(m.Name) })
-	}
+	a.chip(c, t, "其他", a.otherTotal, a.special == specialOther, func() {
+		a.chooseSpecial(specialOther)
+	})
 }
 
 // axisSwitch is the little pill at the left of the middle section: it names
@@ -395,7 +458,8 @@ func (a *App) topPlatforms(n int) []library.Platform {
 	return top
 }
 
-// restPlatforms are the ones 更多 holds.
+// restPlatforms are the ones 其他 holds: everything the bar's five chips left
+// out.
 func (a *App) restPlatforms(n int) []library.Platform {
 	top := a.topPlatforms(n)
 	shown := map[string]bool{}
@@ -411,58 +475,6 @@ func (a *App) restPlatforms(n int) []library.Platform {
 	return rest
 }
 
-// morePlatforms is the 更多 chip: the shelf's platforms that did not fit,
-// with their counts.
-func (a *App) morePlatforms(c *ui.Context, t *ui.Theme, rest []library.Platform) {
-	anchor := a.chipBase(c, 32, false)
-	if anchor.Hovered() {
-		anchor.Border(1, ui.Hex("#ffffff4d"))
-	}
-	anchor.Children(func() {
-		ui.Text(c, "更多").FontSize(12).FontWeight(500).TextColor(t.TextMuted).SingleLine()
-		ui.Text(c, fmt.Sprint(len(rest))).FontSize(10).TextColor(t.TextMuted.Alpha(0.7))
-	})
-	if anchor.Clicked() {
-		a.moreOpen = !a.moreOpen
-		a.shelfOpen = false
-	}
-
-	ui.PopoverBase(c, anchor, &a.moreOpen, func(panel ui.Element) {
-		panel.Width(232).Padding(7).Radius(16).
-			Background(ui.Hex("#17181ff5")).
-			Border(1, ui.Hex("#ffffff1f")).
-			Shadow(0, 22, 48, 0, ui.Hex("#000000b8"))
-		panel.Children(func() {
-			ui.Column(c).Gap(2).Children(func() {
-				for _, p := range rest {
-					p := p
-					row := ui.ButtonBase(c).Height(36).PaddingX(11).Radius(10).
-						AlignItems(ui.Center).Gap(8)
-					if p.Key == a.platform {
-						row.Background(ui.Hex("#e8763a1f"))
-					} else if row.Hovered() {
-						row.Background(ui.Hex("#ffffff12"))
-					}
-					row.Children(func() {
-						color := t.TextMuted
-						if p.Key == a.platform {
-							color = t.Accent
-						}
-						ui.Text(c, p.Name).FontSize(12.5).FontWeight(600).
-							TextColor(color).SingleLine().Grow(1)
-						ui.Text(c, fmt.Sprint(a.counts[p.Key])).FontSize(10).
-							TextColor(t.TextMuted.Alpha(0.7))
-					})
-					if row.Clicked() {
-						a.moreOpen = false
-						a.choosePlatform(p.Key)
-					}
-				}
-			})
-		})
-	})
-}
-
 // searchField is the right pill: the same short pill as the chips, with the
 // field sitting directly on its one plate of glass.
 func (a *App) searchField(c *ui.Context, t *ui.Theme) {
@@ -470,7 +482,7 @@ func (a *App) searchField(c *ui.Context, t *ui.Theme) {
 	plate.Width(248).PaddingX(11)
 	plate.Children(func() {
 		in := ui.TextInputBase(c.Key("search"), &a.query).Fill().FontSize(12).
-			TextColor(t.Text).Placeholder("搜索游戏名").Label("搜索游戏名").
+			TextColor(t.Text).Placeholder("搜索游戏名 / rom 名").Label("搜索游戏名").
 			PlaceholderColor(t.TextMuted.Alpha(0.65))
 		if in.Changed() {
 			a.refilter()
@@ -616,26 +628,22 @@ func (a *App) layout(w float32) bool {
 }
 
 // header labels a section: the value its chip names, and how many games it
-// holds. Clicking it files the shelf by that value alone.
+// holds. It is a label, not a button: it used to file the shelf by that value
+// when clicked, and a click on it — anywhere along the strip, or on the words
+// themselves — collapsed the shelf to that one group, which reads as the shelf
+// leaving. The chip above already does that job, and does it visibly.
 func (a *App) header(c *ui.Context, t *ui.Theme, ln *line) {
 	s := a.sections[ln.head]
-	r := ui.Row(c).Absolute().Left(4).Right(0).Top(ln.top).Height(headH).
-		Gap(8).AlignItems(ui.Center)
 	if s.name == "" {
 		return
 	}
-	r.Children(func() {
+	ui.Row(c).Absolute().Left(4).Top(ln.top).Height(headH).
+		Gap(8).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, s.name).FontSize(13).FontWeight(700).
 			TextColor(t.Text.Alpha(0.92)).SingleLine()
 		ui.Text(c, fmt.Sprint(s.count)).FontSize(10.5).
 			TextColor(t.TextMuted.Alpha(0.6))
 	})
-	if r.Clicked() {
-		a.chooseMenu(s.name)
-	}
-	if r.Hovered() {
-		r.Background(ui.Hex("#ffffff0a"))
-	}
 }
 
 // card is one game: its cover at its own aspect ratio, and its title. A click
@@ -656,7 +664,7 @@ func (a *App) card(c *ui.Context, t *ui.Theme, idx int) {
 				cover.Border(2, t.Accent)
 			}
 			cover.Children(func() {
-				if bmp := a.cover(a.coverAbs(g.Cover)); bmp != nil {
+				if bmp := a.cover(a.coverAbs(a.cardCover(g))); bmp != nil {
 					// Contain, not Cover: a flyer keeps its own shape
 					// instead of being cropped to the card.
 					ui.Image(c, bmp).Fill().Fit(ui.Contain).Radius(10)
@@ -666,12 +674,16 @@ func (a *App) card(c *ui.Context, t *ui.Theme, idx int) {
 				}
 			})
 
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+				// 星在标题左边：没收藏也占同样宽的一个位子，收藏与否标题都对齐。
+				star := ui.Box(c).Width(10).Height(14).AlignItems(ui.Center)
+				star.Children(func() {
+					if g.Favorite {
+						ui.Text(c, "★").FontSize(9).TextColor(t.Accent)
+					}
+				})
 				ui.Text(c, g.Title).FontSize(12).FontWeight(500).TextColor(t.Text).
 					SingleLine().Grow(1)
-				if g.Favorite {
-					ui.Text(c, "★").FontSize(9).TextColor(t.Accent)
-				}
 			})
 
 			// The versions of this game hang under it: which dump plays, and
@@ -696,6 +708,25 @@ func (a *App) card(c *ui.Context, t *ui.Theme, idx int) {
 			a.lastClick, a.lastClickAt = g.ID, now
 			a.chosen = idx
 		}
+	}
+
+	// A dump dragged from Explorer onto this card is filed under it: the drop
+	// writes a note in the library, and the rom stays in its folder.
+	if files := b.DroppedFiles(); len(files) > 0 {
+		a.mergeDumps(g, files)
+	}
+
+	// 按住 Ctrl 拖一张卡到另一张上，两张合成一张：被拖的那局成为这一卡的
+	// 改版，名字不同也照并。只有按着 Ctrl 这张卡才是拖的来源，所以平时拖动
+	// 卡片不会顺手抓走一局。
+	if c.Modifiers()&ui.Ctrl != 0 {
+		b.Drag(cardDrag{id: g.ID})
+	}
+	if d, ok := ui.DragOver[cardDrag](b); ok && d.id != g.ID {
+		b.Border(2, t.Accent)
+	}
+	if d, ok := ui.Drop[cardDrag](b); ok && d.id != g.ID {
+		a.mergeCards(d.id, g.ID)
 	}
 
 	// The card's own menu, on the right button: its fields can be corrected
@@ -770,7 +801,8 @@ func (a *App) cardMenuPanel(c *ui.Context, t *ui.Theme, panel ui.Element, g libr
 			ui.Row(c).Height(30).PaddingX(8).Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, g.Title).FontSize(12).FontWeight(600).TextColor(t.Text).
 					SingleLine().Grow(1)
-				ui.Text(c, "右键").FontSize(10).TextColor(t.TextMuted.Alpha(0.55))
+				ui.Text(c, romNameOf(g)).FontSize(10).TextColor(t.TextMuted.Alpha(0.55)).
+					SingleLine()
 			})
 			ui.Box(c).Height(1).Background(ui.Hex("#ffffff1f"))
 
@@ -813,9 +845,113 @@ func (a *App) fieldList(c *ui.Context, t *ui.Theme, g library.Game) {
 			a.cardField, a.cardEdit = f.key, false
 		}
 	}
-	ui.Row(c).Height(26).PaddingX(9).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, "单击选择 · 双击输入").FontSize(10).TextColor(t.TextMuted.Alpha(0.55))
+	ui.Box(c).Height(1).Background(ui.Hex("#ffffff1f"))
+	a.favoriteRow(c, t, g)
+	// A dump that shares its title with others can be sent out on its own: it
+	// keeps a card of its own from then on (取消合并).
+	if len(a.verMembers[a.verFam[g.ID]]) > 1 {
+		a.splitRow(c, t, g)
+	}
+	a.folderRow(c, t, g)
+	// 最下面一段是这台机器上的 ips 补丁：只有 数据/ips 里真有这个 rom 的补丁才画，
+	// 不弹第二个窗口，行尾的开关当场开关。
+	a.ipsSection(c, t, g)
+}
+
+// romNameOf is the dump's file name without its extension, which the card's
+// menu shows at its top right: several dumps can hang under one title, and the
+// name tells which one this is.
+func romNameOf(g library.Game) string { return romStem(g.RomPath) }
+
+// cardCover is the picture a card shows: the cover of the dump that plays for
+// it, and the card's own when that dump has none — so switching the default
+// version switches the cover too.
+func (a *App) cardCover(g library.Game) string {
+	if c := a.versionTarget(g).Cover; c != "" {
+		return c
+	}
+	return g.Cover
+}
+
+// splitRow is the menu's 取消合并: this dump stops being a version of the title
+// it is filed under and gets a card of its own. The dumps beside it stay as they
+// were — only this one comes apart.
+func (a *App) splitRow(c *ui.Context, t *ui.Theme, g library.Game) {
+	row := ui.ButtonBase(c).Height(32).PaddingX(9).Radius(9).
+		AlignItems(ui.Center).Gap(8)
+	if row.Hovered() {
+		row.Background(ui.Hex("#ffffff10"))
+	}
+	row.Children(func() {
+		ui.Text(c, "⇱").FontSize(12).TextColor(t.TextMuted.Alpha(0.85))
+		ui.Text(c, "取消合并").FontSize(12).FontWeight(500).
+			TextColor(t.Text.Alpha(0.9)).SingleLine().Grow(1)
+		ui.Text(c, "只取消这一个").FontSize(10).TextColor(t.TextMuted.Alpha(0.6))
 	})
+	if row.Clicked() {
+		a.splitDump(g.ID)
+	}
+}
+
+// favoriteRow is the menu's own button: it stars the card, which puts it on
+// the bar's 收藏 page, or takes the star away.
+func (a *App) favoriteRow(c *ui.Context, t *ui.Theme, g library.Game) {
+	row := ui.ButtonBase(c).Height(32).PaddingX(9).Radius(9).
+		AlignItems(ui.Center).Gap(8)
+	if row.Hovered() {
+		row.Background(ui.Hex("#ffffff10"))
+	}
+	row.Children(func() {
+		star, label := "☆", "添加收藏"
+		if g.Favorite {
+			star, label = "★", "取消收藏"
+		}
+		ui.Text(c, star).FontSize(13).TextColor(t.Accent)
+		ui.Text(c, label).FontSize(12).FontWeight(500).
+			TextColor(t.Text.Alpha(0.9)).SingleLine().Grow(1)
+	})
+	if row.Clicked() {
+		a.toggleFavorite(g.ID)
+	}
+}
+
+// folderRow is the menu's last line: the two folders this dump lives in, side
+// by side. 拖动、替换 rom 都在资源管理器里做，所以只把目录打开，不改任何东西。
+func (a *App) folderRow(c *ui.Context, t *ui.Theme, g library.Game) {
+	ui.Row(c).Height(30).Gap(6).Children(func() {
+		a.folderButton(c, t, "rom 目录", filepath.Dir(filepath.Join(a.root, "rom", filepath.FromSlash(g.RomPath))))
+		a.folderButton(c, t, "封面目录", filepath.Join(a.root, "数据", "covers"))
+	})
+}
+
+func (a *App) folderButton(c *ui.Context, t *ui.Theme, label, dir string) {
+	b := ui.ButtonBase(c).Height(30).Radius(9).Grow(1).PaddingX(9).
+		AlignItems(ui.Center).Justify(ui.Center).
+		Border(1, ui.Hex("#ffffff24"))
+	if b.Hovered() {
+		b.Background(ui.Hex("#ffffff10")).Border(1, ui.Hex("#ffffff4d"))
+	}
+	b.Children(func() {
+		ui.Text(c, label).FontSize(11).TextColor(t.Text.Alpha(0.85)).SingleLine().
+			Grow(1).TextAlign(ui.Center)
+	})
+	b.Label("打开 " + label)
+	if b.Clicked() {
+		a.openFolder(dir)
+	}
+}
+
+// openFolder shows a folder in Explorer; a folder that is not there says so in
+// the status line instead of opening some other place.
+func (a *App) openFolder(dir string) {
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		a.status = "目录不存在：" + dir
+		return
+	}
+	cmd := exec.Command("explorer.exe", dir)
+	if err := cmd.Start(); err != nil {
+		a.status = "打不开目录：" + err.Error()
+	}
 }
 
 // fieldValues is the menu after a click: what that field could be set to.

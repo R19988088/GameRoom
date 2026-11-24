@@ -49,7 +49,7 @@ func newTestApp(lib *library.Library, platform string) *App {
 	return a
 }
 
-// TestTopPlatformsShowsFive: the bar carries five chips and 更多 keeps the
+// TestTopPlatformsShowsFive: the bar carries five chips and 其他 keeps the
 // rest.
 func TestTopPlatformsShowsFive(t *testing.T) {
 	a := newTestApp(manyPlatforms(), "fc")
@@ -87,33 +87,33 @@ func TestTopPlatformsKeepsTheChosenOne(t *testing.T) {
 }
 
 // TestBarHasThreeParts: the shelf picker on the left, the platform chips in
-// the middle with 更多, and the search field on the right, in that order.
+// the middle with 其他, and the search field on the right, in that order.
 func TestBarHasThreeParts(t *testing.T) {
 	a := newTestApp(manyPlatforms(), "fc")
 	tt := ui.NewTester(a.view, 1400, 900)
 	tt.Frame()
 
-	var shelf, more, search ui.Rect
+	var shelf, other, search ui.Rect
 	var found int
 	for _, info := range tt.AccessAll() {
 		r := info.Bounds
 		switch {
 		case strings.HasPrefix(info.Name, "家用机"):
 			shelf, found = r, found|1
-		case strings.HasPrefix(info.Name, "更多"):
-			more, found = r, found|2
+		case strings.HasPrefix(info.Name, "其他"):
+			other, found = r, found|2
 		case strings.HasPrefix(info.Name, "搜索"):
 			search, found = r, found|4
 		}
 	}
 	if found != 7 {
-		t.Skipf("not every part was found: %b", found)
+		t.Fatalf("not every part was found: %b", found)
 	}
-	if shelf.X+shelf.W >= more.X {
-		t.Errorf("shelf picker (%v) is not left of 更多 (%v)", shelf, more)
+	if shelf.X+shelf.W >= other.X {
+		t.Errorf("shelf picker (%v) is not left of 其他 (%v)", shelf, other)
 	}
-	if more.X+more.W >= search.X {
-		t.Errorf("更多 (%v) overlaps the search field (%v)", more, search)
+	if other.X+other.W >= search.X {
+		t.Errorf("其他 (%v) overlaps the search field (%v)", other, search)
 	}
 	if search.X+search.W > 1400 {
 		t.Errorf("the search field runs past the window: %v", search)

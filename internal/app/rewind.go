@@ -20,6 +20,15 @@ const (
 	rewindSegment    = 100 * time.Millisecond
 	rewindCostBudget = 2 * time.Millisecond
 	rewindMaxEntries = 240
+	// A core whose state is expensive still deserves a row long enough to step
+	// through: ten segments of history, as far as the byte budget allows.
+	rewindMinEntries = 10
+	// Past these, a row would cost the game more than it gives back: a state
+	// that takes a fifth of a second to write stops the machine visibly, and
+	// one over half the byte budget leaves a row of two. Those cores still get
+	// the nine save slots — the timeline is what is left out, not saving.
+	rewindCostCeiling = 300 * time.Millisecond
+	rewindMaxState    = rewindBytes / 2
 )
 
 // rewindEntry is one captured state and the frame it was taken on.
@@ -34,9 +43,18 @@ type rewindEntry struct {
 // the segment grows to the next tenth of a second rather than to whatever the
 // cost works out to: the timeline always reads in round hundreds of
 // milliseconds, and a PlayStation, whose state takes 10–15ms to write, steps back
-// 200ms at a time instead of 133.
+// 200ms at a time instead of 133. When a state is so big that two seconds would
+// be two captures, the row still keeps rewindMinEntries of them if the byte
+// budget allows, so a heavy core has a timeline instead of a single step.
 func rewindPlan(size int, fps float64, cost time.Duration) (step, max int) {
 	if size <= 0 {
+		return 0, 0
+	}
+	// A state that is enormous, or slow to be written, cannot fill a row that
+	// anyone would step through: the whole row would be two snapshots, and each
+	// one stops the machine. No row at all is the honest answer; saving still
+	// works through the panel.
+	if size > rewindMaxState || cost > rewindCostCeiling {
 		return 0, 0
 	}
 	if fps <= 0 {
@@ -60,6 +78,12 @@ func rewindPlan(size int, fps float64, cost time.Duration) (step, max int) {
 		span = 60
 	}
 	max = span / step
+	// A core that is slow to be caught (Citra, a Dreamcast) would otherwise keep
+	// two captures and call it a timeline. Ten is the floor; the byte budget below
+	// is what actually stops the row from growing when a state is enormous.
+	if max < rewindMinEntries {
+		max = rewindMinEntries
+	}
 	if byBytes := int(rewindBytes / int64(size)); byBytes < max {
 		max = byBytes
 	}
@@ -67,7 +91,9 @@ func rewindPlan(size int, fps float64, cost time.Duration) (step, max int) {
 		max = rewindMaxEntries
 	}
 	if max < 2 {
-		max = 2
+		// Two snapshots a second apart are not a timeline; the plan answers
+		// "none" and the panel says why.
+		return 0, 0
 	}
 	return step, max
 }
@@ -85,6 +111,10 @@ type rewind struct {
 	idx     int // the entry the picture is at, -1 for the live edge
 	frozen  bool
 	note    string
+	// noState is a core that has no save state at all. A core whose state is
+	// merely too big or too slow to keep a row is still savable: the panel's
+	// slots work, only the timeline is left out.
+	noState bool
 	entries []rewindEntry
 	cost    time.Duration
 }
@@ -98,6 +128,7 @@ func (r *rewind) reset() {
 	r.frozen = false
 	r.entries = nil
 	r.note = ""
+	r.noState = false
 	r.cost = 0
 	r.fps = 0
 }
@@ -230,6 +261,17 @@ func (a *App) captureRewind(s *core.Session) {
 		r.mu.Unlock()
 		return
 	}
+	// Before the first snapshot, the core's own declaration says whether a row
+	// is possible at all: a hundred-megabyte state would be paid for once and
+	// then never kept, so it is not even written. Dolphin is the case here.
+	if !r.planned {
+		if sz := s.StateSizeNow(); sz > rewindMaxState {
+			r.planned, r.step, r.max = true, 0, 0
+			r.note = "这个核心一份存档太大，时间轴没有开；存档面板照旧可用"
+			r.mu.Unlock()
+			return
+		}
+	}
 	r.last = n
 	r.mu.Unlock()
 
@@ -242,15 +284,21 @@ func (a *App) captureRewind(s *core.Session) {
 	if err != nil {
 		// A core that answered 0 has no state to give: the panel says so instead
 		// of offering a row that can never be filled.
-		r.step, r.max, r.planned, r.note = 0, 0, true, err.Error()
+		r.step, r.max, r.planned, r.note, r.noState = 0, 0, true, err.Error(), true
 		return
 	}
 	if !r.planned || cost > 2*rewindCostBudget {
 		step, max := rewindPlan(len(data), s.FPS(), cost)
-		r.step, r.max = step, max
-		r.fps = s.FPS()
+		r.step, r.max, r.fps = step, max, s.FPS()
 	}
 	r.planned = true
+	if r.step == 0 || r.max == 0 {
+		// The plan measured the state and refused it: too large to keep a row,
+		// or so slow to write that every capture would be a visible stop. Saving
+		// itself still works, so this is not a core without a state.
+		r.note = "这个核心一份存档太慢太大，时间轴没有开；存档面板照旧可用"
+		return
+	}
 	r.cost = cost
 	r.add(n, data)
 }

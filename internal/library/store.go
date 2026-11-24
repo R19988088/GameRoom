@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS game (
 	region       TEXT NOT NULL DEFAULT '',
 	board        TEXT NOT NULL DEFAULT '',
 	favorite     INTEGER NOT NULL DEFAULT 0,
+	family       INTEGER NOT NULL DEFAULT 0,
+	solo         INTEGER NOT NULL DEFAULT 0,
+	ips          TEXT NOT NULL DEFAULT '',
 	core         TEXT NOT NULL DEFAULT '',
 	sim_id       INTEGER NOT NULL DEFAULT 0
 );
@@ -132,6 +135,27 @@ func Open(path string) (*sql.DB, error) {
 			return nil, fmt.Errorf("add name: %w", err)
 		}
 	}
+	// 改版 by hand: the card a dump is filed under, and whether it keeps a card
+	// of its own. Both came with the version picker's second round.
+	if !hasColumn(db, "game", "family") {
+		if _, err := db.Exec(`ALTER TABLE game ADD COLUMN family INTEGER NOT NULL DEFAULT 0`); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("add family: %w", err)
+		}
+	}
+	if !hasColumn(db, "game", "solo") {
+		if _, err := db.Exec(`ALTER TABLE game ADD COLUMN solo INTEGER NOT NULL DEFAULT 0`); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("add solo: %w", err)
+		}
+	}
+	// IPS patches switched on for a dump arrived with the patch menu.
+	if !hasColumn(db, "game", "ips") {
+		if _, err := db.Exec(`ALTER TABLE game ADD COLUMN ips TEXT NOT NULL DEFAULT ''`); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("add ips: %w", err)
+		}
+	}
 	return db, nil
 }
 
@@ -200,6 +224,30 @@ func Imported(db *sql.DB) bool {
 // SetCover records a game's cover, relative to 数据/.
 func SetCover(db *sql.DB, gameID int, cover string) error {
 	_, err := db.Exec(`UPDATE game SET cover = ? WHERE id = ?`, cover, gameID)
+	return err
+}
+
+// SetFavorite stars a game, or takes the star away: the card's menu writes it
+// here, and the bar's 收藏 page reads it back on the next start.
+func SetFavorite(db *sql.DB, gameID int, on bool) error {
+	_, err := db.Exec(`UPDATE game SET favorite = ? WHERE id = ?`, boolInt(on), gameID)
+	return err
+}
+
+// FileDump says how a dump is shown beside its title: under the card of game
+// base (0 to let the title decide), and soloed when it keeps a card of its own
+// whatever its title says. Moving dumps by hand is a note in this table; the
+// roms are not moved on disk.
+func FileDump(db *sql.DB, gameID, base int, solo bool) error {
+	_, err := db.Exec(`UPDATE game SET family = ?, solo = ? WHERE id = ?`,
+		base, boolInt(solo), gameID)
+	return err
+}
+
+// SetIPS records which patch groups of 数据/ips this dump plays with: the
+// card's menu writes it here, and the launch reads it back on the next game.
+func SetIPS(db *sql.DB, gameID int, groups []string) error {
+	_, err := db.Exec(`UPDATE game SET ips = ? WHERE id = ?`, joinList(groups), gameID)
 	return err
 }
 
@@ -319,7 +367,7 @@ func Load(db *sql.DB) (*Library, error) {
 	// menus from the games, so a shelf's chips follow one fixed standard.
 
 	grows, err := db.Query(`SELECT id, platform_key, menu, title, name, rom_path, size, cover, year,
-		publisher, genre, region, favorite, core, sim_id, board
+		publisher, genre, region, favorite, core, sim_id, board, family, solo, ips
 		FROM game ORDER BY favorite DESC, title`)
 	if err != nil {
 		return nil, err
@@ -328,7 +376,7 @@ func Load(db *sql.DB) (*Library, error) {
 		var g Game
 		if err := grows.Scan(&g.ID, &g.PlatformKey, &g.Menu, &g.Title, &g.Name, &g.RomPath, &g.Size,
 			&g.Cover, &g.Year, &g.Publisher, &g.Genre, &g.Region, &g.Favorite,
-			&g.Core, &g.SimID, &g.Board); err != nil {
+			&g.Core, &g.SimID, &g.Board, &g.Family, &g.Solo, &g.IPS); err != nil {
 			grows.Close()
 			return nil, err
 		}

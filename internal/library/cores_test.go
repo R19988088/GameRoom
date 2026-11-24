@@ -13,7 +13,9 @@ func TestCanonicalCore(t *testing.T) {
 		{"SEGA", "SEGA/SS/Shinobi X.cue", "mednafen_saturn"},
 		{"SEGA", "SEGA/Model 2/vf2b.zip", "mame"},
 		{"SEGA", "SEGA/Model 3/vf3.zip", "mame"},
-		{"ps", "ps/ps/Final Fantasy VII.cue", "duckstation"},
+		// DuckStation crashes in this process, so PS1 runs Mednafen PSX; that is
+		// the core the launcher would run, so it is the one the library names.
+		{"ps", "ps/ps/Final Fantasy VII.cue", "mednafen_psx"},
 		{"ps", "ps/ps2/Gundam.iso", "pcsx2"},
 		{"任天堂", "任天堂/3ds/Hey Pikmin.cia", "citra"},
 		{"任天堂", "任天堂/GB/龙珠Z.gb", "gearboy"},

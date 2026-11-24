@@ -189,8 +189,9 @@ func TestSavePanelCrossesOffACoreWithoutState(t *testing.T) {
 	}
 }
 
-// TestSavable: the two ways a core can have no slots are a core that declares no
-// state and one whose first capture came back empty.
+// TestSavable: a core has no slots only when it declares no state, or when its
+// first capture came back empty. A state that is merely too heavy for the
+// timeline (step 0, but the core did write it) still gets the nine slots.
 func TestSavable(t *testing.T) {
 	var fresh rewind
 	if !savable(true, &fresh) {
@@ -201,10 +202,17 @@ func TestSavable(t *testing.T) {
 	}
 	var broken rewind
 	broken.mu.Lock()
-	broken.planned, broken.step = true, 0
+	broken.planned, broken.step, broken.noState = true, 0, true
 	broken.mu.Unlock()
 	if savable(true, &broken) {
 		t.Fatalf("a core whose first capture came back empty is savable")
+	}
+	var heavy rewind
+	heavy.mu.Lock()
+	heavy.planned, heavy.step = true, 0
+	heavy.mu.Unlock()
+	if !savable(true, &heavy) {
+		t.Fatalf("a heavy core that writes state but keeps no timeline lost its slots")
 	}
 	var good rewind
 	good.mu.Lock()

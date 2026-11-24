@@ -35,8 +35,25 @@ exe/           构建产物 GameRoom.exe
 ```powershell
 cd "E:\game\GameRoom"
 $env:GOPROXY="https://goproxy.cn,direct"; $env:GOSUMDB="off"   # 国内网络
-go build -o "E:\game\Sim ui_D\exe\GameRoom.exe" .
+go build -ldflags "-s -w -H windowsgui" -o "E:\game\Sim ui_D\exe\GameRoom.exe" .
 ```
+
+**`-H windowsgui` 不能省**（2026-11-24 踩过）：不带它 Go 默认建控制台子系统（PE 头
+`subsystem=3`），双击出来会拖一个控制台窗口，看着像「打不开」；带上才是纯窗口程序
+（`subsystem=2`，20.4MB）。`-s -w` 剥符号表，去掉是 29.6MB。核对：
+`(Get-Subsystem "exe\GameRoom.exe")` 读 PE 头 `+0x44` 那两字节，要 2。
+
+**一次只开一个**：`app.Run()` 第一行是 `mygo.App.RequestSingleInstanceLock()`。上一个实例
+**还在**（哪怕窗口已经关了、只剩个没有窗口的僵尸进程）时，新开的这一个会一直等在启动握手
+上——窗口永远不出来，进程 CPU 近 0、内存十几 MB。表现就是「点了没反应 / 在等什么」。
+诊断：`Get-Process GameRoom` 有两个 PID、新的那个 `MainWindowTitle` 空。清掉旧实例
+（`Invoke-CimMethod -InputObject (Get-CimInstance Win32_Process -Filter "ProcessId=<旧>") -MethodName Terminate`）
+后，等在半路的那一个会自己把窗口画出来。
+
+**再点一次图标要“亮”起来**（2026-11-24）：第一个实例活着时会话接得住命令行，
+`Run()` 里 `mygo.App.OnSecondInstance(func([]string,string){ raiseWindow() })` 把它
+`Restore` + `Show` + `Focus` 提到前面；没有这一条，第二个实例交完命令行就退出，屏幕上什么
+都不动，用户以为「点了没反应 / 没有窗口」。`boot()` 把 `running` 指向自己的 App，供它用。
 
 运行 `exe\GameRoom.exe`（进程名 `GameRoom`，窗口标题 "GameRoom"）。程序会自己往上找带
 `rom/`、`模拟器/`、`数据/` 的目录作为根，所以从 `源码` 里 `go run .` 也能跑。
@@ -58,7 +75,7 @@ go build -o "E:\game\Sim ui_D\exe\GameRoom.exe" .
 | --- | --- |
 | `platform` | `key`（rom 下的目录名，如 `arc`）、`name`、`grp`（货架：`arcade` / `console` / `handheld` / `pc`）、`exts`、`sort` |
 | `menu` | 某平台下的分类：`platform_key` + `name` |
-| `game` | `title`（展示名，导入时是 rom 文件名）与 `rom_path`（相对 `rom/` 的文件路径）分开；`name` 是**目录里查到的大名**（ADB 的「Short name」，如 `Alien vs. Predator`），有它卡片就显示它；`size` 为字节数（INTEGER）；`cover` 为**相对 `数据/`** 的路径（`covers/arc/dino.png`）；`favorite` 布尔；`core` 是这个游戏单独指定的核心（空 = 用 sim 的）；`sim_id`（0 = 用平台默认模拟器）|
+| `game` | `title`（展示名，导入时是 rom 文件名）与 `rom_path`（相对 `rom/` 的文件路径）分开；`name` 是**目录里查到的大名**（ADB 的「Short name」，如 `Alien vs. Predator`），有它卡片就显示它；`size` 为字节数（INTEGER）；`cover` 为**相对 `数据/`** 的路径（`covers/arc/dino.png`）；`favorite` 布尔；`family` 是手工归到哪张卡下面（0 = 按标题自动）；`solo` 布尔 = 取消合并（标题相同也单独一张卡）；`ips` 是这个 rom 打开的补丁组（`数据/ips` 里的组名，`|` 分隔，见「IPS 补丁」）；`core` 是这个游戏单独指定的核心（空 = 用 sim 的）；`sim_id`（0 = 用平台默认模拟器）|
 | `sim` | 模拟器：`exe`（相对工程根或绝对路径）、`core`（RetroArch 核心名，如 `geolith`）、`args`（其余参数，含 `{RomFullPath}` 占位符）、`is_default` |
 | `setting` | `schema`（库版本）、`imported`、`imported_at`、`imported_from` |
 
@@ -168,6 +185,35 @@ chip 里的「分类」按货架固定，由 `menuAxis` 决定，`(*Library).spl
   `chipBase(c, 32, …)`，跟中间的 chip 同形同高（32）、同半径（16）、同一层玻璃。顶栏 `Row` 仍是
   `Height(46)`，三颗矮胶囊居中摆在里面；**不要**再给左右两侧套 46 高的整块玻璃——那会立刻又
   「套层」。`layout_test.go` 的 `TestTopBarIsFlat` / `TestTopBarPillsAreOneHeight` 钉着这条。
+- **搜索框左边是「刷新」**（2026-11-24）：`refreshPill` 也是 `chipBase(c, 32, …)` 的同款胶囊，和搜索框
+  一起包在一条 `Gap(6)` 的小 `Row` 里贴在最右端（不和 chip 混在一起）。按一下 → 下一帧开头先
+  `library.Rescan` 扫 rom 目录，再 `a.reload` 重读 `launcher.db`（详见下面「刷新不只重读库」）。
+- **搜索同时比游戏名和 rom 名**（2026-11-24）：`versionMatches` 以前只比 `Title`，现在也比 `romFile(RomPath)`
+  整份文件名（含扩展名），所以「hsf2」「mjelctrn」这种文件上写的名字、连「hsf2.zip」这种带后缀的写法
+  都能砸中整张卡（族里任一份命中即可，`searchrom_test.go` 钉着）。注意是**整份文件名**，搜 "zip" 会
+  把库里的 zip 全捞出来，这是有意的。搜索框的提示文字写「搜索游戏名 / rom 名」
+  （`view.go` 的 `Placeholder`），无障碍 `Label` 仍是「搜索游戏名」——测试按这个 label 找框，别一起改。
+- **同名不同容器要露扩展名**（2026-11-24）：版本列表里「同标题的两份」本来靠 `romStem` 区分，可
+  `hsf2.7z` 和 `hsf2.zip` 的 stem 都是 `hsf2`，两行会一模一样。新的 `romTag(g)` 先看族里有没有
+  别的成员**stem 相同**：有就写整份文件名（`hsf2.7z` / `hsf2.zip`），没有才回到 stem。
+  `versionLabel`（卡片按钮上的尾巴）和 `versionName`（列表整行）都改用它。
+  `reload()` 现在先看 `a.db == nil` 再 `library.Load`——以前没库就一路走到 `QueryRow` 上空指针崩掉
+  （UI 测试里踩过）；`refresh_test.go` 钉着「在搜索框左边」和「按下去真的重读（没库时报读库失败）」。
+- **刷新不只重读库，先扫 rom 目录**（2026-11-24 实测）：`library.Rescan(db, root)` 走一遍 `rom/<平台>`，
+  把库里没有的 rom 加进来。两个坑：
+  1. **`rom/arc`、`rom/SEGA`、`rom/3DO` 是指向旧安装的 junction**。`filepath.WalkDir` **不跟链接**，会把
+     它们当成三个“文件”（ext 为空）就跳过——这就是用户往 `rom/arc/CAPCOM/STREET FIGHTER/` 丢了
+     `hsf2.zip` 后按刷新什么也没发生的原因。所以这里用自己的递归走法：`os.Stat` 跟链接、进目录，
+     `EvalSymlinks` 记一份 visited 防环。
+  2. **同一个名字换容器 = 同一张卡的另一个版本**，不是第二张卡：`hsf2.zip` 与库里已有的 `hsf2.7z`
+     同 stem，插进来时抄它的 title/menu/board/core/sim 并把 `family` 指向它的 id——卡片不变，只是
+     「版本 2」。没见过的名字才新建卡，`title` 先取文件 stem，`menu` 取 rom 下面那一层目录名
+     （`arc/CAPCOM/STREET FIGHTER/hsf2.zip` → `CAPCOM`；`majiang/无作弊版/x.zip` → `无作弊版`），
+     所以目录判断是 `len(parts) > 1`，不是 `> 2`。
+  - 只加不删：rom 被移走、卡片留着（星标、封面、手改的名字不会因为整理目录就丢）。
+  - 实测一次：`games 1019 → 1055`（街机货架 267→279、CAPCOM 50→52、SEGA 13→14、其他 130→139），
+    `hsf2.zip` 成了「超级街头霸王Ⅱ 15周年纪念版」的 `family=4874` 成员。
+  - 跑之前先备份库：`Copy-Item 数据\launcher.db 数据\launcher.db.bak-<时间>`（本机这次是 `-1443`）。
 - **组内按游戏名排序**：`file()` 先按 chip 名次分组，组内用 `titleLess`/`naturalKey` 按名字排——
   数字按数值比（街霸2 在 街霸10 前面），其余按码位比，中文顺序稳定。机种轴那种只有一组的货架
   也要排序（`len(a.chips)==0` 的分支里也要排一遍）。
@@ -178,6 +224,25 @@ chip 里的「分类」按货架固定，由 `menuAxis` 决定，`(*Library).spl
   （`library.SetName`）并同步内存里的 `Title`；点了**不筛**——一筛整个货架只剩一张卡。
   街机的「厂商」写 `publisher`；家用机/掌机的「厂商」是机子厂商（由平台/核心推出来的，不给改），
   只有「机种」能改：掌机改机种=改 `core`，家用机改机种=改 `platform_key`。
+  字段下面还有一条 **收藏/取消收藏**（`favoriteRow`）：写 `favorite` 列（`library.SetFavorite`），
+  星标同时出现在卡片标题旁与顶栏的「收藏」页。卡片上的星在**标题左边**（`card()` 里标题行先放
+  一个宽 10 的星位，没收藏也占着，收藏与否标题都对齐），`TestFavoriteStarSitsLeftOfTheTitle`
+  比两段文字的 X 盯着这条。
+  - 版式（2026-11-24 按用户要求收的）：标题行**右上角是 rom 文件名、不带扩展名**
+    （`romNameOf` = `romStem(RomPath)`，同一标题下挂好几个改版时靠它认是哪一份），
+    原来的「右键」提示去掉；字段下面的说明行（「单击选择 · 双击输入 · 拖入改版可并入」）
+    整条删掉——菜单只留字段和按钮。收藏那一行按状态写：没收藏 `☆ 添加收藏`，收藏了
+    `★ 取消收藏`（以前两边都只写「收藏」）。版本弹层里那一行的右键菜单同款：右上角 rom 名、
+    底下的「移出这个标题，单独一张卡」删掉。`cardmenu_test.go` 钉着这几条。
+  - 版本弹层（`versionPanel`）每一行**最右边写着这一份的 rom 名**（`a.romTag(m)`，同名不同容器
+    时带扩展名），依次是 标题（Grow）→ 日版/美版 → rom 名 → ✓（2026-11-24 用户圈出右侧空白要求
+    "右侧显示一下 rom 名字"）。这样两行标题一模一样时也能认出是哪一份。
+    `versionpick_test.go` 断言弹层里同时出现 `samsho2` 与 `samsho2sp`。
+  - 卡片菜单最底下是**「rom 目录」「封面目录」两个按钮，左右并排**（`folderRow`，各占一半、
+    字居中，2026-11-24 用户要求）：点了用 `explorer.exe` 打开 `rom/<RomPath 的上一级>` 和
+    `数据/covers`；目录不在就只写状态行「目录不存在：…」，不弹窗、不改数据——换 rom、换封面
+    这些事交给资源管理器做。`cardmenu_test.go`（`TestCardMenuOpensBothFolders`）钉着两件事：
+    两个按钮同一行且 rom 目录在左，缺目录只落状态行。
 - **改数据的动作排到下一帧**（`a.later`/`runQueue`，队列在 `view()` 第一行跑）：卡片菜单是在
   **这一帧的** `a.lines` 里画的，菜单里一改筛选或元数据，后面的卡还按老列表取下标，就
   `index out of range` 把窗口弄死（`TestNameRowIsTypedIn`/`TestValueClickRewritesTheGame`
@@ -185,11 +250,103 @@ chip 里的「分类」按货架固定，由 `menuAxis` 决定，`(*Library).spl
   写入照旧走 `library.SetField` / `SetPlatform` / `SetName`，改完 `SplitGroup` + `refilter`
   并保留滚动位置。
 - **瀑布流按分类分组**：`refilter()` 先筛 `a.shown`，再按 `menu` 切成 `a.sections`；每节开头插一个
-  标题行（组名大写 + 右侧灰色计数），点标题 `chooseMenu(该组)` 直接筛选到该组。`chips` 为空
-  （家用机/PC 的机种轴：机种就是平台）时只有一节且不画标题。
+  标题行（组名 + 灰色计数）。`chips` 为空（家用机/PC 的机种轴：机种就是平台）时只有一节且不画标题。
+  **标题条是纯标签，不是按钮**（2026-11-24 用户反馈"点击中间的横条会退出"、"点击左面这个小标题
+  还是会退出 你不能用裁切来隐藏"）：以前 `header()` 的 `ui.Row` 是 `Left(4).Right(0)` 拉满整宽、
+  `Clicked()` 挂在这条上，点空白或点组名都会把整个货架收到那一家，看起来像货架突然退出。中途只把
+  点击缩小到 `label` 小 Row 被用户否掉——**用户明确反对用裁切/缩小点击区掩盖问题**——所以现在整条
+  连 `Clicked()` 和 hover 背景都没有，只有两个 `ui.Text`（组名、计数），筛选用顶栏的 chip。
+  `header_test.go`（`TestSectionHeadingIsOnlyALabel`）钉着：点标题文字与点横条空白都不改
+  `a.menu`/`a.special`/`a.shown`。
+- **封面缓存要上锁，否则窗口会静默消失**（2026-11-24 复查"退出"时实测）：`a.covers`/`a.icons`/
+  `a.pending` 和 `a.jobs`/`a.loading` 由 `a.imgMu`（`sync.Mutex`）保护。解码在 goroutine 里收尾，
+  有窗口时 `a.win.Update(done)` 投到 UI 线程，但没有窗口时（headless 测试）`done()` 直接在解码
+  goroutine 上写 map，同时这一帧正在读同一张 map —— Go 报 `fatal error: concurrent map read and
+  map write`，fatal 不走 recover、不写 Application 事件日志，进程就那么没了（与"点一下窗口自己关掉、
+  事件日志里什么都没有"吻合）。`image()` 拿锁进，`pumpImagesLocked()` 在锁内派活，`done()` 在锁内
+  写缓存并接着排下一张，`reload()` 换新 map 也拿锁；`imagequeue_test.go` 反复催 30 张封面盯着这条。
+- **顶栏只列五个分类，其余进「其他」**：`topChips()` 取 `a.chips` 前五（机种轴取 `topPlatforms(5)`），
+  `a.otherTotal = shelfTotal - 前五之和`，第六个往后全靠「其他」一个 chip（`otherChip`）。进「其他」
+  时顶栏**不再列任何具体分类**，正文改用 `fileByMachine()`：标题按硬件分小组（街机/麻将优先用基板
+  `BoardNameOf`，没基板就落平台名；掌机用核心映出的机器；家用机就是平台），组内仍按游戏名排。
+  `a.special` 记着当前是不是这两个页面（""=普通 chip，"fav"/"other"）——切 chip、切轴、切货架、
+  换平台都要把它清空（`chooseMenu/choosePlatform/chooseAxis/chooseGroup`）。原来的「更多」弹层已撤掉。
+- **改版（版本族）**：`buildVersions` 先按标题归一（`normTitle` 去掉括号注释与 sp/特别版/中文版等后缀，`versionKeyOf` 取最短前缀，
+  `sequelRemainder` 挡住 2/III/Kids 这类续作），把同一平台的改版归到一个 `verFam` 键上，卡片只出**基准那一张**，
+  其余挂在卡片下的「版本 N」弹层里。**手工归并/拆分写在库里，不动磁盘**：`game.family`（= 基准卡的 id）让一个标题
+  不同的改版也归到那张卡下，`game.solo`（= 取消合并）让标题相同的改版单独一张卡；两者都在标题归一之后覆盖，
+  所以手工结论不会被 `longer/distinct` 那条规则再拆开。货架内才生效（跨平台的 family 指针忽略）。
+  - 归并：**从资源管理器拖 zip/7z 到卡片上**（多选拖、不用按 Ctrl/⌘），`card()` 里 `b.DroppedFiles()` 收路径，
+    `gameByFile` 按文件名（或去扩展名）在同平台里找那一行 → `library.FileDump(db, id, baseID, false)`；
+    同名的 `zip`/`7z` 都算同一个 rom。**库里没有的文件只报数，不自动导入**（入库要复制 rom，属于导入流程）。
+  - 归并（卡片到卡片，2026-11-24）：**按住 Ctrl 把一张卡拖到另一张卡上**，两张合成一张——被拖的那局成为那张卡的
+    改版，**名字完全不同也照并**（`JoJo's Venture` 并进 `JOJO的奇妙冒险` 就是这一条）。`card()` 里
+    `if c.Modifiers()&ui.Ctrl != 0 { b.Drag(cardDrag{id}) }` 才让卡片成为拖的来源（不按 Ctrl 拖动不会抓走卡片），
+    目标卡 `ui.DragOver[cardDrag]` 时描一圈橙色，松手 `ui.Drop[cardDrag]` → `mergeCards` → `later` → `mergeInto`
+    （落到 `versionBase(*dst)`，族不套族；跨平台只提示不写库）。和拖文件那条一样，改完
+    `buildVersions` + `recount` + `refilter` 并保留滚动位置。测试：`carddrag_test.go`（不带 Ctrl 的拖动什么都不并、
+    带 Ctrl 拖过去并成一张卡）。
+  - 拆分：卡片右键菜单的「取消合并」（`splitRow`，族里不止一张时才出现，行右侧写「只取消这一个」）和版本弹层里**每一行的右键菜单**
+    （`ui.ContextMenuBase` + `a.vmenu` 每行一个 open 指针，别复用卡片的 `a.opens`）→ `library.FileDump(db, id, 0, true)`。
+    `setSolo` 里**先把还指着这张卡的改版改指到族里剩下的那张**（`baseOf(remaining)`），再把这局写成 solo：
+    族里的成员是按 `family` 记的 id 挂的，拆的正好是基准卡时，别的改版还写着「跟着它」，
+    `buildVersions` 又把它们归回去——看上去就是「点了取消合并没反应、拆不开」（2026-11-24 用户报的）。
+    测试：`split_test.go`（拆基准卡后它单独一张、剩下两张仍是一张卡；拆普通改版只动它自己）。
+  - 两个动作都排到下一帧（`mergeDumps`/`mergeCards`/`splitDump` → `later` → `mergeFiles`/`mergeInto`/`setSolo`），改完要
+    `buildVersions` + `recount` + `refilter` 并保留滚动位置。
+  - **版本弹层是单击**（2026-11-24 用户要求，原来是双击）：`versionPanel` 里一行 `row.Clicked()` → `pickVersion`
+    （`setVersionDefault` 写 `版本:<fam>` 这条设置，再 `verSel`、关弹层）。弹层里原来那条「双击设为默认」
+    提示也删了。`setVersionDefault` 里 `db == nil` 要先跳过（`library.SetSetting` 收 nil db 会直接崩）。
+    测试：`versionpick_test.go` 的 `TestOneClickPicksAVersion`。
+  - **每行写完整名字**（2026-11-24）：`versionName(m)` = 整个标题（同名两份才补 `· rom名`），基准那份也写自己的
+    全名——不再有「主 ROM」这一行，是不是正在跑只靠行尾那个 `✓` 和橙色底。卡面上那个小按钮仍旧用短标签
+    `versionLabel`（只写尾巴，如 `霸王丸地狱变 sp`），那里面子小，写全名会溢出。
+  - **封面跟着默认版本走**：`card()` 里画封面用 `a.cardCover(g)` —— `versionTarget(g).Cover`，那一版没封面
+    才回落到基准卡自己的。切默认版本，标题下那张图跟着换（`TestCardCoverFollowsTheDefaultVersion`）。
+- **IPS 补丁**（2026-11-24，`internal/ips` + `internal/app/ipsrow.go`）：rom 的 `.ips` 补丁由前端自己套，
+  核心只管读前端交过去的文件。
+  - **位置是 `数据/ips/<rom 文件名去扩展名>/`**（如 `数据/ips/jojojr1/`），一个目录一个 set，跟 MAME Plus
+    的 ips 目录同名同序；也认 `数据/ips/<平台 key>/<rom 名>/` 和 `数据/ips/<游戏标题>/`（手工整理的目录）。
+    三种都扫，同名组只认第一个。
+  - **两种格式都认**：`.dat` 是一组（MAME Plus 的清单：`目标文件<TAB>补丁名<TAB>CRC(D1E4836D)`，补丁名省略
+    `.ips`；`[zh_CN]` 这种段落是说明不是补丁）；没有 `.dat` 认领的 `.ips` 自己成一组，改哪个文件靠文件名
+    的尾巴（`组名-ch-a-604.u17.ips` → 目标 `ch-a-604.u17`），单文件 set 就改那一个。IPS 与 IPS32 两种头
+    都读（`PATCH` 3 字节偏移、`IPS32` 4 字节偏移），`长度=0` 是 RLE、`EOF` 后面可以再跟新长度。
+  - **开关在卡片右键菜单最下面**：`fieldList` 最后（`folderRow` 之下）调 `ipsSection`——一行 `ips` 标题 +
+    `N 组`，再每组一行，行尾 `ui.Switch`。目录里没有这个 rom 的补丁就**整段都不画**（用户要求「没有就不显示」）。
+    版本弹层里每一行的右键菜单（`splitMenuPanel`）底下也挂同一段。点击开关当场写库，不排下一帧（列表不变）。
+  - **状态记在 `game.ips`**（`|` 分隔的组名，`library.SetIPS`，`Game.IPSOn`/`IPSGroups` 由
+    `splitList` 拆），启动时只认「库里开着 且 目录里还在」的组。
+  - **启动不碰 `rom/`**：`ips.Prepare(rom, groups, 模拟器/RetroArch/cache/ips)` 把补丁套到一份副本上
+    （`<stem>-<8 位签名>/<原文件名>`；签名 = 组名 + 每个补丁的大小与修改时间，改过补丁就换目录），
+    `.dat` 里的 CRC 与目标对不上直接报错、不启动。zip 里没被补丁改的成员用 `CreateRaw` 原样搬，改过的
+    重新 deflate；不是 zip 的 rom 整份打。副本目录里把 rom 原目录的兄弟文件硬链接进去（`linkSiblings`），
+    父集/BIOS 才找得到。
+  - **副本怎么交给核心，两套走法**（`launchGame`）：
+    - `fbneo` / `fbneo_plus`（`isFBNeoCore`）：**把副本放到 `<核心收到的 system>/fbneo/patched/<set>.zip`**
+      （`stagePatchedSet`，硬链接、跨盘则拷贝），rom 参数照给原 rom，同时用 `core.Start(..., options...)`
+      传 `fbneo-allow-patched-romsets=enabled`。核心读到这份就按名字取成员、**完全不查 CRC**，
+      日志会打 `[FBNeo] Patched romset found at …`。
+      实测证据：往 `patched\dino.zip` 里塞一个改了 1 字节（CRC 必然不符）的 `cde_23a.8f`，
+      核心照常起画面且画面确实变了（mean 0.60 → 3.83）——所以走过的就是这份文件。
+      直接把重打包 zip 当 rom 递进去是**不行**的（`ROM … is missing`），别再试。
+    - 其他核心（`mame` 等）：直接把副本当 rom 给（`playRom = patched`），MAME 本来就忽略 CRC。
+    - 这次没开补丁 → `clearPatchedSet` 把这个 set 在 `fbneo/patched` 里的残留删掉，
+      否则关掉开关后 FBNeo 还会捡上次那份跑。
+  - **标题栏报组数**：启动时 `SetWindowTitle(ipsTitle(g.Title, n))` → `JOJO的奇妙冒险    ips启用 2 组`，
+    没开补丁就是原名；退出仍回 `GameRoom`。
+  - 测试：`internal/ips/ips_test.go`（.dat 分组、zip 成员被打/其他成员不动且原 zip 未被写、CRC 不符拒补、
+    平文件、IPS32 与 RLE）；`internal/app/ips_test.go`（有补丁才画且在最下面、没补丁不画、开关点击写库、
+    计数进标题）。
+- **收藏排在前五之前**：`a.favTotal` 是整货架（当前 group）的星标数，>0 时顶栏第一颗就是「收藏」，
+  再是「全部」、前五、「其他」。收藏页 `special == specialFav`，正文同样按硬件分组；在收藏页里取消
+  收藏，那张卡当场消失。星的写入排到下一帧（`toggleFavorite` → `later` → `setFavorite`），
+  与改元数据同一条队列。机种轴的货架（chip 就是机台）**平时不画「全部」**——选中的那台机器就是
+  全部——只有 收藏/其他 页面上才画一颗「全部」（计数用 `platformTotal`）当退路；在这两个页面上
+  再点一次亮着的那颗，也会退回货架（`chooseSpecial` 自己就是开关）。
 - 位置由 `internal/app/layout_test.go` 的 `TestTopBarIsFlat` 盯着：三样东西同一行（比中心点）、
   两两之间有空隙、chip 比货架按钮矮（不套层）、整行底边在 70 以内、卡片不钻到顶栏下面；
-  `bar_test.go` 还盯着货架在最左、`更多` 不压搜索框；`shelf_test.go` 确认菜单点得开；
+  `bar_test.go` 还盯着货架在最左、`其他` 不压搜索框；`shelf_test.go` 确认菜单点得开；
   `shelf_one_test.go` 确认单机种货架不画机种 chip、麻将自成货架；`render_test.go` 采样像素确认
   搜索框的玻璃真的画出来了。
 - **封面一张一张解码**：`a.image()` 只把路径塞进 `a.jobs` 队列（`pending` 去重），
@@ -204,8 +361,9 @@ chip 里的「分类」按货架固定，由 `menuAxis` 决定，`(*Library).spl
   基板 = `board`（MAME driver source）经 `BoardOf` 折成牌子名（`MVS`/`CPS1`/`CPS2`/`ST-V`/`NAOMI`…
   没收录就大写源名兜底）；年份按时间线降序、未知排末（`unknownRank`/`yearRank`）；机种在
   家用机就是平台本身（无分类），在掌机按核心映出的机器（`machineOf`）。
-- 街机默认开厂商而非基板：`board` 只有 124/267 抓得到（ADB 没页的 romset 就没有 driver source），
-  默认开基板会让一半游戏落进「未标注基板」。
+- 街机默认开厂商而非基板：`board` 历史上只有 124/267 抓得到（ADB 没页的 romset 就没有 driver source），
+  默认开基板会让一半游戏落进「未标注基板」。2026-11-24 用 `cmd/boardfill` 从 MAME 机器表补齐后街机只剩 2 个空的，
+  想默认开基板再说，先看一遍 `go run ./cmd/boards -platform arc`。
 - 进一个货架、或切到机种轴时，选的是**局数最多**的那台机器（`biggestPlatform`），不是平台表第一行
   ——否则家用机会开局停在只有 1 个游戏的 3DO。
 - 封面用 `Fit(Contain)` 保持原始比例（街机 flyer 不裁切），卡片本身 16:9 左右。
@@ -384,6 +542,106 @@ shader），只认 `config/` 下的 per-content 全局预设。所以 `launch.In
   都在窗内、✕ 不越过玻璃）、点存档位选不建档、无游戏时点空位只说原因不落文件、无存档核心的九格全叉，
   以及 `fileSafe`/`shrink`/`savable`。
 
+### 存档与时间轴分开判（2026-11-24 实测）
+
+**九格存档**只看核心有没有状态：`retro_serialize_size` 答 0，或者第一次捕获写出来是空的，就画 ✕。
+**时间轴**还要看一份状态多大、写一份多慢：`rewindPlan` 现在先判两条门槛——一份状态超过 `rewindMaxState`
+（64MB，即字节预算的一半）或写一份超过 `rewindCostCeiling`（300ms）就直接答 0/0，一条都不留；
+`max < 2`（两秒的跨度里凑不出两条）也答没有。这样 100MB 级的状态（Dolphin 107MB、1.2 秒一次）
+不会每段卡一下机器。**超界的核心只丢时间轴，九格照旧**：`rewind.noState` 只为「核心根本没状态」置位，
+`savable()` 读它，而不是读 `step <= 0`。
+
+`cmd/corecheck` 逐核心量的结果（一份状态 = 核心声明的大小；存/读都在 `Do` 的任务里量；秒数是捕获一次的开销）：
+
+| 系统 | 核心 | 起画面 | 存档 | 一份状态 | 存 / 读 | 时间轴 |
+| --- | --- | --- | --- | --- | --- | --- |
+| FC | `fceumm` | ok | 是 | 22KB | 0ms / 0ms | 100ms × 20 |
+| SFC | `snes9x` | ok | 是 | 823KB | 14 / 19 | 100ms × 20 |
+| GB | `gearboy` | ok | 是 | 385KB | 17 / 64 | 100ms × 20 |
+| GBA | `mgba` | ok | 是 | 528KB | 16 / 17 | 100ms × 20 |
+| NGP | `mednafen_ngp` | ok | 是 | 31KB | 16 / 16 | 100ms × 20 |
+| MD | `genesis_plus_gx` | ok | 是 | 145KB | 19 / 17 | 100ms × 20 |
+| SS | `mednafen_saturn` | ok | 是 | 4.7MB | 19 / 17 | 200ms × 10 |
+| PS1 | `mednafen_psx` | ok | 是 | 3.75MB（声明 16MB） | 104 / 13 | 900ms × 10 |
+| PS2 | `pcsx2` | ok（约 2 秒后出画） | 是 | 50MB | 114 / 69 | 1.1s × 2 |
+| PSP | `ppsspp` | ok（约 2 秒后出画） | 是 | 36MB | 102 / 66 | 500ms × 3 |
+| DC / NAOMI / Atomiswave | `flycast` | ok（NAOMI 先出 GD-ROM 标） | 是 | 27–59MB | 100–365 / 62–182 | 1s × 2 |
+| 3DO | `opera`（730KB 2026-11 构建） | ok（约 3 秒后出画） | 是 | 6.6MB | 24 / 33 | 200ms × 10 |
+| DOS | `dosbox_pure` | ok | 是 | 1.4MB | 17 / 31 | 200ms × 10 |
+| PC98 | `np2kai` | ok | 是 | 10.7MB | 77 / 62 | 500ms × 3 |
+| 3DS | `citra` | ok（约 2 秒后出画） | 是 | 12.7MB | 531 / 1036 | **没有**（只有九格） |
+| Wii / GC | `dolphin` | ok | 是 | 107MB | 1232 / 935 | **没有**（只有九格） |
+| 街机（FBNeo 认识的 romset） | `fbneo` / `fbneo_plus` | ok | 是 | 17–415KB | 16 / 17 | 100ms × 20 |
+| 街机（MAME 认识的 romset） | `mame` | ok | 是 | 0.5–2.4MB | 17–34 / 16–21 | 300ms × 10 |
+
+- **FBNeo 的「白屏」是它自己的错误画面**：`Romset is unknown.`，640×480、124 色、`declare=0`。
+  所以量 FBNeo 不能只看 `status=ok`，要 `declare > 0` 才算真的进游戏。
+- `mame2010`：`retro_serialize_size` 答 0（没有存档），`retro_unload_game` 会挂住，退出游戏时不再用。
+- `mame2016`：`retro_load_game` 之后第一次跑就 `0xc0000005`，整个进程一起没，已停用。
+- `mamearcade`：buildbot 上没有这个核心，只能在这台机器上用，启动 19 秒，已停用。
+- `fbalpha`：能用、能存档（269KB / 16ms），但 Windows 独占且已停更，逐步让位给 `fbneo`。
+- **关不掉的核心**：`flycast`、`mame2010` 的卸载能卡几十秒。`Session.Close` 把 `retro_unload_game`/`retro_deinit`
+  放到独立 goroutine，4 秒没回来就交还窗口（核心线程泄漏，但不再把前端冻在播放页）。
+- **MAME 系核心读 rom 路径像命令行**：`rom/majiang/80年/7toitsu.zip` 会被读成系统名「80年」外加一个杂项参数
+  （日志 `System not found: 80年` / `Error: unknown option`）。`core.Start` 里 `asciiRomPath` 先把它硬链接到
+  `<盘符>\GAMEROOM\roms\<名字>-<路径哈希>\<文件名>`（同一份字节，文件名就是 MAME 要的 driver 名），再交给核心；
+  同一文件夹里的其他文件（父集、BIOS）也一起链接进这个子目录，因为 MAME 只从“被交出去的那个文件所在目录”找父集。
+  带空格或非 ASCII 的 MAME rom 都走这条（`Sim ui_D` 本身带空格，所以放在库里 `rom\merge` 下的成品也走镜像）。
+  别的核心不镜像。两个同名补丁（都叫 `xymg.zip`）靠路径哈希分到不同子目录。
+- **缺父 romset 的街机/麻将**：MAME 日志 `xxx NOT FOUND (tried in <clone> <parent>)` + `Required files are missing`
+  说明这个 zip 只是 clone，父集（如 `mgakuen.zip`、`mjgottsu.zip`、`qsound.zip`）不在库里，任何核心都起不来；
+  这是 rom 数据缺件，不是核心没配好。先到本机三个老包（`0_ARCADE265`、`groovymame`、`安卓麻将`）里找父集，
+  找到就按 `rom\merge` 的规矩合并；找不到才是真缺。
+
+#### 街机与麻将所有权的重排（2026-11-24）
+
+旧库把 267 个街机游戏摊在 `fbalpha / fbneo / fbneo_plus / mame / mame2010 / mame2016 / mamearcade /
+flycast / geolith / mednafen_saturn / opera` 十一个核上，`sim` 表的 `name` 和 `core` 还对不上
+（名为 `MAME 2010` 的 sim 其实是 `mame`，名为 `fbneo_plus` 的 sim 其实是 `mame2016`），`arc` 没有默认 sim，
+于是 130 个没有 `board` 的游戏落到哪颗核心全看取第一条 sim 的顺序。重排的依据是逐游戏实测：
+
+- 判定标准：`status=ok` 不够，`declare > 0` 才算真的进游戏。FBNeo 不认识 romset 或 rom 缺文件时
+  也回 `status=ok`，画的是自己的 FBNeo Error 白屏（`Romset is unknown.` / `missing files for THIS VERSION`），
+  `declare=0` 正好可以把它和真游戏分开。
+- 结果：`arc` 267 个 → `fbneo` 174、`mame` 57、`flycast` 26（NAOMI/Atomiswave 一律 flycast，
+  MAME 对这批只认 `mvsc2`/`vf3` 两个）、`fbalpha` 4、`fbneo_plus` 2、`mame2003_plus` 2、`mamearcade` 1、`geolith` 1。
+  `majiang` 81 个 → 全部 `mame`（**75 个能起，6 个底包全机器都没有**）。
+- 为救回 9 个 `fbneo`/`mame` 都起不来的改版，留了四颗“补位核”：`fbneo_plus` 接 CPS3 的 `sfiii3`、STG 的 `hachamfb`；
+  `fbalpha` 接 `wofch`/`alienchac`/`samsho4sp`/`pwrinst2`；`mame2003_plus` 接 `galpans2`/`volfied`；
+  `mamearcade` 接 `kov2nl_302cn`。这九款都实测能存（一份状态 166KB–1.9MB）。`fbalpha` 是 Windows 独占且停更，
+  `mamearcade` 不在 buildbot 上，只为这几款留着，别当默认核。
+
+### 哪些核心“忽略 CRC”（2026-11-24 实测，改核前先看这张表）
+
+- `mame` / `mame2010` / `mame2003_plus` / `mamearcade` / `mame2003_midway`：**忽略CRC**。CRC 不符只打一条
+  `WRONG CHECKSUMS` 警告，照常跑；真正致命的是 `NOT FOUND` / `Required files are missing` / `WRONG LENGTH`。
+  所以“文件齐但 CRC 不同”的汉化包、bootleg 在这几颗上能起，缺件不能。
+- `fbneo` / `fbneo_plus`：默认**不忽略 CRC**，但选项文件 `config\FinalBurn Neo\FinalBurn Neo.opt` 里
+  `fbneo-allow-patched-romsets = "enabled"` 一直开着，等于对“补丁包”放行 CRC；缺文件、文件名不对仍然白屏。
+  要临时试开关用环境变量 `GAMEROOM_CORE_VAR='fbneo-allow-patched-romsets=true'`，不必改代码。
+  注意：那份 `.opt` 实际上**从来没被加载**——`core.loadCoreOptions` 兜底用 `name+"_"` 前缀匹配，
+  FBNeo 的键是 `fbneo-`（连字符）。所以跑 ips 补丁时是 `launchGame` 通过 `core.Start(...)` 的变参
+  逐个传 `fbneo-allow-patched-romsets=enabled`（见「IPS 补丁」一节），不靠 opt 文件。
+- `fbalpha` / `fbalpha2012` / `fbalpha2012_neogeo`：**不忽略 CRC**，且 `fbalpha2012` 对不认识的 set 名直接
+  `retro_load_game` 返回 false。
+
+### 缺件靠“合并底包”补，不换核
+
+- `rom\merge\<平台>\<游戏>\<驱动名>.zip` 是合并出来的成品：补丁包（`无作弊版\xxxxnc.zip`）+ 底包
+  （`90年\xxx.7z` 等）解出来叠在一起再压回去，文件名用驱动名（MAME 用文件名当系统名）。
+- 需要父集的（`7toitsu`←`mgakuen`、`bakuhatu`←`mjgottsu`、`punisherbz`←`punisher`）就把父集放在同一目录。
+- 底包不止 `Sim ui_D\rom` 里有：`E:\game\0_RetroArch_ARCADE265\RetroArch\games\ARCADE`、`0_emu\groovymame\roms`、
+  `0_emu\安卓麻将\...\RetroArch\roms` 里还有完整 set（`vf`、`tekken3`、`galpani4`、`ssf2t`、`mgakuen`、`mjgottsu`、
+  `wlcc`、`mjelct3` 等），先在这三个包里找一遍再判“缺件”。
+- 库里这些游戏的 `rom_path` 已指到成品（`menu`/`title`/封面没动，货架不变）。
+- `mame2016` 已改名为 `mame2016_libretro.dll.disabled-20261124`（它 `retro_load_game` 后第一次跑就
+  `0xc0000005`，整个进程一起没）；`mame2010` 不再被任何游戏指向。
+- `sim` 表按 (platform, core) 重建（`cmd/fixsims`）：名字跟核心走、`exe` 指回 `模拟器/RetroArch/retroarch.exe`、
+  `args` 统一 `{RomFullPath}`，不再有指向错核心的 sim；`arc` 默认 `fbneo`，`majiang` 默认 `mame`。
+- 维护工具：`cmd/audit`（平台×核心×sim 的账，`MISSING` 会点出库里不存在的 rom）、`cmd/corecheck`
+  （单核心单 rom 的启动/存档实测，`-png` 存一帧）、`cmd/coreplan`（按 plan.tsv 改归属，`-ps` 把 PS1 换成
+  mednafen_psx）、`cmd/fixsims`（按 plan 重建 sim 表和归属）、`cmd/boards`（按 board 分组的账）。
+
 ## 跨平台核对（2026-11 查 buildbot.libretro.com）
 
 | 核心 | Windows x64 | Linux x64 | macOS arm64 | macOS x64 |
@@ -541,12 +799,16 @@ RetroArch 本身不是 simUI 的一部分。
 - 平台名就是货架里的**基板名规范化后的 id**：`CPS1/CPS2/CPS3→cps1/cps2/cps3`（CPS3 面板显示 `CPSIII`）、
   `MVS→mvs`、`ST-V→st-v`、`NAOMI GD→naomi-gd`；认不出的基板名回落 `arcade`。
   `layoutID()` 把小写、空格换 `-`，`library.BoardKnown()` 判断这名字到底是不是一块基板。
-- 按钮数由基板决定：CPS1 三键、MVS 四键（`A+B`/`C+D` 组合）、其余街机六键（`ABC`/`DEF` 组合）。
+- 按钮数由基板决定：CPS1 六键（街霸 II 就是三拳三脚，CPS1 也吃六键面板）、MVS 四键（`A+B`/`C+D` 组合）、其余街机六键（`ABC`/`DEF` 组合）。
   组合键是一个 spot 按多个 RetroPad id（`padSpot.Drives`），不是额外的物理按键。
+  **MVS 的四个键排成实机那种阶梯**（`arcadeFour()`：A 最低在左，B、C 各上一级，D 与 C 平齐靠右，
+  每级 x+40 / y-23；2026-11-24 玩家画图定的），不是 2×2 方阵；画面里的四键非 SNK 机台（三国战纪那类）走 `arcadeNumbered(4)`，仍是 1/2/3 下排 + 4 上排。
+  **CPS1 里的六键机台（街霸 II）会在启动时按核心公告升级成六键面板，见「按键顺序按核心来」。**
 - 主机：FC/SFC/GB/GBA/NGP/MD（六键）/SS（六键，L/R 走 L2/R2）/PS1/PSP/3DO。
   SEGA 文件夹按路径分辨：`/ss/`→SS，`/model 2|3/`、`/stv/`、DC→`arcade`，其余→MD。
 - 六键不是按 RetroPad 的“直觉”叠的，要看核心：MD 的 A 读 Y、C 读 A、X/Y/Z 读 L/X/R；
   SS 的 A 读 B、B 读 A、C 读 R、Z 读 L。改动这些前先核对 `genesis_plus_gx` / `mednafen_saturn`。
+  **这条现在有了机器可读的来源，见下节：能问核心就别再靠手写记忆。**
 - 输入：`pushPad()` 每帧把两份掩码交给 `core.Session.SetPads`（port 0/1），核心按 `retro_set_input_state` 的 `port` 回答；
   面板自己读键用 `GetAsyncKeyState`、读手柄用 `XInputGetState`（`xinput1_4` → `9_1_0`/`1_3` 回退），四个手柄都读。
 - 面板不自己切平台：顶部只显示当前机种名（居中），没有切换条；Esc 关面板。
@@ -561,6 +823,74 @@ RetroArch 本身不是 simUI 的一部分。
   `bindPad` / `resetPadPlayer` 也只写当前选中的那一份。`savePads` 推两张键盘表，所以切 `通用` 或改专属绑定都会在下一帧到达运行中的核心。
 - 加专属时复制机器通用那一份，之后互不影响；`+` 不会重复建第二份，已有专属时只切回它。新游戏启动后若已有专属且 `通用` 关，会直接读专属。
 - 测试：`pad_test.go` 新增“复制通用后互不影响”“通用开关切回原配置”“两个游戏各存各的”“重启后专属与通用选择都还在”。
+
+### 按键顺序按核心来（2026-11-24）
+
+**别再用一张手写表赌核心的顺序。** 核心加载后会通过 `SET_INPUT_DESCRIPTORS`（环境命令 **11**）把自己每个
+RetroPad id 对应的**机器按键名**交上来，这才是权威。`core.Session` 把它收进 `descs`，`Session.InputDescs()` 取用；
+`GAMEROOM_PADMAP=1` 跑 `cmd/corecheck` 会把这张表打到 stderr（`padmap port=0 device=1 index=0 id=1 Weak Punch`）。
+
+实测（都与 `padLayout` 的手写表对过）：
+
+| 核心 / 机种 | 实际顺序 |
+|---|---|
+| `fbneo` / `fbneo_plus` / `fbalpha`（**公告晚到**） | 公告的是一台「6 面板」机台：轻拳=Y、中拳=X、重拳=L、轻脚=B、中脚=A、重脚=R；MVS 是 A=B、B=A、C=Y、D=X；`dino` 这种无名机台按公告顺序。**它的 `SET_INPUT_DESCRIPTORS` 在第一帧之后才给**，启动那一刻读到的是空表——所以启动后必须再读一次（`padLate`），否则面板照自己画的顺序发，1 会变成 4（2026-11-24 玩家实测：按 123 出 4、1、5） |
+| `mame` | 只报 RetroPad 名（A/B/X/Y/L/R），**位置映射**，面板原样 |
+| `mame2003_plus`（街机默认核，街霸就在这里跑） | 报的是带编号的机器名：`B1: Jab Punch…B6: Roundhouse Kick`。**核心自己把 2/3 接反了**：`B1=B(0)`、`B3=Y(1)`、`B2=A(8)`、`B4=X(9)`、`B5=L`、`B6=R`；方向键名也不是 Up/Down 而是 `Jump(4)/Crouch(5)/Left(6)/Right(7)` |
+| `fceumm` / `snes9x` / `genesis_plus_gx` / `mgba` / `pcsx_rearmed` | 报的是机器自己的名字，面板原有顺序**本来就对**（md 的 A=Y、C=A、X=L、Y=X、Z=R；PS 的 △=X、□=Y、○=A、×=B） |
+| `mednafen_ngp` | **A=B(0)、B=A(8)**，面板原来画反了；`Option`=3（Strat），没有 Start |
+
+- `padIDsFor(padLayout, descs)` 在**每次启动**算一张 `spot id → 要按的 retro id`（`map[string][]int`），
+  存 `a.padIDs`，`maskOf` 按它出掩码；`nil` 表示核心的说法不可用（无公告/只报 RetroPad 名）→ 照旧用面板自己写的 id。
+  解析规则：**先看名字里的机器编号**（`buttonNumberOf`：`B1:` / `Button 2` / `Fire 3` / `P1_BUTTON1`），数字 spot 直接按编号取 id
+  ——这条是给 `mame2003_plus` 兜的，它把 B2/B3 接反，只有编号能对齐；`Buttons 3x Punch` 是三键组合、不是 Button 3，正则要放过。
+  编号取不到才按名字找（`Weak Punch…`、MVS 的字母 `Button A…`）；都对不上但核心有按钮名 → 按公告顺序依次填数字 spot（`dino` 那种）；
+  组合键（ABC/DEF、A+B、C+D）按它引用的那几个 spot 解析后的 id 去按，所以“三个拳”永远还是三个拳。
+- **公告的时机也是坑。** `mame2003_plus` 在 `retro_load_game` 里就给了表，`fbneo` 要等第一帧；所以启动时读到的表可能是空的，
+  必须在帧回调里再读一次重算（`padLate`：只在第一次拿到非空表时算，重写 `数据/按键自检.txt` 的表头）。
+- 结算原则：**玩家的实测永远高于核心的自述，但先确认自己读到的是不是真的那张表。**
+- 诊断入口：`数据/按键自检.txt`，每次启动覆盖写一份（游戏、核心、核心公告、面板每个键的键盘/手柄绑定、要按的 id），
+  之后每按一下记一行「命中哪个 spot（pad/vk）→ 发给核心 held 」。玩家说“按键错”时先要（或直接读）这个文件，别再靠猜。
+- **公告顺序只在核心一个编号都没报时才能用。** `mame2003_plus` 的公告里混着 `Jump/Crouch`，把它们算进顺序会让
+  面板的 3、4 键变成“跳”和“蹲”（玩家看到的就是“按键映射到方向了”，2026-11-24 踩过）；有编号的核走编号，这条就不会触发。
+- `padPanelFor` 用核心公告**决定画几个键，两个方向都跟**：`sf2ce` 六键机台把 CPS1 的三键面板撑成六键，
+  MVS 的四键也压得住一块被错标成六键的基板（2026-11-24 玩家实测：fnbeo 下 SNK 游戏画的是六键）。改编后的面板 id/名字仍是原基板的，
+  绑定沿用；`arcadeNumbered(n)` 画 1…n（1 2 3 下排，4 5 6 上排）。
+  核心按字母报键（`Button A…D`，或 NeoGeo CD 那种裸 `A/B/C/D`——C、D 是 RetroPad 没有的字母）→ 直接上 MVS 四键（`A+B`/`C+D`），
+  名字改叫 `MVS / NEOGEO`；报 `A B C X Y Z` 的 MD 不会被误判（见到 X/Y/Z/L/R 就不算 NeoGeo）。
+  `fireButtons()` 只认 `Button N`/`fire N`/拳脚名/带机器编号名（`B1:`），FCEUmm 的 `(FDS) Disk Side Change`、`Turbo A`、`A+B` 之类不算，
+  否则一台 NES 会被撑成街机六键面板。
+- 面板画的是 `a.padPanelNow()`（本次启动的面板，没有游戏时回落 `padLayoutFor(a.padLive)`）；
+  `maskOf`、`padPanel` 都用它，否则六键面板画出来了、键却按不出来。
+- 想加新平台/新核心：先 `GAMEROOM_PADMAP=1 go run ./cmd/corecheck -core <core> -rom <rom> -secs 2`，
+  看 id 与名字，再决定要不要写进 `padLayout`；能由 `SET_INPUT_DESCRIPTORS` 决定的，就别写死。
+- 测试：`padmap_test.go` 里 `TestFBNeoStreetFighterOrder` / `TestFBNeoNeoGeoOrder` / `TestFBNeoUnnumberedMachine` /
+  `TestMAME2003PlusStreetFighterNumbersItsButtons` / `TestMAMEKeepsTheDrawnOrder` / `TestNeoGeoPocketOrder` /
+  `TestNESPadsStayNES` / `TestStreetFighterGetsSixOnACPS1Board` / `TestConsolesAlreadyAgree` /
+  `TestNeoGeoGameWearingSixKeys` / `TestNeoGeoCDPanelIsFourKeys` / `TestFourButtonCabinetGetsFourKeys` /
+  `TestThreeButtonCabinetGetsThreeKeys` / `TestMegaDriveStaysSixOfItsOwn`，用的都是实测抓下来的表。
+
+### 每个 rom 的基板：`cmd/boardfill`（2026-11-24）
+
+`board` 一列原来是空的就一直是空的（ADB 只补「缺厂商/年份」的那些），空基板 → 面板回落 `arcade` 六键，
+于是 SNK 的四键机台被画成六键。现在按 MAME 自己的机器表来填：
+
+```
+mame64 -listxml > E:\game\tmp\mame-listxml.xml      # 0_ARCADE 里那份 MAME 带 35088 个 romset，约 208MB / 30 秒
+go run ./cmd/boardfill -xml E:\game\tmp\mame-listxml.xml -dry      # 先看会改成什么
+go run ./cmd/boardfill -xml E:\game\tmp\mame-listxml.xml            # 写库（只填空的，加 -force 才覆盖）
+go run ./cmd/boardfill -xml E:\game\tmp\mame-listxml.xml -online   # MAME 不认识的再问 Arcade Italia
+```
+
+- MAME 不认识的（改版/盗版/汉化）按名字推断：**名的前缀是 MAME 的 romset，最多剩 4 个字母**
+  （`wofh→wof`、`kof97pla→kof97`、`doubledrbh→doubledr`），推断结果会打出来（`（按 wof 推断）`），
+  前缀剩太多的一律不猜（`Samurai Shodown II X` 不会被当成 `samurai`）。`.neo` = NeoGeo CD；`.cue/.gdi` 不猜（那是 DC/NAOMI 镜像）。
+- 写入的是 MAME 的 `sourcefile` 原样（`neogeo.cpp`、`capcom/cps1.cpp` 混着都行）：显示和分组都走 `library.BoardOf()`，
+  只按 basename 认牌子，所以 `neogeo.cpp` 与 `snk/neogeo.cpp` 都是 `MVS`。
+- 2026-11-24 一次：街机 153 个空基板 → 151 个填上（MAME 127、家族推断 19、ADB 4、`.neo` 1），
+  剩 2 个是 `Gunbird 2 (Japan).cue` / `Paca Paca Passion Special.cue` —— 是 Dreamcast 镜像被放进了 `arc`，该挪去 SEGA。
+- 改库前备份 `数据/launcher.db`（本轮备份 `launcher.db.bak-20261124-2010`）。
+
 
 ### 双人（2026-11-23）
 
@@ -634,3 +964,29 @@ CPS2/CPS3 的 384×224 以前被画成 1.71 的宽画面，因为进程内跑核
 同一个 dll 在 RetroArch 里正常），修不动，所以 `fc` 的规范核心改成 `fceumm`（`coreNames`/`CanonicalCore`、
 db 的 `sim` 表都已换，mesen 的 dll 仍留在 cores 里）。`fceumm`/`nestopia` 都能过 init，选 fceumm 是因为
 它认 zip。
+
+### 画面旋转：核心要求转，前端自己转（2026-11-24 实测）
+
+麻将的像管是倒装的、纵版射击的像管是侧装的。MAME 在 `mame_rotation_mode = "libretro"`（`config\MAME\MAME.opt`
+里的默认）下**不自己转画面**，而是通过 libretro 的环境命令 `SET_ROTATION`（`cmd=1`）请前端转。以前前端
+`switch` 里没有 `case 1`，于是「麻将 电子基盘」整屏倒 180°、纵版游戏整屏侧躺——不是某个 drv 的事，是全部
+"像管装反/装侧"的基板一起错。
+
+- 载荷是**四分之一圈数**，不是角度：0/1/2/3 = 0°/90°/180°/270°。MAME 的日志写 `Screen rotation: 180deg`
+  而传过来的是 **2**；「武装飞鸟」（psikyo）传 **1**。一开始按角度读（`*(*uint32)` 当 180）读出 0，白改一轮。
+- 方向也别猜：`1` 要用 **270°（顺时针系）**也就是逆时针转，画面才正；先按 90 转过，武装飞鸟的
+  `Work RAM OK` 是侧着的。`turnDegrees()` 就是这张表，`internal/core/turn_test.go` 钉住。
+- 实现在 `internal/core/session_windows.go`：`Session.turn`（`atomic.Int32`）、`Rotation()`、`turnFrame()`、
+  纯函数 `turnRGBA(img, deg)`；`case 1` 存 `turn`，四条提交路径（Run 的 pend、videoCallback 的 vk / hw 直读、
+  software）末尾各调一次 `turnFrame()`。180 原地转（行交换 + 每行反转），90/270 新建 `image.NewRGBA(h,w)` 逐像素
+  落位——每帧都转，属于已知取舍（重负载时可按需搬到 GPU 着色器）。
+- 验收不看窗口也能看：`GAMEROOM_DUMP=<png 路径>` 让核心在**转过之后**的第 90 帧落一张 PNG（每进程只落一次，
+  `dumpPath`/`dumped`）。实测：电子基盘 `2 quarters = 180 degrees`，图里 `MAHJONG ELECTRON BASE` 正着；
+  天开眼 `0 quarters`（同是 dynax.cpp 但驱动不要求转，本来就不倒）；武装飞鸟 `1 quarters = 270 degrees`，224×320
+  竖图、`Work RAM OK` 正着。
+- MAME 启动时还会在画面下方压一行 `Error: Load state file <rom>\<rom>\auto.sta not found`——这是它自己的
+  autosave（`MAME.opt` 里 `mame_auto_save = "enabled"`、`mame_saves = "game"`，还会读自己的 mame.ini），
+  和旋转无关；本机 `saves\mame\states\<rom>\` 里已有别的 .sta，说明它照常存档，只是本前端**强杀进程**，
+  这一局永远存不上。改 GET_VARIABLE 覆盖无效（实测 `var: mame_auto_save -> disabled` 后照样报），
+  要消掉只能改那份 opt/ini。
+

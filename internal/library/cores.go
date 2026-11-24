@@ -21,6 +21,7 @@ var coreNames = map[string]string{
 	"snes9x":          "Snes9x",
 	"genesis_plus_gx": "Genesis Plus GX",
 	"duckstation":     "DuckStation",
+	"mednafen_psx":    "Mednafen PSX",
 	"pcsx2":           "PCSX2",
 	"flycast":         "Flycast",
 	"mednafen_saturn": "Mednafen Saturn",
@@ -67,7 +68,10 @@ func CanonicalCore(platform, romPath string) string {
 		if strings.Contains(p, "/ps2/") || ext == "iso" {
 			return "pcsx2"
 		}
-		return "duckstation"
+		// DuckStation is the more accurate PS1 core, but it crashes in the frame
+		// loop inside this process; Mednafen PSX is the one that runs here, so the
+		// library says so rather than naming a core the launcher would swap out.
+		return "mednafen_psx"
 	case "SEGA":
 		// Model 2, Model 3 and ST-V are arcade boards that happen to live
 		// in a SEGA folder; MAME is the only core that runs them.

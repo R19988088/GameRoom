@@ -2,10 +2,11 @@ package app
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -210,6 +211,40 @@ func (a *App) buildVersions() {
 		}
 		delete(a.verMembers, key)
 	}
+	// What the user filed by hand wins over the titles: a 改版 dropped onto a
+	// card is shown under it, and a dump marked 取消合并 keeps a card of its own.
+	// The repointing happens after the title pass, so an explicit group is never
+	// split again by the rule above.
+	if a.hasFiling() {
+		keys := make(map[int]string, len(a.lib.Games))
+		for id, k := range a.verFam {
+			keys[id] = k
+		}
+		byID := make(map[int]library.Game, len(a.lib.Games))
+		for _, g := range a.lib.Games {
+			byID[g.ID] = g
+		}
+		for _, g := range a.lib.Games {
+			switch {
+			case g.Solo:
+				keys[g.ID] = fmt.Sprintf("%s#%d", g.PlatformKey, g.ID)
+			case g.Family != 0 && g.Family != g.ID:
+				// A card of the same shelf only: a note that outlived the game it
+				// pointed at files nothing.
+				if b, ok := byID[g.Family]; ok && b.PlatformKey == g.PlatformKey {
+					if k, ok := keys[g.Family]; ok {
+						keys[g.ID] = k
+					}
+				}
+			}
+		}
+		a.verMembers = map[string][]library.Game{}
+		for _, g := range a.lib.Games {
+			k := keys[g.ID]
+			a.verFam[g.ID] = k
+			a.verMembers[k] = append(a.verMembers[k], g)
+		}
+	}
 	for key := range a.verMembers {
 		if a.db == nil {
 			break
@@ -220,6 +255,20 @@ func (a *App) buildVersions() {
 			}
 		}
 	}
+}
+
+// hasFiling reports whether any dump was filed by hand: without one, the titles
+// alone decide the families and there is nothing to repoint.
+func (a *App) hasFiling() bool {
+	if a.lib == nil {
+		return false
+	}
+	for _, g := range a.lib.Games {
+		if g.Solo || g.Family != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // versionsOf returns the versions of a game's family, the base dump first and
@@ -246,7 +295,12 @@ func (a *App) versionsOf(g library.Game) []library.Game {
 // members share (the original dump and its revisions), and the shortest
 // spelling of it — not the hack whose name happens to be shorter.
 func (a *App) versionBase(g library.Game) library.Game {
-	members := a.verMembers[a.verFam[g.ID]]
+	return baseOf(a.verMembers[a.verFam[g.ID]], g)
+}
+
+// baseOf is versionBase over the given members, for picking a base among the
+// rest of a family while one of them is being taken out of it.
+func baseOf(members []library.Game, fallback library.Game) library.Game {
 	counts := map[string]int{}
 	best, bestCount := "", 0
 	for _, m := range members {
@@ -268,7 +322,7 @@ func (a *App) versionBase(g library.Game) library.Game {
 		}
 	}
 	if !found {
-		return g
+		return fallback
 	}
 	return base
 }
@@ -285,9 +339,12 @@ func (a *App) versionDefault(g library.Game) int {
 // setVersionDefault makes a dump the one that plays for its family.
 func (a *App) setVersionDefault(g library.Game, id int) {
 	key := a.verFam[g.ID]
-	if err := library.SetSetting(a.db, versionPrefix+key, strconv.Itoa(id)); err != nil {
-		a.status = "默认版本没存上：" + err.Error()
-		return
+	// 库没打开（db 为 nil）时只记在内存里：SetSetting 收 nil db 会直接崩。
+	if a.db != nil {
+		if err := library.SetSetting(a.db, versionPrefix+key, strconv.Itoa(id)); err != nil {
+			a.status = "默认版本没存上：" + err.Error()
+			return
+		}
 	}
 	a.verDefault[key] = id
 	for _, m := range a.verMembers[key] {
@@ -320,14 +377,13 @@ func (a *App) versionTarget(g library.Game) library.Game {
 	return g
 }
 
-// versionLabel is what a version is called under the base title: the dump's own
-// tail ("霸王丸地狱变 sp"), or the whole title when the two titles do not
-// share a base.
+// versionLabel is what a version is called under the base title on the card's
+// button: the dump's own tail ("霸王丸地狱变 sp"), or the whole title when the
+// two titles do not share a base. The list under the button shows versionName
+// instead — the dump's whole title.
 func (a *App) versionLabel(base, g library.Game) string {
 	label := ""
-	if g.ID == base.ID {
-		label = "主 ROM"
-	} else if strings.HasPrefix(g.Title, base.Title) {
+	if g.ID != base.ID && strings.HasPrefix(g.Title, base.Title) {
 		label = strings.TrimSpace(g.Title[len(base.Title):])
 	}
 	if label == "" {
@@ -335,28 +391,282 @@ func (a *App) versionLabel(base, g library.Game) string {
 	}
 	// Two dumps can carry the same title ("麻将 大中华圈" twice); the rom file
 	// is what tells them apart, so it is shown rather than a duplicate row.
+	if a.sameTitle(g) {
+		label += " · " + a.romTag(g)
+	}
+	return label
+}
+
+// versionName is what a version is called in the list under the button: its
+// whole title — the base dump is not a "主 ROM" line, it is the game itself — and
+// the rom's name after it when two dumps share a title.
+func (a *App) versionName(g library.Game) string {
+	name := g.Title
+	if a.sameTitle(g) {
+		name += " · " + a.romTag(g)
+	}
+	return name
+}
+
+// romTag is what tells two dumps of the same game apart in a list: their rom's
+// name — and the whole file name, extension included, when the same name was
+// dumped into two containers, since "hsf2" twice would be two identical rows.
+func (a *App) romTag(g library.Game) string {
+	stem := romStem(g.RomPath)
+	for _, m := range a.verMembers[a.verFam[g.ID]] {
+		if m.ID != g.ID && strings.EqualFold(romStem(m.RomPath), stem) {
+			return romFile(g.RomPath)
+		}
+	}
+	return stem
+}
+
+// sameTitle tells whether another dump of the family carries this dump's title.
+func (a *App) sameTitle(g library.Game) bool {
 	same := 0
 	for _, m := range a.verMembers[a.verFam[g.ID]] {
 		if m.Title == g.Title {
 			same++
 		}
 	}
-	if same > 1 {
-		label += " · " + romStem(g.RomPath)
-	}
-	return label
+	return same > 1
 }
 
 // romStem is a rom's file name without its extension, as "samsho2".
 func romStem(path string) string {
+	return strings.TrimSuffix(romFile(path), extOf(path))
+}
+
+// romFile is a rom's file name with its extension, as "hsf2.7z": two dumps of
+// one game in two containers differ only here.
+func romFile(path string) string {
 	base := path
 	if i := strings.LastIndexAny(base, `/\`); i >= 0 {
 		base = base[i+1:]
 	}
-	if i := strings.LastIndex(base, "."); i > 0 {
-		base = base[:i]
-	}
 	return base
+}
+
+// extOf is the extension of a path as ".7z", empty when it has none.
+func extOf(path string) string {
+	base := romFile(path)
+	if i := strings.LastIndex(base, "."); i > 0 {
+		return base[i:]
+	}
+	return ""
+}
+
+// gameByFile is the game of a platform whose rom is the dropped file. A dump
+// dropped from Explorer is the same file the library already points at, so its
+// name, or its name without the extension, finds the row.
+func (a *App) gameByFile(platform, name string) int {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return 0
+	}
+	stem := romStem(name)
+	for _, g := range a.lib.Games {
+		if g.PlatformKey != platform {
+			continue
+		}
+		rom := strings.ToLower(filepath.Base(strings.ReplaceAll(g.RomPath, `\`, "/")))
+		if rom == name || romStem(rom) == stem {
+			return g.ID
+		}
+	}
+	return 0
+}
+
+// mergeDumps files the dropped files under the card they were dropped on: a
+// 改版 dragged onto another title stops being a card of its own. Only the
+// library is written; a rom stays in the folder it is in.
+func (a *App) mergeDumps(target library.Game, paths []string) {
+	a.shutMenu()
+	a.later(func() { a.mergeFiles(target.ID, paths) })
+}
+
+// expandPaths turns a drop into the files to look up. A dropped folder stands
+// for the roms in it, which is the "choose the folder" way of filing a pile of
+// hacks at once: Explorer hands over the folder, the library matches the roms
+// inside it by name.
+func (a *App) expandPaths(paths []string, p *library.Platform) []string {
+	exts := map[string]bool{".zip": true, ".7z": true}
+	if p != nil && len(p.Exts) > 0 {
+		exts = map[string]bool{}
+		for _, e := range p.Exts {
+			exts[strings.ToLower("."+strings.TrimLeft(e, "."))] = true
+		}
+	}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		st, err := os.Stat(path)
+		if err != nil || st.IsDir() == false {
+			out = append(out, path)
+			continue
+		}
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			out = append(out, path)
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || !exts[strings.ToLower(filepath.Ext(e.Name()))] {
+				continue
+			}
+			out = append(out, filepath.Join(path, e.Name()))
+		}
+	}
+	return out
+}
+
+// mergeFiles is the work mergeDumps queued: each dropped file the library knows
+// is filed under the card's title. Files it does not know are counted, not
+// imported — the import pass is where a rom first comes into the library.
+func (a *App) mergeFiles(targetID int, paths []string) {
+	base := a.lib.Game(targetID)
+	if base == nil {
+		return
+	}
+	baseID := a.versionBase(*base).ID
+	paths = a.expandPaths(paths, a.lib.Platform(base.PlatformKey))
+	merged, unknown := 0, 0
+	for _, p := range paths {
+		id := a.gameByFile(base.PlatformKey, filepath.Base(p))
+		if id == 0 || id == baseID {
+			unknown++
+			continue
+		}
+		g := a.lib.Game(id)
+		if g == nil {
+			unknown++
+			continue
+		}
+		var err error
+		if a.db != nil {
+			err = library.FileDump(a.db, id, baseID, false)
+		}
+		if err != nil {
+			a.status = "没并上：" + err.Error()
+			return
+		}
+		g.Family, g.Solo = baseID, false
+		merged++
+	}
+	a.buildVersions()
+	at := a.scroll.Y
+	a.recount()
+	a.refilter()
+	a.scroll.Y = at
+	switch {
+	case merged > 0 && unknown > 0:
+		a.status = fmt.Sprintf("已并入 %d 个改版到《%s》，%d 个文件不在库里",
+			merged, base.Title, unknown)
+	case merged > 0:
+		a.status = fmt.Sprintf("已并入 %d 个改版到《%s》", merged, base.Title)
+	case unknown > 0:
+		a.status = fmt.Sprintf("这 %d 个文件不在库里", unknown)
+	}
+}
+
+// cardDrag is what a card carries while the pointer drags it with Ctrl held:
+// the game it was, for whichever card it is let go on to file it under.
+type cardDrag struct{ id int }
+
+// mergeCards files one card's game under another card, as a dump dropped on the
+// card is filed: Ctrl-dragging a card onto another title makes it one of that
+// card's versions, whatever its own name says.
+func (a *App) mergeCards(from, onto int) {
+	a.shutMenu()
+	a.later(func() { a.mergeInto(from, onto) })
+}
+
+// mergeInto is the work mergeCards queued. The dragged game becomes a dump of
+// the card it was let go on — the card's base, so a family never nests in
+// another family — and the card it came from stops being a card of its own.
+func (a *App) mergeInto(from, onto int) {
+	src, dst := a.lib.Game(from), a.lib.Game(onto)
+	if src == nil || dst == nil || src.ID == dst.ID {
+		return
+	}
+	if src.PlatformKey != dst.PlatformKey {
+		a.status = "只能并到同一个平台的游戏里"
+		return
+	}
+	base := a.versionBase(*dst)
+	if base.ID == src.ID || a.verFam[src.ID] == a.verFam[dst.ID] {
+		a.status = fmt.Sprintf("《%s》已经在这张卡上了", src.Title)
+		return
+	}
+	if a.db != nil {
+		if err := library.FileDump(a.db, src.ID, base.ID, false); err != nil {
+			a.status = "没并上：" + err.Error()
+			return
+		}
+	}
+	src.Family, src.Solo = base.ID, false
+	a.buildVersions()
+	at := a.scroll.Y
+	a.recount()
+	a.refilter()
+	a.scroll.Y = at
+	a.status = fmt.Sprintf("已把《%s》并到《%s》", src.Title, base.Title)
+}
+
+// splitDump takes a dump out of its family: 取消合并 gives it a card of its own,
+// whatever its title says. Only the dump clicked comes apart; the rest of the
+// family stays together.
+func (a *App) splitDump(id int) {
+	a.shutMenu()
+	a.shutVMenu()
+	a.later(func() { a.setSolo(id) })
+}
+
+// setSolo is the work splitDump queued. The dumps that pointed at the one going
+// out have to point at whoever is left: a family's members are filed under a
+// base by id, so splitting the base while they still said "跟着 3 号" would file
+// them all back under it and nothing would come apart.
+func (a *App) setSolo(id int) {
+	g := a.lib.Game(id)
+	if g == nil {
+		return
+	}
+	var remaining []library.Game
+	for _, m := range a.verMembers[a.verFam[g.ID]] {
+		if m.ID != id {
+			remaining = append(remaining, m)
+		}
+	}
+	var err error
+	if a.db != nil {
+		err = library.FileDump(a.db, id, 0, true)
+	}
+	if err != nil {
+		a.status = "没能独立：" + err.Error()
+		return
+	}
+	g.Family, g.Solo = 0, true
+	if len(remaining) > 0 {
+		base := baseOf(remaining, remaining[0])
+		for _, m := range remaining {
+			mg := a.lib.Game(m.ID)
+			if mg == nil || mg.Solo || mg.Family != id {
+				continue
+			}
+			if a.db != nil {
+				if err := library.FileDump(a.db, mg.ID, base.ID, false); err != nil {
+					a.status = "没能独立：" + err.Error()
+					return
+				}
+			}
+			mg.Family = base.ID
+		}
+	}
+	a.buildVersions()
+	at := a.scroll.Y
+	a.recount()
+	a.refilter()
+	a.scroll.Y = at
+	a.status = g.Title + " 已取消合并"
 }
 
 // versionBar is the button a card shows under its title when the game has more
@@ -413,10 +723,9 @@ func (a *App) versionBar(c *ui.Context, t *ui.Theme, g library.Game) {
 }
 
 // versionPanel is the list under the button: one row per dump, its language, and
-// a tick on the one that plays. A row takes the choice and a second click on it
-// soon after makes it the default — the same two-step a card uses to play.
+// a tick on the one that plays. A single click on a row makes it the default —
+// the card plays it and shows its cover — and closes the list.
 func (a *App) versionPanel(c *ui.Context, t *ui.Theme, panel ui.Element, g library.Game, versions []library.Game) {
-	base := a.versionBase(g)
 	def := a.versionDefault(g)
 
 	panel.Width(302).Padding(7).Radius(16).
@@ -430,9 +739,6 @@ func (a *App) versionPanel(c *ui.Context, t *ui.Theme, panel ui.Element, g libra
 					TextColor(t.Text).SingleLine().Grow(1)
 				ui.Text(c, fmt.Sprintf("%d 个", len(versions))).FontSize(10).
 					TextColor(t.TextMuted.Alpha(0.6))
-			})
-			ui.Row(c).Height(20).PaddingX(10).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "双击设为默认").FontSize(10).TextColor(t.TextMuted.Alpha(0.55))
 			})
 			ui.Box(c).Height(1).Background(ui.Hex("#ffffff1f"))
 
@@ -455,29 +761,82 @@ func (a *App) versionPanel(c *ui.Context, t *ui.Theme, panel ui.Element, g libra
 					if chosen {
 						name = t.Accent
 					}
-					ui.Text(c, a.versionLabel(base, m)).FontSize(12).FontWeight(600).
+					ui.Text(c, a.versionName(m)).FontSize(12).FontWeight(600).
 						TextColor(name).SingleLine().Grow(1)
 					if lang := langOf(m); lang != "" {
 						ui.Text(c, lang).FontSize(9.5).TextColor(t.TextMuted.Alpha(0.7))
+					}
+					// The rom file itself, at the right end of the row: two dumps of
+					// one title are told apart by this, and even with different titles
+					// the file is what one opens in a zip manager to check.
+					if rom := a.romTag(m); rom != "" {
+						ui.Text(c, rom).FontSize(10).TextColor(t.TextMuted.Alpha(0.55)).
+							SingleLine()
 					}
 					if chosen {
 						ui.Text(c, "✓").FontSize(11).FontWeight(700).TextColor(t.Accent)
 					}
 				})
 				if row.Clicked() {
-					now := time.Now()
-					if a.verClick == m.ID && now.Sub(a.verClickAt) < 650*time.Millisecond {
-						a.verClick, a.verClickAt = 0, now
-						a.setVersionDefault(g, m.ID)
-						a.verSel = m.ID
-						open := a.versionOpen(g.ID)
-						*open = false
-					} else {
-						a.verClick, a.verClickAt = m.ID, now
-						a.verSel = m.ID
-					}
+					a.pickVersion(g, m.ID)
+				}
+
+				// This dump's own menu, on the right button: 取消合并, which takes
+				// it out of the title's list and gives it a card of its own.
+				vOpen := a.vmenuOpen(m.ID)
+				vm := ui.ContextMenuBase(c, row, vOpen)
+				if *vOpen {
+					a.vmenuFor(m.ID)
+					vm.Popup(func(panel ui.Element) { a.splitMenuPanel(c, t, panel, m) })
+				} else if a.vmenuGame == m.ID {
+					a.shutVMenu()
 				}
 			}
+		})
+	})
+}
+
+// pickVersion takes one click on a version row: that dump becomes the one that
+// plays for the card, and the list closes. The card's cover follows the default,
+// so the picture under the title changes with the pick.
+func (a *App) pickVersion(g library.Game, id int) {
+	a.setVersionDefault(g, id)
+	a.verSel = id
+	open := a.versionOpen(g.ID)
+	*open = false
+}
+
+// splitMenuPanel is the menu of one version row: 取消合并, with the dump it is
+// about and what the button does, and — below it — that dump's ips patches.
+func (a *App) splitMenuPanel(c *ui.Context, t *ui.Theme, panel ui.Element, m library.Game) {
+	panel.Width(268).Padding(7).Radius(14).
+		Background(ui.Hex("#1b1d26f7")).
+		Border(1, ui.Hex("#ffffff2e")).
+		Shadow(0, 22, 48, 0, ui.Hex("#000000e6"))
+	panel.Children(func() {
+		ui.Column(c).Gap(2).Children(func() {
+			ui.Row(c).Height(30).PaddingX(8).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, a.versionName(m)).FontSize(12).FontWeight(600).
+					TextColor(t.Text).SingleLine().Grow(1)
+				ui.Text(c, romNameOf(m)).FontSize(10).TextColor(t.TextMuted.Alpha(0.55)).
+					SingleLine()
+			})
+			ui.Box(c).Height(1).Background(ui.Hex("#ffffff1f"))
+			row := ui.ButtonBase(c).Height(34).PaddingX(9).Radius(9).
+				AlignItems(ui.Center).Gap(8)
+			if row.Hovered() {
+				row.Background(ui.Hex("#ffffff10"))
+			}
+			row.Children(func() {
+				ui.Text(c, "⇱").FontSize(12).TextColor(t.TextMuted.Alpha(0.85))
+				ui.Text(c, "取消合并").FontSize(12).FontWeight(500).
+					TextColor(t.Text.Alpha(0.9)).SingleLine().Grow(1)
+				ui.Text(c, "只取消这一个").FontSize(10).TextColor(t.TextMuted.Alpha(0.6))
+			})
+			if row.Clicked() {
+				a.splitDump(m.ID)
+			}
+			a.ipsSection(c, t, m)
 		})
 	})
 }
